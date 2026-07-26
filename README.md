@@ -106,6 +106,10 @@ go vet ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 ```
 
+改动前端依赖后，务必先 `rm -rf web/node_modules web/*.tsbuildinfo` 再 `npm ci --prefix web` 复验：`vue-tsc -b` 是增量构建，而 `npm install` 不会删掉已不在 package.json 里的包，两者叠加会让本地 typecheck 用着旧状态通过，到 CI 的干净环境才失败。
+
+`@types/katex` 看起来无人引用，实际是 naive-ui 类型定义的依赖（`config-provider/src/katex.d.ts` 与 `equation/src/Equation.d.ts` 直接 `import 'katex'`）。源码里搜不到它，删掉即 typecheck 失败。
+
 ## 上游兼容
 
 面板启动后直接执行当前安装的 dae：
