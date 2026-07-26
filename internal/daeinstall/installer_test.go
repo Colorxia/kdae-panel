@@ -140,7 +140,7 @@ func elf(content string) []byte {
 }
 
 // seed 预置一个"已安装"的 dae，因为面板只做升级与切换，不做首次安装。
-func seed(t *testing.T, installer *Installer, binaryPath, content string) {
+func seed(t *testing.T, binaryPath, content string) {
 	t.Helper()
 	if err := os.WriteFile(binaryPath, elf(content), 0o755); err != nil {
 		t.Fatal(err)
@@ -151,7 +151,7 @@ func TestInstallUpgrade(t *testing.T) {
 	fetcher := &fakeFetcher{}
 	service := &fakeService{}
 	installer, binaryPath := newTestInstaller(t, fetcher, service)
-	seed(t, installer, binaryPath, "v1")
+	seed(t, binaryPath, "v1")
 
 	status, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2.0.0")
 	if err != nil {
@@ -185,7 +185,7 @@ func TestInstallTargetsServiceExecStartNotConfiguredPath(t *testing.T) {
 	fetcher := &fakeFetcher{}
 	service := &fakeService{}
 	installer, configured := newTestInstaller(t, fetcher, service)
-	seed(t, installer, configured, "v1")
+	seed(t, configured, "v1")
 
 	// 服务实际启动的是另一个目录下的 dae：必须替换它，
 	// 否则会出现"装成功但仍跑旧版本"的静默假成功
@@ -222,7 +222,7 @@ func TestInstallRefusesUnrelatedExecStartTarget(t *testing.T) {
 	fetcher := &fakeFetcher{}
 	service := &fakeService{}
 	installer, binaryPath := newTestInstaller(t, fetcher, service)
-	seed(t, installer, binaryPath, "v1")
+	seed(t, binaryPath, "v1")
 
 	// 单元配置有误、ExecStart 指向别的程序时，覆盖它就是在破坏无关软件
 	unrelated := filepath.Join(filepath.Dir(binaryPath), "some-other-daemon")
@@ -272,7 +272,7 @@ func TestInstallRejectsBinaryThatCannotRun(t *testing.T) {
 	fetcher := &fakeFetcher{}
 	service := &fakeService{}
 	installer, binaryPath := newTestInstaller(t, fetcher, service)
-	seed(t, installer, binaryPath, "v1")
+	seed(t, binaryPath, "v1")
 
 	_, err := installer.Install(context.Background(), elf("broken"), upstream.SourceOfficial, "v9.9.9", "v9.9.9")
 	if err == nil || !strings.Contains(err.Error(), "无法运行") {
@@ -290,7 +290,7 @@ func TestInstallRejectsBinaryThatRejectsConfig(t *testing.T) {
 	fetcher := &fakeFetcher{}
 	service := &fakeService{}
 	installer, binaryPath := newTestInstaller(t, fetcher, service)
-	seed(t, installer, binaryPath, "v1")
+	seed(t, binaryPath, "v1")
 
 	_, err := installer.Install(context.Background(), elf("rejects-config"), upstream.SourceOfficial, "v3.0.0", "v3.0.0")
 	if err == nil || !strings.Contains(err.Error(), "拒绝当前配置") {
@@ -306,7 +306,7 @@ func TestInstallRollsBackWhenServiceFailsToStart(t *testing.T) {
 	// 装上去的那次重启起不来；随后的回滚重启能起来
 	service := &fakeService{failRestart: 1}
 	installer, binaryPath := newTestInstaller(t, fetcher, service)
-	seed(t, installer, binaryPath, "v1")
+	seed(t, binaryPath, "v1")
 
 	_, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2.0.0")
 	if err == nil {
@@ -340,7 +340,7 @@ func TestInstallRollsBackWhenServiceFailsToStart(t *testing.T) {
 func TestFailedInstallKeepsExistingRollbackPoint(t *testing.T) {
 	service := &fakeService{}
 	installer, binaryPath := newTestInstaller(t, &fakeFetcher{}, service)
-	seed(t, installer, binaryPath, "v1")
+	seed(t, binaryPath, "v1")
 
 	if _, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2"); err != nil {
 		t.Fatal(err)
@@ -367,7 +367,7 @@ func TestFailedInstallKeepsExistingRollbackPoint(t *testing.T) {
 func TestInstallDetectsCrashLoopWithinObservationWindow(t *testing.T) {
 	service := &fakeService{restartsGrow: true}
 	installer, binaryPath := newTestInstaller(t, &fakeFetcher{}, service)
-	seed(t, installer, binaryPath, "v1")
+	seed(t, binaryPath, "v1")
 
 	_, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2")
 	if err == nil {
@@ -385,7 +385,7 @@ func TestRollbackRestoresPreviousVersion(t *testing.T) {
 	fetcher := &fakeFetcher{}
 	service := &fakeService{}
 	installer, binaryPath := newTestInstaller(t, fetcher, service)
-	seed(t, installer, binaryPath, "v1")
+	seed(t, binaryPath, "v1")
 
 	if _, err := installer.Install(context.Background(), elf("v2"), upstream.SourceKdae, "30187784287", "d63a0c1"); err != nil {
 		t.Fatal(err)
@@ -404,7 +404,7 @@ func TestRollbackRestoresPreviousVersion(t *testing.T) {
 
 func TestRollbackWithoutBackup(t *testing.T) {
 	installer, binaryPath := newTestInstaller(t, &fakeFetcher{}, &fakeService{})
-	seed(t, installer, binaryPath, "v1")
+	seed(t, binaryPath, "v1")
 	if _, err := installer.Rollback(context.Background()); err == nil {
 		t.Fatal("没有备份时回滚应报错")
 	}
@@ -414,7 +414,7 @@ func TestStatusDetectsExternalReplacement(t *testing.T) {
 	fetcher := &fakeFetcher{}
 	service := &fakeService{}
 	installer, binaryPath := newTestInstaller(t, fetcher, service)
-	seed(t, installer, binaryPath, "v1")
+	seed(t, binaryPath, "v1")
 	if _, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2.0.0"); err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func TestStatusDetectsExternalReplacement(t *testing.T) {
 
 func TestInstallRejectsEmptyBinary(t *testing.T) {
 	installer, binaryPath := newTestInstaller(t, &fakeFetcher{}, &fakeService{})
-	seed(t, installer, binaryPath, "v1")
+	seed(t, binaryPath, "v1")
 	if _, err := installer.Install(context.Background(), nil, upstream.SourceOfficial, "v1.0.0", "v1.0.0"); err == nil {
 		t.Fatal("空内容应被拒绝")
 	}
