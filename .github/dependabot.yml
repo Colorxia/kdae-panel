@@ -35,6 +35,11 @@ updates:
       # 重新评估的触发条件：4.x 出安全公告，或上游宣布 4.x EOL。
       - dependency-name: vue-router
         update-types: [version-update:semver-major]
+      # TypeScript 7（tsgo）删掉了 ./lib/tsc 导出，vue-tsc 3.x 依赖该入口，
+      # 实测 typecheck 直接 ERR_PACKAGE_PATH_NOT_EXPORTED，连编译都起不来。
+      # 重新评估的触发条件：vue-tsc 官宣支持 TS7。
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: github-actions
     directory: /

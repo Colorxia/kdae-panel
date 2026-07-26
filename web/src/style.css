@@ -1,7 +1,42 @@
+/* ============================================================
+   设计令牌：颜色与字体只在这里定义一次。
+   App.vue 的 themeOverrides 会读取同一份令牌交给 naive-ui，
+   因此改这里就是改全站——不要在下方规则或组件里再写字面色值。
+   ============================================================ */
 :root {
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* 表面：页面底、抬升面（卡片/介绍面）、下沉面（日志流） */
+  --bg-page: #101214;
+  --bg-raised: #171a1d;
+  --bg-deep: #0d0f11;
+  --bg-header: rgba(20, 22, 24, 0.9);
+
+  /* 文字：亮（正文强调）、弱（次要说明）、微（行号等装饰） */
+  --text-bright: #cbd5df;
+  --text-muted: #8d98a6;
+  --text-faint: #5d6a7d;
+
+  /* 品牌青（Tailwind cyan-300 系）。hover/pressed 供 themeOverrides 使用 */
+  --accent: #67e8f9;
+  --accent-hover: #a5f3fc;
+  --accent-pressed: #22d3ee;
+  --accent-contrast: #062027;
+  --accent-soft: rgba(103, 232, 249, 0.22);
+  --accent-wash: rgba(103, 232, 249, 0.04);
+
+  /* 语义色：与 naive-ui 的 success/warning 呼应，用于自绘元素 */
+  --ok: #4ade80;
+  --warn: #fbbf24;
+
+  /* 分隔线：两档足够，更多档位肉眼无法区分 */
+  --border: rgba(148, 163, 184, 0.12);
+  --border-soft: rgba(148, 163, 184, 0.09);
+  --border-strong: rgba(148, 163, 184, 0.5);
+
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+
+  font-family: var(--font-sans);
   color-scheme: dark;
-  background: #08101d;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -17,8 +52,9 @@ body,
   margin: 0;
 }
 
+/* NGlobalStyle 挂载后会接管 body 背景；这里的规则负责挂载前的首屏底色 */
 body {
-  background: #101214;
+  background: var(--bg-page);
 }
 
 button,
@@ -52,10 +88,10 @@ textarea {
   display: grid;
   place-items: center;
   border-radius: 8px;
-  color: #062027;
+  color: var(--accent-contrast);
   font-size: 18px;
   font-weight: 900;
-  background: #67e8f9;
+  background: var(--accent);
 }
 
 .brand-mark.large {
@@ -78,7 +114,7 @@ textarea {
 
 .brand-copy span,
 .account-copy span {
-  color: #7d8aa2;
+  color: var(--text-muted);
   font-size: 12px;
 }
 
@@ -88,7 +124,7 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: rgba(20, 22, 24, 0.9);
+  background: var(--bg-header);
   backdrop-filter: blur(18px);
 }
 
@@ -99,7 +135,7 @@ textarea {
 
 .eyebrow {
   margin: 0;
-  color: #55c5ea !important;
+  color: var(--accent) !important;
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.18em;
@@ -123,7 +159,7 @@ textarea {
 
 .app-content {
   min-height: calc(100vh - 82px);
-  background: #101214;
+  background: var(--bg-page);
 }
 
 .auth-page {
@@ -137,7 +173,7 @@ textarea {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  background: #171a1d;
+  background: var(--bg-raised);
 }
 
 .auth-intro h1 {
@@ -150,7 +186,7 @@ textarea {
 
 .auth-intro > p:not(.eyebrow) {
   max-width: 620px;
-  color: #9eacc1;
+  color: var(--text-muted);
   font-size: 17px;
   line-height: 1.8;
 }
@@ -160,8 +196,8 @@ textarea {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  border-left: 1px solid rgba(148, 163, 184, 0.12);
-  background: #101214;
+  border-left: 1px solid var(--border);
+  background: var(--bg-page);
 }
 
 .auth-form-heading {
@@ -219,7 +255,7 @@ textarea {
 .metric-card small,
 .panel-description,
 .outline-default {
-  color: #8d98a6;
+  color: var(--text-muted);
 }
 
 .panel-card {
@@ -241,11 +277,11 @@ textarea {
   grid-template-columns: minmax(88px, 0.35fr) 1fr;
   align-items: baseline;
   gap: 16px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  border-bottom: 1px solid var(--border-soft);
 }
 
 .details-list dt {
-  color: #84909f;
+  color: var(--text-muted);
 }
 
 .details-list dd {
@@ -258,7 +294,7 @@ textarea {
 code,
 pre,
 .config-editor textarea {
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace !important;
+  font-family: var(--font-mono) !important;
 }
 
 .inline-alert,
@@ -278,7 +314,7 @@ pre,
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  border-bottom: 1px solid var(--border);
 }
 
 .editor-path {
@@ -294,11 +330,11 @@ pre,
   height: 8px;
   flex: 0 0 auto;
   border-radius: 50%;
-  background: #4ade80;
+  background: var(--ok);
 }
 
 .status-dot.changed {
-  background: #fbbf24;
+  background: var(--warn);
 }
 
 .config-editor,
@@ -339,7 +375,7 @@ pre,
   max-height: calc(100vh - 260px);
   min-height: 420px;
   overflow: auto;
-  background: #0d0f11;
+  background: var(--bg-deep);
 }
 
 .log-row {
@@ -349,23 +385,23 @@ pre,
   grid-template-columns: 172px 68px 90px 1fr;
   align-items: start;
   gap: 10px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.07);
+  border-bottom: 1px solid var(--border-soft);
 }
 
 .log-row:hover {
-  background: rgba(103, 232, 249, 0.035);
+  background: var(--accent-wash);
 }
 
 .log-row time,
 .log-source {
-  color: #798594;
+  color: var(--text-muted);
   font-size: 12px;
   line-height: 22px;
 }
 
 .log-row pre {
   margin: 0;
-  color: #cbd5df;
+  color: var(--text-bright);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.6;
@@ -392,9 +428,9 @@ pre,
 
 .outline-node.root {
   padding: 18px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: #171a1d;
+  background: var(--bg-raised);
 }
 
 .outline-heading {
@@ -405,7 +441,7 @@ pre,
 }
 
 .outline-heading code {
-  color: #67e8f9;
+  color: var(--accent);
   font-size: 13px;
   font-weight: 700;
 }
@@ -422,7 +458,7 @@ pre,
 }
 
 .outline-default code {
-  color: #86efac;
+  color: var(--ok);
 }
 
 .outline-children {
@@ -431,7 +467,7 @@ pre,
   display: flex;
   flex-direction: column;
   gap: 12px;
-  border-left: 1px solid rgba(103, 232, 249, 0.22);
+  border-left: 1px solid var(--accent-soft);
 }
 
 .settings-dump {
@@ -451,7 +487,7 @@ pre,
   padding: 12px 16px;
   font-size: 12px;
   line-height: 1.6;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  border-bottom: 1px solid var(--border-soft);
 }
 
 .version-label {
@@ -461,14 +497,14 @@ pre,
 .provision-notes {
   margin: 0;
   padding-left: 20px;
-  color: #8d98a6;
+  color: var(--text-muted);
   font-size: 12px;
   line-height: 1.8;
 }
 
 /* geo 文件路径可能很长，允许换行而不是撑破卡片 */
 .geo-path {
-  color: #8d98a6;
+  color: var(--text-muted);
   font-size: 12px;
   overflow-wrap: anywhere;
 }
@@ -483,7 +519,7 @@ pre,
 .geo-sources {
   margin-top: 16px;
   padding-top: 14px;
-  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  border-top: 1px solid var(--border);
 }
 
 .orchestration-stats {
@@ -504,7 +540,7 @@ pre,
 }
 
 .orchestration-stats span {
-  color: #8d98a6;
+  color: var(--text-muted);
   font-size: 12px;
 }
 
@@ -515,7 +551,7 @@ pre,
 
 .orchestrate-add {
   padding: 12px 14px;
-  border-top: 1px solid rgba(148, 163, 184, 0.1);
+  border-top: 1px solid var(--border-soft);
 }
 
 .orchestrate-add.borderless {
@@ -567,7 +603,7 @@ pre,
   display: flex;
   flex-direction: column;
   gap: 9px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  border-bottom: 1px solid var(--border-soft);
 }
 
 .group-item:first-of-type {
@@ -581,7 +617,7 @@ pre,
 }
 
 .group-head code {
-  color: #67e8f9;
+  color: var(--accent);
   font-size: 14px;
   font-weight: 700;
 }
@@ -623,7 +659,7 @@ pre,
 }
 
 .column-hint {
-  border-bottom: 1px dotted rgba(148, 163, 184, 0.5);
+  border-bottom: 1px dotted var(--border-strong);
   cursor: help;
 }
 
@@ -639,14 +675,14 @@ pre,
   display: flex;
   align-items: center;
   gap: 10px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.07);
+  border-bottom: 1px solid var(--border-soft);
   counter-increment: routing;
 }
 
 .routing-rule::before {
   content: counter(routing, decimal-leading-zero);
   flex: 0 0 auto;
-  color: #5d6a7d;
+  color: var(--text-faint);
   font-size: 11px;
 }
 
@@ -655,19 +691,19 @@ pre,
 }
 
 .routing-rule.fallback .routing-match {
-  color: #fbbf24;
+  color: var(--warn);
 }
 
 .routing-match {
   min-width: 0;
-  color: #cbd5df;
+  color: var(--text-bright);
   font-size: 13px;
   overflow-wrap: anywhere;
 }
 
 .routing-arrow {
   flex: 0 0 auto;
-  color: #55c5ea;
+  color: var(--accent);
 }
 
 .orchestrate-modal {
@@ -701,7 +737,7 @@ pre,
   .auth-card {
     padding: 38px 28px 56px;
     border-left: 0;
-    border-top: 1px solid rgba(148, 163, 184, 0.12);
+    border-top: 1px solid var(--border);
   }
 
   .account-copy {

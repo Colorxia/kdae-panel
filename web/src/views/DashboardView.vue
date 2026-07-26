@@ -26,7 +26,7 @@ import { RouterLink } from 'vue-router'
 import { APIError, getJSON, postJSON } from '../api/client'
 import type { ConfigDocument, DaeReport, ServiceStatus } from '../types/api'
 import { formatBytes, formatDurationNanoseconds } from '../utils/format'
-import { findSection, parseEntries, parseGroups, parseRoutingRules } from '../utils/daeconf'
+import { parseGroups, parseRoutingRules, readSection } from '../utils/daeconf'
 
 const message = useMessage()
 const loading = ref(true)
@@ -47,10 +47,7 @@ const supportedCommands = computed(() => Object.entries(dae.value?.commands || {
 const orchestration = computed(() => {
   const text = configContent.value
   if (text === null) return null
-  const count = (name: string) => {
-    const section = findSection(text, name)
-    return section ? parseEntries(text, section).length : 0
-  }
+  const count = (name: string) => readSection(text, name).entries.length
   return {
     nodes: count('node'),
     subscriptions: count('subscription'),

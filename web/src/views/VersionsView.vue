@@ -32,6 +32,7 @@ import type {
   UpstreamVersion,
 } from '../types/api'
 import { formatBytes, formatDateTime } from '../utils/format'
+import { useJobPolling } from '../composables/useJobPolling'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -60,9 +61,27 @@ const activeGeoSource = computed(
   () => geoStatus.value?.sources.find((item) => item.source === geoSource.value) || null,
 )
 
-let poller = 0
-let geoPoller = 0
 let unmounted = false
+
+// 两个后台任务各有自己的节奏，轮询防护（防卸载后触发、防请求交叠、
+// 防乱序复活）统一收在 useJobPolling 里
+const installPolling = useJobPolling({
+  refresh: () => loadStatus(),
+  phase: () => job.value?.phase,
+  onSettled: (phase) => {
+    if (phase === 'done') message.success('已完成')
+    else if (phase === 'failed') message.error(job.value?.error || '安装失败')
+  },
+})
+
+const geoPolling = useJobPolling({
+  refresh: () => loadGeo(),
+  phase: () => geoJob.value?.phase,
+  onSettled: (phase) => {
+    if (phase === 'done') message.success('geo 数据已更新并生效')
+    else if (phase === 'failed') message.error(geoJob.value?.error || 'geo 更新失败')
+  },
+})
 
 // 两个来源的"版本"含义不同，必须分开呈现，不能排进同一个序列。
 const SOURCES: { value: UpstreamSource; label: string; hint: string }[] = [
@@ -202,13 +221,13 @@ async function install(version: UpstreamVersion) {
     })
     job.value = payload.job
     message.info('已开始安装，可以留在本页查看进度')
-    startPolling()
+    installPolling.start()
   } catch (error) {
     message.error(error instanceof Error ? error.message : '启动安装失败')
     // 409 说明后端已有任务在跑，界面必须同步过去而不是继续显示空闲
     if (error instanceof APIError && error.status === 409) {
       await loadStatus()
-      if (busy.value) startPolling()
+      if (busy.value) installPolling.start()
     }
   }
 }
@@ -228,51 +247,13 @@ async function rollback() {
     const payload = await postJSON<{ job: InstallJob }>('/api/v1/dae/rollback')
     job.value = payload.job
     message.info('已开始回滚')
-    startPolling()
+    installPolling.start()
   } catch (error) {
     message.error(error instanceof Error ? error.message : '启动回滚失败')
     if (error instanceof APIError && error.status === 409) {
       await loadStatus()
-      if (busy.value) startPolling()
+      if (busy.value) installPolling.start()
     }
-  }
-}
-
-// 安装耗时以分钟计，进度靠轮询而不是把请求挂着。
-// 三处必须防住：组件已卸载后才触发、上一次请求还没回来就发下一次、
-// 以及乱序响应把已结束的任务复活。
-function startPolling() {
-  stopPolling()
-  if (unmounted) return
-  let inFlight = false
-  poller = window.setInterval(async () => {
-    if (inFlight) return
-    inFlight = true
-    try {
-      const previous = job.value?.phase
-      await loadStatus()
-      if (unmounted) {
-        stopPolling()
-        return
-      }
-      const phase = job.value?.phase
-      if (phase !== 'downloading' && phase !== 'applying') {
-        stopPolling()
-        if (previous && previous !== phase) {
-          if (phase === 'done') message.success('已完成')
-          else if (phase === 'failed') message.error(job.value?.error || '安装失败')
-        }
-      }
-    } finally {
-      inFlight = false
-    }
-  }, 2000)
-}
-
-function stopPolling() {
-  if (poller) {
-    window.clearInterval(poller)
-    poller = 0
   }
 }
 
@@ -326,48 +307,13 @@ async function updateGeo() {
     const payload = await postJSON<{ job: InstallJob }>('/api/v1/dae/geo', { source: geoSource.value })
     geoJob.value = payload.job
     message.info('已开始更新 geo 数据')
-    startGeoPolling()
+    geoPolling.start()
   } catch (error) {
     message.error(error instanceof Error ? error.message : '启动 geo 更新失败')
     if (error instanceof APIError && error.status === 409) {
       await loadGeo()
-      if (geoBusy.value) startGeoPolling()
+      if (geoBusy.value) geoPolling.start()
     }
-  }
-}
-
-function startGeoPolling() {
-  stopGeoPolling()
-  if (unmounted) return
-  let inFlight = false
-  geoPoller = window.setInterval(async () => {
-    if (inFlight) return
-    inFlight = true
-    try {
-      const previous = geoJob.value?.phase
-      await loadGeo()
-      if (unmounted) {
-        stopGeoPolling()
-        return
-      }
-      const phase = geoJob.value?.phase
-      if (phase !== 'downloading' && phase !== 'applying') {
-        stopGeoPolling()
-        if (previous && previous !== phase) {
-          if (phase === 'done') message.success('geo 数据已更新并生效')
-          else if (phase === 'failed') message.error(geoJob.value?.error || 'geo 更新失败')
-        }
-      }
-    } finally {
-      inFlight = false
-    }
-  }, 2000)
-}
-
-function stopGeoPolling() {
-  if (geoPoller) {
-    window.clearInterval(geoPoller)
-    geoPoller = 0
   }
 }
 
@@ -453,14 +399,13 @@ onMounted(async () => {
   await loadVersions()
   if (unmounted) return
   // 任务可能在本页打开之前就已在跑，这时也要接上轮询
-  if (busy.value) startPolling()
+  if (busy.value) installPolling.start()
   await loadGeo()
-  if (!unmounted && geoBusy.value) startGeoPolling()
+  if (!unmounted && geoBusy.value) geoPolling.start()
 })
+// 轮询的卸载清理由 useJobPolling 自己挂钩，这里只管本组件的加载链
 onBeforeUnmount(() => {
   unmounted = true
-  stopPolling()
-  stopGeoPolling()
 })
 </script>
 

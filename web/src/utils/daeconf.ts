@@ -257,6 +257,12 @@ export function parseEntries(text: string, section: Section): Entry[] {
   return parseSection(text, section).entries
 }
 
+/** 按节名读取内容；节不存在时返回空集而不是 null，调用方无需分支。 */
+export function readSection(text: string, name: string): SectionContents {
+  const section = findSection(text, name)
+  return section ? parseSection(text, section) : { entries: [], unparsedLines: 0 }
+}
+
 export interface SectionContents {
   entries: Entry[]
   /** 无法安全归类为条目、因而未出现在上面列表中的非空行数。 */
