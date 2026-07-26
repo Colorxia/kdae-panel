@@ -15,6 +15,13 @@ coverage.out
 *.log
 *.tsbuildinfo
 
+# E2E（依赖、构建产物与运行痕迹都不入库）
+/e2e/node_modules/
+/e2e/bin/
+/e2e/.work/
+/e2e/test-results/
+/e2e/playwright-report/
+
 # 本地运行数据
 /data/
 /.env
