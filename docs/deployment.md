@@ -51,8 +51,30 @@ sudo systemctl restart kdae-panel
 | `KDAE_PANEL_DATABASE` | `/var/lib/kdae-panel/panel.db` | 认证数据库 |
 | `KDAE_PANEL_BACKUP_DIR` | `/var/lib/kdae-panel/backups` | 配置备份目录 |
 | `KDAE_PANEL_SCHEDULE_FILE` | `/var/lib/kdae-panel/schedule.json` | 订阅自动刷新的设置与上次执行时间 |
+| `KDAE_PANEL_INSTALL_STATE_FILE` | `/var/lib/kdae-panel/dae-install.json` | dae 版本安装记录，同前缀下还存放回滚用的上一版二进制 |
+| `KDAE_PANEL_ENABLE_DAE_INSTALL` | `false` | 允许通过面板安装与切换 dae 版本，开启后还需放宽单元的 `ReadWritePaths` |
 | `KDAE_PANEL_SESSION_TTL` | `12h` | 会话绝对有效期 |
 | `KDAE_PANEL_SECURE_COOKIE` | `false` | Cookie 是否仅允许 HTTPS |
+
+### 启用 dae 版本管理
+
+该功能默认关闭。开启需要两步，缺一不可：
+
+```bash
+# 1. 把 env 文件里已有的那一行改为 true（不要追加，否则会出现两行同名变量）
+sed -i 's/^KDAE_PANEL_ENABLE_DAE_INSTALL=.*/KDAE_PANEL_ENABLE_DAE_INSTALL=true/' \
+  /etc/kdae-panel/kdae-panel.env
+
+# 2. 让面板能写入 dae 可执行文件所在目录（以服务实际启动的路径为准）
+systemctl show dae --property=ExecStart
+systemctl edit kdae-panel    # 追加 ReadWritePaths=/usr/local/bin
+
+systemctl restart kdae-panel
+```
+
+第二步的目录通常在 root 的 `PATH` 上，开放它意味着面板的任何缺陷都可能升级为命令劫持。只在确实需要通过面板切换 dae 版本时才开启；只读部署或用包管理器维护 dae 的场景应保持关闭。
+
+面板只升级或切换已有的 dae，不做首次安装、也不安装 geo 数据文件，这些仍由 [dae-installer](https://github.com/daeuniverse/dae-installer) 负责。
 
 `setup_url` 默认使用面板的直接监听地址。通过 HTTPS 反向代理访问时，保留 `/setup#bootstrap=...` 部分，并将其协议和主机替换为实际面板地址；URL 片段不会发送给反向代理或写入访问日志。
 

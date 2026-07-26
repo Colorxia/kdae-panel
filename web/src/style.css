@@ -447,6 +447,17 @@ pre,
   margin-bottom: 14px;
 }
 
+.source-hint {
+  padding: 12px 16px;
+  font-size: 12px;
+  line-height: 1.6;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.version-label {
+  font-weight: 600;
+}
+
 .orchestration-stats {
   margin-bottom: 16px;
   display: grid;

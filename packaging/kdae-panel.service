@@ -40,6 +40,11 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 CapabilityBoundingSet=CAP_KILL CAP_NET_ADMIN
 AmbientCapabilities=CAP_KILL CAP_NET_ADMIN
 ReadWritePaths=/etc/dae /var/lib/kdae-panel
+# 启用 KDAE_PANEL_ENABLE_DAE_INSTALL 时，还需要让面板能写入 dae 可执行文件
+# 所在目录，请按 systemctl show dae --property=ExecStart 的实际路径追加，例如：
+#   ReadWritePaths=/usr/local/bin
+# 该路径在 root 的 PATH 上，开放它意味着面板的任何缺陷都可能升级为命令劫持，
+# 因此默认不开；不使用版本管理功能时保持现状即可。
 
 [Install]
 WantedBy=multi-user.target

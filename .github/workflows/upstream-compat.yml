@@ -47,3 +47,10 @@ jobs:
           KDAE_CONTRACT_BINARY: ${{ github.workspace }}/upstream/dae-contract
           KDAE_CONTRACT_CONFIG: ${{ github.workspace }}/upstream/example.dae
         run: go test -count=1 -run '^TestUpstreamContract$' -timeout=4m ./internal/dae
+
+      # 版本发现依赖上游的发布命名、.dgst 格式与 Actions 的 digest 字段，
+      # 这些都在面板之外，只有对真实上游跑一遍才能发现它们变了。
+      - name: 验证版本发现契约
+        env:
+          KDAE_UPSTREAM_LIVE: '1'
+        run: go test -count=1 -run '^TestLiveUpstream$' -timeout=4m ./internal/upstream

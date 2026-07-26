@@ -43,6 +43,9 @@ type Status struct {
 	Tasks               uint64 `json:"tasks,omitempty"`
 	Restarts            uint64 `json:"restarts,omitempty"`
 	UnitPath            string `json:"unitPath,omitempty"`
+	// ExecStartPath 是单元实际启动的可执行文件。安装新版本时必须替换这个路径，
+	// 否则会出现"替换成功但服务仍在跑旧二进制"的静默失败。
+	ExecStartPath string `json:"execStartPath,omitempty"`
 }
 
 type LogEntry struct {
@@ -111,6 +114,7 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 		"TasksCurrent",
 		"NRestarts",
 		"FragmentPath",
+		"ExecStart",
 	}, ",")
 	result, err := m.run(ctx, m.systemctl, "show", m.serviceName, "--no-page", "--property="+properties)
 	if err != nil {
@@ -133,8 +137,20 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 		Tasks:               parseUint(values["TasksCurrent"]),
 		Restarts:            parseUint(values["NRestarts"]),
 		UnitPath:            values["FragmentPath"],
+		ExecStartPath:       parseExecStartPath(values["ExecStart"]),
 	}
 	return status, nil
+}
+
+// parseExecStartPath 从 systemd 的 ExecStart 属性里取出可执行文件路径。
+// 形如：{ path=/usr/local/bin/dae ; argv[]=/usr/local/bin/dae run ; ... }
+func parseExecStartPath(value string) string {
+	_, rest, found := strings.Cut(value, "path=")
+	if !found {
+		return ""
+	}
+	path, _, _ := strings.Cut(rest, ";")
+	return strings.TrimSpace(path)
 }
 
 func (m *Manager) Action(ctx context.Context, action Action) error {

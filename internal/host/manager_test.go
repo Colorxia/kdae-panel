@@ -27,9 +27,9 @@ func (r *fakeRunner) Run(_ context.Context, name string, args ...string) (comman
 }
 
 func TestStatus(t *testing.T) {
-	key := "systemctl show dae --no-page --property=Id,Description,LoadState,ActiveState,SubState,UnitFileState,MainPID,ExecMainStatus,ActiveEnterTimestamp,ExecMainStartTimestamp,MemoryCurrent,CPUUsageNSec,TasksCurrent,NRestarts,FragmentPath"
+	key := "systemctl show dae --no-page --property=Id,Description,LoadState,ActiveState,SubState,UnitFileState,MainPID,ExecMainStatus,ActiveEnterTimestamp,ExecMainStartTimestamp,MemoryCurrent,CPUUsageNSec,TasksCurrent,NRestarts,FragmentPath,ExecStart"
 	runner := &fakeRunner{results: map[string]command.Result{
-		key: {Stdout: "Id=dae.service\nDescription=dae Service\nLoadState=loaded\nActiveState=active\nSubState=running\nMainPID=123\nMemoryCurrent=4096\nCPUUsageNSec=8000\nTasksCurrent=7\nNRestarts=2\n"},
+		key: {Stdout: "Id=dae.service\nDescription=dae Service\nLoadState=loaded\nActiveState=active\nSubState=running\nMainPID=123\nMemoryCurrent=4096\nCPUUsageNSec=8000\nTasksCurrent=7\nNRestarts=2\nExecStart={ path=/usr/local/bin/dae ; argv[]=/usr/local/bin/dae run --disable-timestamp ; ignore_errors=no }\n"},
 	}, errors: map[string]error{}}
 	manager, err := NewManagerWithRunner("dae", "systemctl", "journalctl", runner, time.Second)
 	if err != nil {
@@ -42,6 +42,24 @@ func TestStatus(t *testing.T) {
 	}
 	if status.Name != "dae.service" || status.ActiveState != "active" || status.MainPID != 123 || status.MemoryBytes != 4096 || status.Restarts != 2 {
 		t.Fatalf("状态解析异常: %+v", status)
+	}
+	// 安装新版本时要替换的正是这个路径，解析错会导致"装了但没换"
+	if status.ExecStartPath != "/usr/local/bin/dae" {
+		t.Fatalf("ExecStart 路径解析 = %q", status.ExecStartPath)
+	}
+}
+
+func TestParseExecStartPath(t *testing.T) {
+	cases := map[string]string{
+		"{ path=/usr/local/bin/dae ; argv[]=/usr/local/bin/dae run ; ignore_errors=no }": "/usr/local/bin/dae",
+		"{ path=/usr/bin/dae ; argv[]=/usr/bin/dae run -c /etc/dae/config.dae }":         "/usr/bin/dae",
+		"":                            "",
+		"{ argv[]=/usr/bin/dae run }": "",
+	}
+	for input, want := range cases {
+		if got := parseExecStartPath(input); got != want {
+			t.Fatalf("parseExecStartPath(%q) = %q，期望 %q", input, got, want)
+		}
 	}
 }
 

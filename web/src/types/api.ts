@@ -85,6 +85,55 @@ export interface ConfigBackup {
   sourcePath: string
 }
 
+export type UpstreamSource = 'official' | 'kdae'
+
+export interface UpstreamVersion {
+  source: UpstreamSource
+  ref: string
+  label: string
+  description?: string
+  publishedAt: string
+  prerelease?: boolean
+  installable: boolean
+  note?: string
+  expiresAt?: string
+}
+
+export interface InstalledState {
+  source?: UpstreamSource
+  ref?: string
+  label?: string
+  version?: string
+  installedAt?: string
+  sha256?: string
+}
+
+export interface InstallStatus {
+  binaryPath?: string
+  platform: string
+  ready: boolean
+  present: boolean
+  version?: string
+  managed?: InstalledState
+  drifted?: boolean
+  rollbackAvailable: boolean
+  serviceActive: boolean
+  warnings?: string[]
+  problem?: string
+}
+
+export type InstallPhase = 'idle' | 'downloading' | 'applying' | 'done' | 'failed'
+
+export interface InstallJob {
+  phase: InstallPhase
+  source?: string
+  ref?: string
+  label?: string
+  startedAt?: string
+  endedAt?: string
+  error?: string
+}
+
 export interface ReloadSchedule {
   enabled: boolean
   intervalMinutes: number

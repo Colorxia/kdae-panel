@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"strings"
+	"time"
 )
 
 const defaultOutputLimit = 8 << 20
@@ -51,6 +54,10 @@ func (r ExecRunner) run(ctx context.Context, dir, name string, args ...string) (
 	cmd.Dir = dir
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	cmd.Env = childEnvironment()
+	// 子进程若把管道交给孙进程，Wait 会一直挂着；超时后给一个宽限期就放弃等待，
+	// 否则持有全局控制锁的调用方会被拖死。
+	cmd.WaitDelay = 5 * time.Second
 
 	err := cmd.Run()
 	result := Result{
@@ -66,6 +73,27 @@ func (r ExecRunner) run(ctx context.Context, dir, name string, args ...string) (
 	}
 	return result, nil
 }
+
+// childEnvironment 传给子进程的环境变量。
+//
+// 面板由 systemd 经 EnvironmentFile 启动，自身环境里含有 KDAE_PANEL_ 前缀的
+// 配置，其中 KDAE_PANEL_BOOTSTRAP_TOKEN 是初始化凭据。这些不该交给任何子进程，
+// 尤其是刚从上游下载、尚未建立信任的 dae 可执行文件。其余变量（PATH、代理设置、
+// 语言环境等）照常继承，避免破坏 dae 拉取订阅等既有行为。
+func childEnvironment() []string {
+	environment := os.Environ()
+	filtered := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, panelPrefix) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+// panelPrefix 是面板自身配置的环境变量前缀，一律不传给子进程。
+const panelPrefix = "KDAE_PANEL_"
 
 func exitCode(err error) int {
 	if err == nil {

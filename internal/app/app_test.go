@@ -11,15 +11,18 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/tuoro/kdae-panel/internal/auth"
 	"github.com/tuoro/kdae-panel/internal/configstore"
 	"github.com/tuoro/kdae-panel/internal/dae"
+	"github.com/tuoro/kdae-panel/internal/daeinstall"
 	"github.com/tuoro/kdae-panel/internal/host"
 	"github.com/tuoro/kdae-panel/internal/netprobe"
 	"github.com/tuoro/kdae-panel/internal/schedule"
+	"github.com/tuoro/kdae-panel/internal/upstream"
 )
 
 type stubDaeService struct {
@@ -480,6 +483,178 @@ func TestScheduleRunnerWiredWithOperationsLock(t *testing.T) {
 	}
 	if !status.Enabled || status.NextRunAt.IsZero() {
 		t.Fatalf("更新后应排期下一轮: %+v", status)
+	}
+}
+
+type stubInstallService struct {
+	status   daeinstall.Status
+	versions []upstream.Version
+	binary   []byte
+	err      error
+	release  chan struct{}
+	// 安装在后台 goroutine 里执行，测试主协程会同时读取记录，必须加锁。
+	mu        sync.Mutex
+	installed []string
+}
+
+func (s *stubInstallService) record(entry string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.installed = append(s.installed, entry)
+}
+
+func (s *stubInstallService) records() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.installed...)
+}
+
+func (s *stubInstallService) Status(context.Context) daeinstall.Status {
+	return s.status
+}
+
+func (s *stubInstallService) Versions(_ context.Context, source upstream.Source, _ int) ([]upstream.Version, error) {
+	return s.versions, s.err
+}
+
+func (s *stubInstallService) Download(context.Context, upstream.Source, string) ([]byte, error) {
+	if s.release != nil {
+		<-s.release
+	}
+	return s.binary, s.err
+}
+
+func (s *stubInstallService) Install(_ context.Context, _ []byte, source upstream.Source, ref, _ string) (daeinstall.Status, error) {
+	s.record(string(source) + ":" + ref)
+	return s.status, s.err
+}
+
+func (s *stubInstallService) Rollback(context.Context) (daeinstall.Status, error) {
+	s.record("rollback")
+	return s.status, s.err
+}
+
+func newInstallApp(t *testing.T, service InstallService) *App {
+	t.Helper()
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{Dae: stubDaeService{}, Install: service},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return application
+}
+
+func TestDaeInstallDisabledByDefault(t *testing.T) {
+	// 未注入安装服务即代表功能关闭，所有相关端点都必须明确拒绝
+	application := newInstallApp(t, nil)
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/api/v1/dae/install", nil),
+		httptest.NewRequest(http.MethodGet, "/api/v1/dae/versions?source=official", nil),
+		httptest.NewRequest(http.MethodPost, "/api/v1/dae/install", strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)),
+		httptest.NewRequest(http.MethodPost, "/api/v1/dae/rollback", nil),
+	} {
+		recorder := httptest.NewRecorder()
+		application.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s %s 状态码 = %d，期望 503", request.Method, request.URL.Path, recorder.Code)
+		}
+		if !strings.Contains(recorder.Body.String(), "dae_install_disabled") {
+			t.Fatalf("响应应说明功能未启用: %s", recorder.Body.String())
+		}
+	}
+}
+
+func TestDaeVersionsRejectsUnknownSource(t *testing.T) {
+	application := newInstallApp(t, &stubInstallService{})
+	for _, query := range []string{"", "?source=", "?source=../etc", "?source=evil"} {
+		recorder := httptest.NewRecorder()
+		application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/dae/versions"+query, nil))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("source=%q 状态码 = %d，期望 400", query, recorder.Code)
+		}
+	}
+}
+
+func TestDaeInstallRunsAsynchronously(t *testing.T) {
+	service := &stubInstallService{binary: []byte("v2")}
+	application := newInstallApp(t, service)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/dae/install", strings.NewReader(`{"source":"kdae","ref":"30187784287","label":"d63a0c1"}`))
+	application.Handler().ServeHTTP(recorder, request)
+	// 安装耗时以分钟计，必须立即返回而不是把请求挂着
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("状态码 = %d，期望 202，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(service.records()) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if installed := service.records(); len(installed) != 1 || installed[0] != "kdae:30187784287" {
+		t.Fatalf("安装调用 = %v", installed)
+	}
+}
+
+func TestDaeInstallRejectsConcurrentJobs(t *testing.T) {
+	release := make(chan struct{})
+	service := &stubInstallService{binary: []byte("v2"), release: release}
+	application := newInstallApp(t, service)
+	body := func() *strings.Reader {
+		return strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)
+	}
+
+	first := httptest.NewRecorder()
+	application.Handler().ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/api/v1/dae/install", body()))
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("首个任务状态码 = %d", first.Code)
+	}
+
+	second := httptest.NewRecorder()
+	application.Handler().ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/api/v1/dae/install", body()))
+	if second.Code != http.StatusConflict {
+		t.Fatalf("并发任务状态码 = %d，期望 409", second.Code)
+	}
+	close(release)
+}
+
+func TestDaeInstallRequiresAuthentication(t *testing.T) {
+	session := auth.Session{Token: "session", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour), User: auth.User{ID: 1, Username: "admin"}}
+	service := &stubInstallService{}
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{
+			Dae:            stubDaeService{},
+			Install:        service,
+			Authentication: &stubAuthenticationService{initialized: true, session: session},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	anonymous := httptest.NewRecorder()
+	application.Handler().ServeHTTP(anonymous, httptest.NewRequest(http.MethodPost, "/api/v1/dae/install", strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)))
+	if anonymous.Code != http.StatusUnauthorized {
+		t.Fatalf("未登录状态码 = %d", anonymous.Code)
+	}
+
+	withoutCSRF := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/dae/install", strings.NewReader(`{"source":"official","ref":"v2.0.0"}`))
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: session.Token})
+	application.Handler().ServeHTTP(withoutCSRF, request)
+	if withoutCSRF.Code != http.StatusForbidden {
+		t.Fatalf("缺少 CSRF 状态码 = %d", withoutCSRF.Code)
+	}
+	if installed := service.records(); len(installed) != 0 {
+		t.Fatalf("未授权请求不应触发安装: %v", installed)
 	}
 }
 

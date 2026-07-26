@@ -17,6 +17,7 @@ import {
 import {
   ArchiveOutline,
   CodeSlashOutline,
+  CubeOutline,
   DocumentTextOutline,
   GitNetworkOutline,
   GridOutline,
@@ -45,6 +46,7 @@ const menuOptions: MenuOption[] = [
   menuLink('代理编排', 'orchestration', GitNetworkOutline),
   menuLink('配置管理', 'config', DocumentTextOutline),
   menuLink('配置能力', 'schema', CodeSlashOutline),
+  menuLink('dae 版本', 'versions', CubeOutline),
   menuLink('运行日志', 'logs', ReaderOutline),
   menuLink('配置备份', 'backups', ArchiveOutline),
   menuLink('安全设置', 'settings', SettingsOutline),

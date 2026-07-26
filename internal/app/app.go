@@ -19,9 +19,11 @@ import (
 	"github.com/tuoro/kdae-panel/internal/auth"
 	"github.com/tuoro/kdae-panel/internal/configstore"
 	"github.com/tuoro/kdae-panel/internal/dae"
+	"github.com/tuoro/kdae-panel/internal/daeinstall"
 	"github.com/tuoro/kdae-panel/internal/host"
 	"github.com/tuoro/kdae-panel/internal/netprobe"
 	"github.com/tuoro/kdae-panel/internal/schedule"
+	"github.com/tuoro/kdae-panel/internal/upstream"
 	"github.com/tuoro/kdae-panel/internal/webui"
 )
 
@@ -54,6 +56,7 @@ type Dependencies struct {
 	Authentication AuthenticationService
 	Probe          ProbeService
 	Schedule       ScheduleService
+	Install        InstallService
 }
 
 type AuthenticationService interface {
@@ -101,13 +104,29 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		}
 		logger.Warn("首次初始化请打开一次性链接", "setup_url", bootstrapSetupURL(cfg.ListenAddress, cfg.BootstrapToken))
 	}
-	application, err := NewWithDependencies(cfg, logger, Dependencies{
+	dependencies := Dependencies{
 		Dae:            daeClient,
 		Configuration:  configuration,
 		Host:           hostManager,
 		Authentication: authStore,
 		Probe:          netprobe.New(),
-	})
+	}
+	if cfg.EnableDaeInstall {
+		installer, err := daeinstall.New(daeinstall.Options{
+			BinaryPath: cfg.DaeBinary,
+			ConfigPath: cfg.DaeConfigPath,
+			StatePath:  cfg.InstallStatePath,
+			Fetcher:    upstream.NewDefaultRegistry(),
+			Service:    hostManager,
+			Logger:     logger,
+		})
+		if err != nil {
+			_ = authStore.Close()
+			return nil, fmt.Errorf("初始化 dae 版本管理: %w", err)
+		}
+		dependencies.Install = installer
+	}
+	application, err := NewWithDependencies(cfg, logger, dependencies)
 	if err != nil {
 		_ = authStore.Close()
 		return nil, err
@@ -168,6 +187,7 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 	registerServiceRoutes(router, dependencies.Dae, dependencies.Host, operations)
 	registerProbeRoutes(router, dependencies.Probe, logger)
 	registerScheduleRoutes(router, scheduleService)
+	registerUpstreamRoutes(router, dependencies.Install, operations, logger)
 	registerAuthenticationRoutes(router, dependencies.Authentication, cfg.SecureCookie, cfg.BootstrapToken, proxyTrust)
 	apiNotFound := func(writer http.ResponseWriter, _ *http.Request) {
 		writeAPIError(writer, http.StatusNotFound, "api_not_found", "API 路径不存在")

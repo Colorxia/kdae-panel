@@ -63,6 +63,31 @@ X-CSRF-Token: <csrfToken>
 | `422` | `configuration_invalid` | dae 拒绝候选配置 |
 | `502` | `configuration_apply_failed` | 保存后重载失败，响应包含回滚状态 |
 
+## dae 版本管理
+
+默认关闭。未设置 `KDAE_PANEL_ENABLE_DAE_INSTALL=true` 时，以下接口一律返回 `503 dae_install_disabled`。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/dae/install` | 当前安装状态与正在进行的任务 |
+| `GET` | `/dae/versions?source=official\|kdae` | 列出可安装版本 |
+| `POST` | `/dae/install` | 开始安装指定版本 |
+| `POST` | `/dae/rollback` | 回滚到上一版本 |
+
+安装请求体：
+
+```json
+{ "source": "kdae", "ref": "30187784287", "label": "d63a0c1" }
+```
+
+`source` 只接受 `official` 与 `kdae` 两个枚举值，仓库地址在代码中写死，不接受外部指定。`ref` 对官方来源是发布 tag，对 kdae 是构建编号。
+
+安装与回滚耗时以分钟计，远超 HTTP 写超时，因此立即返回 `202` 与任务快照，由客户端轮询 `GET /dae/install` 获取进度。任务阶段依次为 `downloading`、`applying`，终态为 `done` 或 `failed`。同一时刻只允许一个任务，重复提交返回 `409 install_in_progress`。
+
+下载与校验不占用全局控制门，只有替换与重启阶段才进入串行区，避免几十兆的下载把配置保存一并堵住。
+
+校验和缺失或格式不符时拒绝安装，没有跳过校验的开关。kdae 的构建产物保留 90 天，过期版本在列表中标记为不可安装。
+
 ## 订阅自动刷新
 
 | 方法 | 路径 | 说明 |

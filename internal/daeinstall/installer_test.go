@@ -1,0 +1,373 @@
+package daeinstall
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/tuoro/kdae-panel/internal/dae"
+	"github.com/tuoro/kdae-panel/internal/host"
+	"github.com/tuoro/kdae-panel/internal/upstream"
+)
+
+type fakeFetcher struct {
+	binary []byte
+}
+
+func (f *fakeFetcher) List(context.Context, upstream.Source, int) ([]upstream.Version, error) {
+	return nil, nil
+}
+
+func (f *fakeFetcher) Resolve(context.Context, upstream.Source, string, upstream.Platform) (upstream.Asset, error) {
+	return upstream.Asset{}, nil
+}
+
+func (f *fakeFetcher) Fetch(context.Context, upstream.Asset) ([]byte, error) {
+	return f.binary, nil
+}
+
+// fakeProbe 按二进制内容决定行为，从而模拟"新版本跑不起来/不认配置"。
+type fakeProbe struct {
+	content string
+}
+
+func (p fakeProbe) Inspect(context.Context) dae.Report {
+	if strings.Contains(p.content, "broken") {
+		return dae.Report{Problem: "无法执行"}
+	}
+	return dae.Report{Available: true, Version: "dae " + p.content}
+}
+
+func (p fakeProbe) Validate(context.Context, string) error {
+	if strings.Contains(p.content, "rejects-config") {
+		return errors.New("配置里有新版本不认识的字段")
+	}
+	return nil
+}
+
+type fakeService struct {
+	execStart string
+	actions   []host.Action
+	// failFrom 表示从第几次状态查询开始返回非 active，0 表示始终 active。
+	failFrom int
+	calls    int
+}
+
+func (s *fakeService) Action(_ context.Context, action host.Action) error {
+	s.actions = append(s.actions, action)
+	return nil
+}
+
+func (s *fakeService) Status(context.Context) (host.Status, error) {
+	s.calls++
+	state := "active"
+	if s.failFrom > 0 && s.calls >= s.failFrom {
+		state = "failed"
+	}
+	return host.Status{ActiveState: state, SubState: "running", ExecStartPath: s.execStart}, nil
+}
+
+func newTestInstaller(t *testing.T, fetcher *fakeFetcher, service *fakeService) (*Installer, string) {
+	t.Helper()
+	directory := t.TempDir()
+	binaryPath := filepath.Join(directory, "bin", "dae")
+	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	service.execStart = binaryPath
+
+	installer, err := New(Options{
+		BinaryPath: binaryPath,
+		ConfigPath: filepath.Join(directory, "config.dae"),
+		StatePath:  filepath.Join(directory, "state", "dae-install.json"),
+		Fetcher:    fetcher,
+		Service:    service,
+		NewProbe: func(path string) Probe {
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return fakeProbe{content: "broken"}
+			}
+			return fakeProbe{content: string(content)}
+		},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 测试不必真的观察十秒，但仍多次采样以覆盖"起来后又崩"的判定
+	installer.health = 3 * time.Millisecond
+	installer.interval = time.Millisecond
+	if err := os.WriteFile(filepath.Join(directory, "config.dae"), []byte("global {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return installer, binaryPath
+}
+
+// elf 构造带 ELF 魔数的假二进制。安装事务会拒绝替换非 ELF 目标
+// （ExecStart 可能指向名叫 dae 的启动脚本），因此测试数据必须真实。
+func elf(content string) []byte {
+	return append([]byte("\x7fELF"), content...)
+}
+
+// seed 预置一个"已安装"的 dae，因为面板只做升级与切换，不做首次安装。
+func seed(t *testing.T, installer *Installer, binaryPath, content string) {
+	t.Helper()
+	if err := os.WriteFile(binaryPath, elf(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInstallUpgrade(t *testing.T) {
+	fetcher := &fakeFetcher{}
+	service := &fakeService{}
+	installer, binaryPath := newTestInstaller(t, fetcher, service)
+	seed(t, installer, binaryPath, "v1")
+
+	status, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2.0.0")
+	if err != nil {
+		t.Fatalf("升级失败: %v", err)
+	}
+	content, err := os.ReadFile(binaryPath)
+	if err != nil || string(content) != string(elf("v2")) {
+		t.Fatalf("二进制内容 = %q, err = %v", content, err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(binaryPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			t.Fatalf("二进制应可执行，权限 = %v", info.Mode().Perm())
+		}
+	}
+	if !status.Present || status.Managed == nil || status.Managed.Ref != "v2.0.0" {
+		t.Fatalf("状态异常: %+v", status)
+	}
+	if !status.RollbackAvailable {
+		t.Fatal("升级后应可回滚")
+	}
+	if len(service.actions) != 1 || service.actions[0] != host.ActionRestart {
+		t.Fatalf("应当重启服务（eBPF 需重新挂载），实际 %v", service.actions)
+	}
+}
+
+func TestInstallTargetsServiceExecStartNotConfiguredPath(t *testing.T) {
+	fetcher := &fakeFetcher{}
+	service := &fakeService{}
+	installer, configured := newTestInstaller(t, fetcher, service)
+	seed(t, installer, configured, "v1")
+
+	// 服务实际启动的是另一个目录下的 dae：必须替换它，
+	// 否则会出现"装成功但仍跑旧版本"的静默假成功
+	actualDir := filepath.Join(filepath.Dir(filepath.Dir(configured)), "usr-local-bin")
+	if err := os.MkdirAll(actualDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	actual := filepath.Join(actualDir, "dae")
+	if err := os.WriteFile(actual, elf("running"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	service.execStart = actual
+
+	status, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2.0.0")
+	if err != nil {
+		t.Fatalf("安装失败: %v", err)
+	}
+	if content, _ := os.ReadFile(actual); string(content) != string(elf("v2")) {
+		t.Fatalf("应替换服务实际启动的文件，其内容 = %q", content)
+	}
+	if content, _ := os.ReadFile(configured); string(content) != string(elf("v1")) {
+		t.Fatalf("配置项指向的文件不应被动，其内容 = %q", content)
+	}
+	if status.BinaryPath != actual {
+		t.Fatalf("报告的路径 = %q，应为服务实际启动的 %q", status.BinaryPath, actual)
+	}
+	// 两者不一致必须提示，否则用户不知道自己改的是哪个
+	if len(status.Warnings) == 0 {
+		t.Fatal("路径不一致时应给出警告")
+	}
+}
+
+func TestInstallRefusesUnrelatedExecStartTarget(t *testing.T) {
+	fetcher := &fakeFetcher{}
+	service := &fakeService{}
+	installer, binaryPath := newTestInstaller(t, fetcher, service)
+	seed(t, installer, binaryPath, "v1")
+
+	// 单元配置有误、ExecStart 指向别的程序时，覆盖它就是在破坏无关软件
+	unrelated := filepath.Join(filepath.Dir(binaryPath), "some-other-daemon")
+	if err := os.WriteFile(unrelated, []byte("not dae"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	service.execStart = unrelated
+
+	_, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2.0.0")
+	if err == nil || !strings.Contains(err.Error(), "为避免覆盖无关程序") {
+		t.Fatalf("非 dae 目标应被拒绝，得到 %v", err)
+	}
+	if content, _ := os.ReadFile(unrelated); string(content) != "not dae" {
+		t.Fatalf("无关文件不应被改动，内容 = %q", content)
+	}
+}
+
+func TestInstallRefusesWhenServiceHasNoExecStart(t *testing.T) {
+	fetcher := &fakeFetcher{}
+	service := &fakeService{}
+	installer, _ := newTestInstaller(t, fetcher, service)
+	service.execStart = "" // dae 尚未作为 systemd 服务安装
+
+	_, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2.0.0")
+	if err == nil || !strings.Contains(err.Error(), "尚未作为 systemd 服务安装") {
+		t.Fatalf("没有服务时应拒绝安装，得到 %v", err)
+	}
+	if status := installer.Status(context.Background()); status.Ready {
+		t.Fatalf("没有服务时不应报告就绪: %+v", status)
+	}
+}
+
+func TestInstallRefusesFirstTimeInstall(t *testing.T) {
+	fetcher := &fakeFetcher{}
+	service := &fakeService{}
+	installer, binaryPath := newTestInstaller(t, fetcher, service)
+	// 目标不存在：面板不做首次安装，也不去猜该往哪装
+	_ = os.Remove(binaryPath)
+
+	_, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2.0.0")
+	if err == nil || !strings.Contains(err.Error(), "首次安装") {
+		t.Fatalf("目标不存在时应指引用官方安装器，得到 %v", err)
+	}
+}
+
+func TestInstallRejectsBinaryThatCannotRun(t *testing.T) {
+	fetcher := &fakeFetcher{}
+	service := &fakeService{}
+	installer, binaryPath := newTestInstaller(t, fetcher, service)
+	seed(t, installer, binaryPath, "v1")
+
+	_, err := installer.Install(context.Background(), elf("broken"), upstream.SourceOfficial, "v9.9.9", "v9.9.9")
+	if err == nil || !strings.Contains(err.Error(), "无法运行") {
+		t.Fatalf("跑不起来的版本应在替换前被拒绝，得到 %v", err)
+	}
+	if content, _ := os.ReadFile(binaryPath); string(content) != string(elf("v1")) {
+		t.Fatalf("失败后磁盘内容 = %q，应保持不变", content)
+	}
+	if len(service.actions) != 0 {
+		t.Fatalf("预检失败不应触发重启，实际 %v", service.actions)
+	}
+}
+
+func TestInstallRejectsBinaryThatRejectsConfig(t *testing.T) {
+	fetcher := &fakeFetcher{}
+	service := &fakeService{}
+	installer, binaryPath := newTestInstaller(t, fetcher, service)
+	seed(t, installer, binaryPath, "v1")
+
+	_, err := installer.Install(context.Background(), elf("rejects-config"), upstream.SourceOfficial, "v3.0.0", "v3.0.0")
+	if err == nil || !strings.Contains(err.Error(), "拒绝当前配置") {
+		t.Fatalf("不认配置的版本应被拒绝，得到 %v", err)
+	}
+	if content, _ := os.ReadFile(binaryPath); string(content) != string(elf("v1")) {
+		t.Fatalf("失败后磁盘内容 = %q，应保持不变", content)
+	}
+}
+
+func TestInstallRollsBackWhenServiceFailsToStart(t *testing.T) {
+	fetcher := &fakeFetcher{}
+	// 前两次状态查询用于 target 解析与预检，从第三次起模拟服务起不来
+	service := &fakeService{failFrom: 3}
+	installer, binaryPath := newTestInstaller(t, fetcher, service)
+	seed(t, installer, binaryPath, "v1")
+
+	_, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2.0.0")
+	if err == nil {
+		t.Fatal("服务起不来时安装应失败")
+	}
+	var applyErr *ApplyError
+	if !errors.As(err, &applyErr) {
+		t.Fatalf("应返回 ApplyError，得到 %T: %v", err, err)
+	}
+	if content, _ := os.ReadFile(binaryPath); string(content) != string(elf("v1")) {
+		t.Fatalf("回滚后磁盘内容 = %q，应恢复为旧版本", content)
+	}
+}
+
+func TestRollbackRestoresPreviousVersion(t *testing.T) {
+	fetcher := &fakeFetcher{}
+	service := &fakeService{}
+	installer, binaryPath := newTestInstaller(t, fetcher, service)
+	seed(t, installer, binaryPath, "v1")
+
+	if _, err := installer.Install(context.Background(), elf("v2"), upstream.SourceKdae, "30187784287", "d63a0c1"); err != nil {
+		t.Fatal(err)
+	}
+	rolled, err := installer.Rollback(context.Background())
+	if err != nil {
+		t.Fatalf("回滚失败: %v", err)
+	}
+	if content, _ := os.ReadFile(binaryPath); string(content) != string(elf("v1")) {
+		t.Fatalf("回滚后内容 = %q", content)
+	}
+	if !rolled.Present {
+		t.Fatalf("回滚后状态异常: %+v", rolled)
+	}
+}
+
+func TestRollbackWithoutBackup(t *testing.T) {
+	installer, binaryPath := newTestInstaller(t, &fakeFetcher{}, &fakeService{})
+	seed(t, installer, binaryPath, "v1")
+	if _, err := installer.Rollback(context.Background()); err == nil {
+		t.Fatal("没有备份时回滚应报错")
+	}
+}
+
+func TestStatusDetectsExternalReplacement(t *testing.T) {
+	fetcher := &fakeFetcher{}
+	service := &fakeService{}
+	installer, binaryPath := newTestInstaller(t, fetcher, service)
+	seed(t, installer, binaryPath, "v1")
+	if _, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if status := installer.Status(context.Background()); status.Drifted {
+		t.Fatal("刚装完不应报告被外部替换")
+	}
+
+	// 模拟有人绕过面板手动换了二进制
+	if err := os.WriteFile(binaryPath, []byte("manually-replaced"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	status := installer.Status(context.Background())
+	if !status.Drifted {
+		t.Fatal("外部替换后应被识别出来")
+	}
+	if !status.Present || !status.Ready {
+		t.Fatalf("文件仍在，应报告已就绪: %+v", status)
+	}
+}
+
+func TestInstallRejectsEmptyBinary(t *testing.T) {
+	installer, binaryPath := newTestInstaller(t, &fakeFetcher{}, &fakeService{})
+	seed(t, installer, binaryPath, "v1")
+	if _, err := installer.Install(context.Background(), nil, upstream.SourceOfficial, "v1.0.0", "v1.0.0"); err == nil {
+		t.Fatal("空内容应被拒绝")
+	}
+}
+
+func TestDownloadReturnsVerifiedBinary(t *testing.T) {
+	fetcher := &fakeFetcher{binary: elf("v2")}
+	installer, _ := newTestInstaller(t, fetcher, &fakeService{})
+	binary, err := installer.Download(context.Background(), upstream.SourceOfficial, "v2.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(binary) != string(elf("v2")) {
+		t.Fatalf("下载内容 = %q", binary)
+	}
+}

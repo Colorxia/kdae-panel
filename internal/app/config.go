@@ -15,8 +15,14 @@ type Config struct {
 	Journalctl     string
 	DatabasePath   string
 	SchedulePath   string
-	SessionTTL     time.Duration
-	SecureCookie   bool
+	// InstallStatePath 记录面板装了哪个 dae 版本，并存放回滚用的上一版二进制。
+	InstallStatePath string
+	SessionTTL       time.Duration
+	SecureCookie     bool
+	// EnableDaeInstall 打开通过面板安装与切换 dae 版本的能力。
+	// 默认关闭：它要求放宽面板单元的 ReadWritePaths 才能写入 dae 所在目录，
+	// 不使用这个功能的部署不该承担那份放宽。
+	EnableDaeInstall bool
 }
 
 func DefaultConfig() Config {
@@ -32,7 +38,9 @@ func DefaultConfig() Config {
 		Journalctl:     "journalctl",
 		DatabasePath:   "/var/lib/kdae-panel/panel.db",
 		SchedulePath:   "/var/lib/kdae-panel/schedule.json",
-		SessionTTL:     12 * time.Hour,
+		// 上一版二进制也放在这个前缀下，因此目录必须在 ReadWritePaths 内。
+		InstallStatePath: "/var/lib/kdae-panel/dae-install.json",
+		SessionTTL:       12 * time.Hour,
 	}
 }
 
@@ -70,6 +78,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.SchedulePath == "" {
 		c.SchedulePath = defaults.SchedulePath
+	}
+	if c.InstallStatePath == "" {
+		c.InstallStatePath = defaults.InstallStatePath
 	}
 	if c.SessionTTL <= 0 {
 		c.SessionTTL = defaults.SessionTTL
