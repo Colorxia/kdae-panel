@@ -60,6 +60,7 @@ type Dependencies struct {
 	GeoSchedule    ScheduleService
 	Install        InstallService
 	Geo            GeoService
+	PanelRelease   PanelReleaseChecker
 }
 
 type AuthenticationService interface {
@@ -217,6 +218,13 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 			"version": cfg.Version,
 		})
 	})
+	panelRelease := dependencies.PanelRelease
+	if panelRelease == nil && !cfg.DisableUpdateCheck {
+		panelRelease = func(ctx context.Context) (string, error) {
+			return upstream.LatestPanelRelease(ctx, panelRepoOwner, panelRepoName)
+		}
+	}
+	registerPanelUpdateRoutes(router, cfg.Version, panelRelease)
 	router.HandleFunc("GET /api/v1/dae/capabilities", func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, http.StatusOK, dependencies.Dae.Inspect(request.Context()))
 	})

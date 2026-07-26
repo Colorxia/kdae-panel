@@ -721,6 +721,15 @@ pre,
   white-space: pre-wrap;
 }
 
+.update-banner {
+  width: min(1440px, 100%);
+  margin: 0 auto 16px;
+}
+
+.update-banner a {
+  color: var(--accent);
+}
+
 @media (max-width: 820px) {
   .auth-page {
     grid-template-columns: 1fr;

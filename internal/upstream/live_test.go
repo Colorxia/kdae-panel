@@ -128,3 +128,21 @@ func TestLiveGeoUpstream(t *testing.T) {
 		})
 	}
 }
+
+// TestLivePanelRelease 验证面板自身新版本检查的契约：releases/latest 的
+// 响应形状与 tag 命名。tag 不是 vX.Y.Z 时，前端的升级提醒会静默失效。
+func TestLivePanelRelease(t *testing.T) {
+	if os.Getenv("KDAE_UPSTREAM_LIVE") == "" {
+		t.Skip("未设置 KDAE_UPSTREAM_LIVE")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	tag, err := LatestPanelRelease(ctx, "tuoro", "kdae-panel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(tag, "v") || strings.Count(tag, ".") != 2 {
+		t.Fatalf("最新发布 tag = %q，不符合 vX.Y.Z 约定", tag)
+	}
+}

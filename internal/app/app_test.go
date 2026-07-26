@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -798,6 +799,99 @@ func TestDaeInstallRejectsConcurrentJobs(t *testing.T) {
 		t.Fatalf("并发任务状态码 = %d，期望 409", second.Code)
 	}
 	close(release)
+}
+
+func newUpdateCheckApp(t *testing.T, version string, checker PanelReleaseChecker) *App {
+	t.Helper()
+	application, err := NewWithDependencies(
+		Config{Version: version},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{Dae: stubDaeService{}, PanelRelease: checker},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return application
+}
+
+func fetchPanelUpdate(t *testing.T, application *App) map[string]any {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/panel/update", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+// 新版本检查：结果必须缓存，dev 构建不联网也不提示。
+func TestPanelUpdateCheck(t *testing.T) {
+	var calls atomic.Int64
+	application := newUpdateCheckApp(t, "v0.1.2", func(context.Context) (string, error) {
+		calls.Add(1)
+		return "v0.2.0", nil
+	})
+
+	payload := fetchPanelUpdate(t, application)
+	if payload["updateAvailable"] != true || payload["latest"] != "v0.2.0" {
+		t.Fatalf("应提示新版本，实际 %v", payload)
+	}
+	// 第二次请求走缓存，检查函数不得再被调用
+	fetchPanelUpdate(t, application)
+	if calls.Load() != 1 {
+		t.Fatalf("检查函数被调用 %d 次，期望缓存后只有 1 次", calls.Load())
+	}
+}
+
+func TestPanelUpdateCheckSkipsDevBuild(t *testing.T) {
+	var calls atomic.Int64
+	application := newUpdateCheckApp(t, "dev", func(context.Context) (string, error) {
+		calls.Add(1)
+		return "v9.9.9", nil
+	})
+	payload := fetchPanelUpdate(t, application)
+	if payload["updateAvailable"] != false {
+		t.Fatalf("dev 构建不应提示升级，实际 %v", payload)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("dev 构建不应发起联网检查")
+	}
+}
+
+// 检查失败要如实带出错误并短缓存，而不是假装没有新版本还长期缓存失败。
+func TestPanelUpdateCheckReportsError(t *testing.T) {
+	application := newUpdateCheckApp(t, "v0.1.2", func(context.Context) (string, error) {
+		return "", errors.New("上游不可达")
+	})
+	payload := fetchPanelUpdate(t, application)
+	if payload["updateAvailable"] != false || payload["error"] != "上游不可达" {
+		t.Fatalf("应带出检查失败原因，实际 %v", payload)
+	}
+}
+
+func TestVersionBehind(t *testing.T) {
+	cases := []struct {
+		current, latest string
+		want            bool
+	}{
+		{"v0.1.2", "v0.2.0", true},
+		{"v0.1.2", "v0.1.2", false},
+		{"v0.2.0", "v0.1.9", false},
+		{"v0.9.9", "v1.0.0", true},
+		{"v1.0.0-rc.1", "v1.0.0", true},
+		{"v1.0.0", "v1.0.0-rc.1", false},
+		{"dev", "v1.0.0", false},
+		{"v0.1.2", "not-a-version", false},
+	}
+	for _, item := range cases {
+		if got := versionBehind(item.current, item.latest); got != item.want {
+			t.Fatalf("versionBehind(%q, %q) = %v，期望 %v", item.current, item.latest, got, item.want)
+		}
+	}
 }
 
 type stubGeoService struct {

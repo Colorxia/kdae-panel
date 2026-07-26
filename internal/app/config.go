@@ -27,6 +27,12 @@ type Config struct {
 	GeoStatePath string
 	// GeoSchedulePath 持久化 geo 数据自动更新的设置与上次执行时间。
 	GeoSchedulePath string
+	// DisableUpdateCheck 关闭面板自身的新版本检查。
+	//
+	// 检查默认开启：它只读取本仓库 releases/latest 的 tag，结果长时间缓存。
+	// 但"完全不开安装与 geo 功能的部署从不外联"曾是可以宣称的性质，
+	// 这个开关把决定权留给在意这件事的人。
+	DisableUpdateCheck bool
 	// EnableGeoUpdate 打开一键更新 geo 数据的能力，与 EnableDaeInstall 相互独立。
 	//
 	// 分成两个开关是有意为之：更新 geo 只写 dae 的数据目录（通常就是已经可写的

@@ -25,6 +25,9 @@ import {
   ReaderOutline,
   SettingsOutline,
 } from '@vicons/ionicons5'
+import { NAlert } from 'naive-ui'
+import { getJSON } from '../api/client'
+import type { PanelUpdate } from '../types/api'
 import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
@@ -74,9 +77,23 @@ function handleResize() {
   if (window.innerWidth < 900) collapsed.value = true
 }
 
+// 新版本提醒：后端带缓存，这里每次进入布局查一次即可。
+// 检查失败保持沉默——提醒是锦上添花，不该因为 GitHub 不可达而打扰使用。
+const update = ref<PanelUpdate | null>(null)
+const updateDismissed = ref(false)
+
+async function checkUpdate() {
+  try {
+    update.value = await getJSON<PanelUpdate>('/api/v1/panel/update')
+  } catch {
+    update.value = null
+  }
+}
+
 onMounted(() => {
   window.addEventListener('kdae-panel:auth-expired', handleExpired)
   window.addEventListener('resize', handleResize)
+  void checkUpdate()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('kdae-panel:auth-expired', handleExpired)
@@ -124,6 +141,17 @@ onBeforeUnmount(() => {
         </div>
       </NLayoutHeader>
       <NLayoutContent class="app-content" content-style="padding: 28px;">
+        <NAlert
+          v-if="update?.updateAvailable && !updateDismissed"
+          type="info"
+          closable
+          class="update-banner"
+          @close="updateDismissed = true"
+        >
+          面板有新版本 <strong>{{ update.latest }}</strong>（当前 {{ update.current }}）。
+          在服务器上重新执行一键部署命令即可升级，配置与账号数据都会保留。
+          <a href="https://github.com/tuoro/kdae-panel/releases/latest" target="_blank" rel="noopener">查看发布说明</a>
+        </NAlert>
         <RouterView />
       </NLayoutContent>
     </NLayout>
