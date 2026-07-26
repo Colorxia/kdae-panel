@@ -3,7 +3,11 @@ name: kdae 上游兼容
 on:
   workflow_dispatch:
   schedule:
-    - cron: '17 3 * * 1'
+    # 版本发现契约每天验一次：它依赖的发布命名、.dgst 格式与 Actions 接口都在
+    # 上游手里，改了不会有人通知我们，只能自己勤查。
+    - cron: '17 3 * * *'
+    # 上游构建契约每周一次：要装 clang/llvm 再全量编译 kdae，每天跑不划算。
+    - cron: '43 4 * * 1'
 
 permissions:
   contents: read
@@ -13,9 +17,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 版本发现契约独立成一个 job，不搭在构建之后。
+  # 挂在"构建 kdae"后面的话，上游一旦构建坏掉，这个检查就完全不跑——而它恰恰是
+  # 唯一能发现"上游改了打包方式，面板一个版本都装不上"的地方。
+  discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出面板
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25.12'
+          cache: true
+
+      # 版本发现依赖上游的发布命名、.dgst 格式与 Actions 的 digest 字段，
+      # 这些都在面板之外，只有对真实上游跑一遍才能发现它们变了。
+      - name: 验证版本发现契约
+        env:
+          KDAE_UPSTREAM_LIVE: '1'
+        run: go test -count=1 -run '^TestLiveUpstream$' -timeout=8m ./internal/upstream
+
   contract:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    if: github.event_name != 'schedule' || github.event.schedule == '43 4 * * 1'
     steps:
       - name: 检出面板
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -47,10 +74,3 @@ jobs:
           KDAE_CONTRACT_BINARY: ${{ github.workspace }}/upstream/dae-contract
           KDAE_CONTRACT_CONFIG: ${{ github.workspace }}/upstream/example.dae
         run: go test -count=1 -run '^TestUpstreamContract$' -timeout=4m ./internal/dae
-
-      # 版本发现依赖上游的发布命名、.dgst 格式与 Actions 的 digest 字段，
-      # 这些都在面板之外，只有对真实上游跑一遍才能发现它们变了。
-      - name: 验证版本发现契约
-        env:
-          KDAE_UPSTREAM_LIVE: '1'
-        run: go test -count=1 -run '^TestLiveUpstream$' -timeout=4m ./internal/upstream

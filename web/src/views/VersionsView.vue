@@ -36,6 +36,8 @@ const message = useMessage()
 const dialog = useDialog()
 const loading = ref(true)
 const listing = ref(false)
+// loading 只在首屏为真，之后再也不会回到 true，因此它挡不住刷新按钮被连点。
+const refreshing = ref(false)
 const disabled = ref(false)
 const status = ref<InstallStatus | null>(null)
 const provision = ref<InstallProvision | null>(null)
@@ -100,24 +102,28 @@ async function loadStatus() {
   }
 }
 
+// 只认最后一次发出的请求。用序号而不是比对来源：连点刷新会发出多个同来源的
+// 请求，它们全都满足"来源没变"，于是先回来的那个仍会被后回来的旧结果盖掉。
+let versionRequest = 0
+
 async function loadVersions() {
   if (disabled.value) return
-  // 快速切换来源时，只认最后一次请求的结果，避免列表与所选来源不符
   const requested = source.value
+  const ticket = ++versionRequest
   listing.value = true
   try {
     const payload = await getJSON<{ versions: UpstreamVersion[] }>(
       `/api/v1/dae/versions?source=${requested}&limit=30`,
     )
-    if (requested !== source.value || unmounted) return
+    if (ticket !== versionRequest || unmounted) return
     versions.value = payload.versions
     listError.value = ''
   } catch (error) {
-    if (requested !== source.value || unmounted) return
+    if (ticket !== versionRequest || unmounted) return
     versions.value = []
     listError.value = error instanceof Error ? error.message : '读取版本列表失败'
   } finally {
-    if (requested === source.value) listing.value = false
+    if (ticket === versionRequest) listing.value = false
   }
 }
 
@@ -125,18 +131,31 @@ function changeSource(next: UpstreamSource) {
   if (next === source.value) return
   source.value = next
   versions.value = []
+  // 上一个来源的失败与新来源无关，留着它会挂在新来源的空列表上方
+  listError.value = ''
   void loadVersions()
 }
 
 async function refreshAll() {
-  await loadStatus()
-  await loadVersions()
+  refreshing.value = true
+  try {
+    await loadStatus()
+    if (unmounted) return
+    await loadVersions()
+  } finally {
+    refreshing.value = false
+  }
 }
 
 // 首次安装与升级是两件不同的事，确认框必须分别说清楚会发生什么。
 const firstInstall = computed(() => provision.value?.possible === true)
 
-function confirmInstall(version: UpstreamVersion) {
+async function confirmInstall(version: UpstreamVersion) {
+  // 空闲时页面不轮询，firstInstall 可能是打开页面那一刻的快照——期间别人
+  // 装好了 dae，确认框就会承诺写单元和 geo，而后端实际走的是替换升级。
+  // 确认框描述的必须是后端此刻真正会做的事，所以先把状态取新。
+  await loadStatus()
+  if (unmounted) return
   if (firstInstall.value) {
     dialog.warning({
       title: `安装 ${version.label}`,
@@ -277,10 +296,14 @@ const columns = computed<DataTableColumns<UpstreamVersion>>(() => [
       // 临近过期的 CI 构建要看得出来，否则它和新构建长得一模一样
       const days = Math.ceil((new Date(row.expiresAt).getTime() - Date.now()) / 86400000)
       if (!Number.isFinite(days) || days > 14) return published
+      // 后端按 CreatedAt+90 天推算过期，GitHub 的实际保留期可能更短，
+      // 于是会出现 installable 仍为真但已过期的行——别渲染成"-3 天后过期"。
       return h(NSpace, { size: 4, align: 'center', wrap: false }, {
         default: () => [
           published,
-          h(NTag, { size: 'tiny', type: 'warning', bordered: false }, { default: () => `${days} 天后过期` }),
+          h(NTag, { size: 'tiny', type: days > 0 ? 'warning' : 'error', bordered: false }, {
+            default: () => days > 0 ? `${days} 天后过期` : '可能已过期',
+          }),
         ],
       })
     },
@@ -306,7 +329,7 @@ const columns = computed<DataTableColumns<UpstreamVersion>>(() => [
         secondary: true,
         type: 'primary',
         disabled: busy.value || !(status.value?.ready || firstInstall.value),
-        onClick: () => confirmInstall(row),
+        onClick: () => void confirmInstall(row),
       }, {
         icon: () => h(NIcon, null, { default: () => h(CloudDownloadOutline) }),
         default: () => firstInstall.value ? '安装' : '切换',
@@ -336,7 +359,12 @@ onBeforeUnmount(() => {
         <NText depth="3">在官方发布与 kdae 构建之间切换，安装前校验、失败自动回滚</NText>
       </div>
       <NSpace>
-        <NButton secondary :loading="listing || loading" :disabled="disabled" @click="refreshAll">
+        <NButton
+          secondary
+          :loading="listing || loading || refreshing"
+          :disabled="disabled || refreshing"
+          @click="refreshAll"
+        >
           <template #icon><NIcon><RefreshOutline /></NIcon></template>刷新
         </NButton>
         <NButton
@@ -379,7 +407,9 @@ onBeforeUnmount(() => {
             <li v-for="note in provision.notes || []" :key="note">{{ note }}</li>
           </ul>
         </template>
-        <NAlert v-else-if="status?.problem" type="warning" :bordered="false" class="card-alert">
+        <!-- 独立成一条，不接在 provision 的 v-else-if 后面：ready 为假时后端
+             几乎总会带上 provision，挂成 else 分支等于让真正的故障原因永远不显示 -->
+        <NAlert v-if="status?.problem" type="warning" :bordered="false" class="card-alert">
           {{ status.problem }}
         </NAlert>
         <NAlert
@@ -412,8 +442,12 @@ onBeforeUnmount(() => {
           <div>
             <dt>面板记录</dt>
             <dd>
-              <template v-if="status?.managed?.label">
-                {{ sourceName(status.managed.source) }} · {{ status.managed.label }}
+              <!-- 判据是"有没有记录"，不是"记录里有没有 label"：
+                   回滚到面板之外装的版本时账本就没有 label，据此说"不是面板装的"是错的 -->
+              <template v-if="status?.managed">
+                {{ sourceName(status.managed.source) }}
+                <template v-if="status.managed.label"> · {{ status.managed.label }}</template>
+                <template v-else-if="status.managed.ref"> · {{ status.managed.ref }}</template>
                 <NText depth="3">（{{ formatDateTime(status.managed.installedAt) }} 安装）</NText>
               </template>
               <NText v-else depth="3">该二进制不是由面板安装的</NText>

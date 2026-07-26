@@ -659,6 +659,123 @@ func TestDaeInstallStatusIncludesProvision(t *testing.T) {
 	}
 }
 
+// 任务进行中不计算可行性：这个查询被界面每两秒轮询一次，而可行性探测要实际
+// 试写目标目录，其中之一是 systemd 正在 inotify 监视的单元目录。
+func TestDaeInstallStatusOmitsProvisionWhileJobRuns(t *testing.T) {
+	release := make(chan struct{})
+	service := &stubInstallService{
+		binary:  []byte("v2"),
+		release: release,
+		status:  daeinstall.Status{Ready: false},
+		plan:    daeinstall.Provision{Possible: true},
+	}
+	application := newInstallApp(t, service)
+	defer close(release)
+
+	started := httptest.NewRecorder()
+	application.Handler().ServeHTTP(started, httptest.NewRequest(http.MethodPost, "/api/v1/dae/install",
+		strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)))
+	if started.Code != http.StatusAccepted {
+		t.Fatalf("状态码 = %d", started.Code)
+	}
+
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/dae/install", nil))
+	var payload struct {
+		Provision *daeinstall.Provision `json:"provision"`
+		Job       Job                   `json:"job"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Job.Phase != PhaseDownloading {
+		t.Fatalf("任务应处于下载中: %+v", payload.Job)
+	}
+	if payload.Provision != nil {
+		t.Fatalf("任务进行中不应计算可行性: %+v", payload.Provision)
+	}
+}
+
+// 安装失败必须让用户看得见原因，而不是任务默默停在某个中间态。
+func TestDaeInstallReportsFailure(t *testing.T) {
+	service := &stubInstallService{
+		binary: []byte("v2"),
+		status: daeinstall.Status{Ready: true},
+		err:    errors.New("新版本拒绝当前配置"),
+	}
+	application := newInstallApp(t, service)
+
+	application.Handler().ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/api/v1/dae/install",
+			strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)))
+
+	job := awaitJobSettled(t, application)
+	if job.Phase != PhaseFailed {
+		t.Fatalf("任务应标记为失败: %+v", job)
+	}
+	if !strings.Contains(job.Error, "拒绝当前配置") {
+		t.Fatalf("失败原因应透传给前端: %q", job.Error)
+	}
+	if job.EndedAt == nil {
+		t.Fatal("失败的任务也应记录结束时间")
+	}
+}
+
+func TestDaeRollbackRunsAsynchronously(t *testing.T) {
+	service := &stubInstallService{status: daeinstall.Status{Ready: true}}
+	application := newInstallApp(t, service)
+
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/dae/rollback", nil))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("状态码 = %d，期望 202，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+
+	if job := awaitJobSettled(t, application); job.Phase != PhaseDone {
+		t.Fatalf("回滚应完成: %+v", job)
+	}
+	if records := service.records(); len(records) != 1 || records[0] != "rollback" {
+		t.Fatalf("回滚调用 = %v", records)
+	}
+}
+
+// 回滚失败同样要如实上报，不能因为它复用安装任务的状态机就报成"安装失败"。
+func TestDaeRollbackReportsFailure(t *testing.T) {
+	service := &stubInstallService{status: daeinstall.Status{Ready: true}, err: errors.New("没有可回滚的上一版本")}
+	application := newInstallApp(t, service)
+
+	application.Handler().ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/api/v1/dae/rollback", nil))
+
+	job := awaitJobSettled(t, application)
+	if job.Phase != PhaseFailed || !strings.Contains(job.Error, "没有可回滚") {
+		t.Fatalf("回滚失败应如实上报: %+v", job)
+	}
+}
+
+// awaitJobSettled 轮询状态端点直到任务不再进行中。
+func awaitJobSettled(t *testing.T, application *App) Job {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		recorder := httptest.NewRecorder()
+		application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/dae/install", nil))
+		var payload struct {
+			Job Job `json:"job"`
+		}
+		if err := json.NewDecoder(recorder.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Job.Phase != PhaseDownloading && payload.Job.Phase != PhaseApplying {
+			return payload.Job
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("任务迟迟没有结束: %+v", payload.Job)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestDaeInstallRejectsConcurrentJobs(t *testing.T) {
 	release := make(chan struct{})
 	service := &stubInstallService{binary: []byte("v2"), release: release}

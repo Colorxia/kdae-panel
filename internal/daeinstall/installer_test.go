@@ -55,24 +55,46 @@ func (p fakeProbe) Validate(context.Context, string) error {
 type fakeService struct {
 	execStart string
 	actions   []host.Action
-	// failFrom 表示从第几次状态查询开始返回非 active，0 表示始终 active。
-	failFrom  int
-	calls     int
-	actionErr error
+	// failRestart 指定第几次 restart 之后服务起不来（从 1 起算，0 表示始终能起来）。
+	//
+	// 刻意不按"第几次状态查询"计数：那个次数取决于事务内部调了多少次 Status，
+	// 改一行无关代码就会让断言悄悄失去意义；而且它还要靠观察窗口的墙钟时间
+	// 才能"数"到预期的那一次，本身就会偶发假失败。
+	failRestart int
+	restarts    int
+	// restartsGrow 为真时，每次状态查询都让 systemd 的重启计数加一，
+	// 模拟"两次采样之间服务已经崩过一轮又被拉起来"——ActiveState 全程 active。
+	restartsGrow bool
+	restartsAt   uint64
+	statusErr    error
+	actionErr    error
 }
 
 func (s *fakeService) Action(_ context.Context, action host.Action) error {
 	s.actions = append(s.actions, action)
+	if action == host.ActionRestart {
+		s.restarts++
+	}
 	return s.actionErr
 }
 
 func (s *fakeService) Status(context.Context) (host.Status, error) {
-	s.calls++
+	if s.statusErr != nil {
+		return host.Status{}, s.statusErr
+	}
 	state := "active"
-	if s.failFrom > 0 && s.calls >= s.failFrom {
+	if s.failRestart > 0 && s.restarts == s.failRestart {
 		state = "failed"
 	}
-	return host.Status{ActiveState: state, SubState: "running", ExecStartPath: s.execStart}, nil
+	if s.restartsGrow {
+		s.restartsAt++
+	}
+	return host.Status{
+		ActiveState:   state,
+		SubState:      "running",
+		ExecStartPath: s.execStart,
+		Restarts:      s.restartsAt,
+	}, nil
 }
 
 func newTestInstaller(t *testing.T, fetcher *fakeFetcher, service *fakeService) (*Installer, string) {
@@ -281,8 +303,8 @@ func TestInstallRejectsBinaryThatRejectsConfig(t *testing.T) {
 
 func TestInstallRollsBackWhenServiceFailsToStart(t *testing.T) {
 	fetcher := &fakeFetcher{}
-	// 前两次状态查询用于 target 解析与预检，从第三次起模拟服务起不来
-	service := &fakeService{failFrom: 3}
+	// 装上去的那次重启起不来；随后的回滚重启能起来
+	service := &fakeService{failRestart: 1}
 	installer, binaryPath := newTestInstaller(t, fetcher, service)
 	seed(t, installer, binaryPath, "v1")
 
@@ -294,8 +316,68 @@ func TestInstallRollsBackWhenServiceFailsToStart(t *testing.T) {
 	if !errors.As(err, &applyErr) {
 		t.Fatalf("应返回 ApplyError，得到 %T: %v", err, err)
 	}
+	// 这两个标志是用户唯一能据以判断"现在到底什么状态"的东西，
+	// 早先 ServiceRecovered 从未被赋值，成败两种结果都在说假话。
+	if !applyErr.RolledBack || !applyErr.ServiceRecovered {
+		t.Fatalf("旧版本已还原且重启成功，应如实报告: %+v（%v）", applyErr, applyErr)
+	}
+	if strings.Contains(applyErr.Error(), "服务仍未恢复") {
+		t.Fatalf("服务已恢复，错误描述不应说仍未恢复: %v", applyErr)
+	}
 	if content, _ := os.ReadFile(binaryPath); string(content) != string(elf("v1")) {
 		t.Fatalf("回滚后磁盘内容 = %q，应恢复为旧版本", content)
+	}
+	// 磁盘已退回旧版本，此前的回滚点必须原样保留，不能被本次失败的安装改写
+	if content, err := os.ReadFile(installer.backupPath); err == nil {
+		if string(content) == string(elf("v2")) {
+			t.Fatal("失败的安装把回滚点改写成了新版本，用户再也回不去了")
+		}
+	}
+}
+
+// 安装失败并回滚后，原有的回滚点必须完好：backupPath 的含义始终是
+// "磁盘上这一版的前一版"，被一次失败的安装提前覆盖就等于把它删了。
+func TestFailedInstallKeepsExistingRollbackPoint(t *testing.T) {
+	service := &fakeService{}
+	installer, binaryPath := newTestInstaller(t, &fakeFetcher{}, service)
+	seed(t, installer, binaryPath, "v1")
+
+	if _, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2"); err != nil {
+		t.Fatal(err)
+	}
+	// 此刻回滚点是 v1。再装一个起不来的 v3，回滚点应当还是 v1。
+	service.failRestart = 2
+	if _, err := installer.Install(context.Background(), elf("v3"), upstream.SourceOfficial, "v3.0.0", "v3"); err == nil {
+		t.Fatal("服务起不来时安装应失败")
+	}
+	backup, err := os.ReadFile(installer.backupPath)
+	if err != nil {
+		t.Fatalf("回滚点不该消失: %v", err)
+	}
+	if string(backup) != string(elf("v1")) {
+		t.Fatalf("回滚点 = %q，应仍是 v1", backup)
+	}
+	if content, _ := os.ReadFile(binaryPath); string(content) != string(elf("v2")) {
+		t.Fatalf("磁盘内容 = %q，应退回 v2", content)
+	}
+}
+
+// 观察窗口两次采样之间跑完的崩溃-重启循环，只看 ActiveState 是发现不了的：
+// 两次都是 active，中间其实已经挂掉并被 systemd 拉起来过。
+func TestInstallDetectsCrashLoopWithinObservationWindow(t *testing.T) {
+	service := &fakeService{restartsGrow: true}
+	installer, binaryPath := newTestInstaller(t, &fakeFetcher{}, service)
+	seed(t, installer, binaryPath, "v1")
+
+	_, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2")
+	if err == nil {
+		t.Fatal("观察窗口内服务反复重启，安装应失败")
+	}
+	if !strings.Contains(err.Error(), "又重启了") {
+		t.Fatalf("错误应指出服务在观察窗口内重启过: %v", err)
+	}
+	if content, _ := os.ReadFile(binaryPath); string(content) != string(elf("v1")) {
+		t.Fatalf("崩溃循环应触发回滚，磁盘内容 = %q", content)
 	}
 }
 

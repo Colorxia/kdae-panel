@@ -188,7 +188,7 @@ func (c *httpClient) getJSON(ctx context.Context, url string, destination any) e
 	requestCtx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 
-	body, _, err := c.get(requestCtx, url, maxAPIBytes, "application/vnd.github+json")
+	body, _, err := c.get(requestCtx, url, maxAPIBytes, "application/vnd.github+json", false)
 	if err != nil {
 		return err
 	}
@@ -202,7 +202,7 @@ func (c *httpClient) getText(ctx context.Context, url string) (string, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 
-	body, _, err := c.get(requestCtx, url, maxAPIBytes, "")
+	body, _, err := c.get(requestCtx, url, maxAPIBytes, "", false)
 	return string(body), err
 }
 
@@ -211,11 +211,13 @@ func (c *httpClient) download(ctx context.Context, url string, limit int64) ([]b
 	requestCtx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
 
-	body, _, err := c.get(requestCtx, url, limit, "")
+	body, _, err := c.get(requestCtx, url, limit, "", true)
 	return body, err
 }
 
-func (c *httpClient) get(ctx context.Context, target string, limit int64, accept string) ([]byte, http.Header, error) {
+// get 取回 target 的响应体，长度上限为 limit。
+// identity 为真时禁用传输层压缩，用于必须逐字节比对校验和的资产下载。
+func (c *httpClient) get(ctx context.Context, target string, limit int64, accept string, identity bool) ([]byte, http.Header, error) {
 	if err := checkFirstHop(target); err != nil {
 		return nil, nil, err
 	}
@@ -224,8 +226,12 @@ func (c *httpClient) get(ctx context.Context, target string, limit int64, accept
 		return nil, nil, fmt.Errorf("构造上游请求: %w", err)
 	}
 	request.Header.Set("User-Agent", userAgent)
-	// 让落盘的字节就是链路上的字节，便于校验和比对。
-	request.Header.Set("Accept-Encoding", "identity")
+	if identity {
+		// 下载资产时让落盘的字节就是链路上的字节，便于校验和比对。
+		// 这条只对资产成立：加在 JSON 接口上纯属自伤——版本列表是高度可压缩的
+		// 文本，禁用压缩会让它多传十几倍字节，还得挤进 20 秒的接口超时里。
+		request.Header.Set("Accept-Encoding", "identity")
+	}
 	if accept != "" {
 		request.Header.Set("Accept", accept)
 	}

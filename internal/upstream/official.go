@@ -25,16 +25,19 @@ func (p *OfficialProvider) Source() Source {
 }
 
 type githubRelease struct {
-	TagName     string    `json:"tag_name"`
-	Name        string    `json:"name"`
-	Draft       bool      `json:"draft"`
-	Prerelease  bool      `json:"prerelease"`
-	PublishedAt time.Time `json:"published_at"`
-	Assets      []struct {
-		Name               string `json:"name"`
-		Size               int64  `json:"size"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-	} `json:"assets"`
+	TagName     string        `json:"tag_name"`
+	Name        string        `json:"name"`
+	Draft       bool          `json:"draft"`
+	Prerelease  bool          `json:"prerelease"`
+	PublishedAt time.Time     `json:"published_at"`
+	Assets      []githubAsset `json:"assets"`
+}
+
+// githubAsset 只取用得上的字段。刻意不取 browser_download_url：
+// 下载地址由面板自己拼，不采信响应里的 URL。
+type githubAsset struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
 }
 
 func (p *OfficialProvider) List(ctx context.Context, limit int) ([]Version, error) {
@@ -81,44 +84,63 @@ func (p *OfficialProvider) Resolve(ctx context.Context, ref string, platform Pla
 	}
 
 	// 按候选顺序找本机能用的资产,首选没有就退到更保守的变体。
+	var rejected []string
 	for _, candidate := range platform.Candidates() {
 		wanted := AssetName(candidate)
-		for _, asset := range release.Assets {
-			if asset.Name != wanted {
-				continue
-			}
-			digest, err := p.fetchDigest(ctx, release, wanted)
-			if err != nil {
-				return Asset{}, err
-			}
-			return Asset{
-				URL:      asset.BrowserDownloadURL,
-				Filename: asset.Name,
-				SHA256:   digest,
-				Size:     asset.Size,
-			}, nil
+		asset, found := findAsset(release, wanted)
+		if !found {
+			continue
 		}
+		digest, err := p.fetchDigest(ctx, release, ref, wanted)
+		if err != nil {
+			// 校验和拿不到不该让整个解析当场中止：更保守的架构变体可能带着
+			// .dgst，装它总好过因为首选变体漏发校验和而完全装不上。
+			rejected = append(rejected, err.Error())
+			continue
+		}
+		return Asset{
+			URL:      p.downloadURL(ref, wanted),
+			Filename: wanted,
+			SHA256:   digest,
+			Size:     asset.Size,
+		}, nil
+	}
+	if len(rejected) > 0 {
+		return Asset{}, fmt.Errorf("版本 %s 有适配本机架构的资产，但都无法安装：%s",
+			ref, strings.Join(rejected, "；"))
 	}
 	return Asset{}, fmt.Errorf("版本 %s 没有提供适配本机架构（%s）的资产", ref, platform.Name)
 }
 
-func (p *OfficialProvider) fetchDigest(ctx context.Context, release githubRelease, assetName string) (string, error) {
-	wanted := assetName + ".dgst"
+// downloadURL 自行拼出发布资产的地址，而不是使用响应里的 browser_download_url。
+//
+// 用处不在于抵御 TLS 被攻破——那种情况下什么都保不住——而在于地址完全由已固定的
+// 仓库名、已过正则的 tag 和面板自己构造的资产名拼成。这样一份被篡改的接口响应
+// 最多让校验和对不上（安装失败），而没法把下载悄悄指到同一个域下的别的仓库。
+func (p *OfficialProvider) downloadURL(ref, assetName string) string {
+	return fmt.Sprintf("https://github.com/%s/%s/releases/download/%s/%s",
+		p.owner, p.repo, url.PathEscape(ref), url.PathEscape(assetName))
+}
+
+func findAsset(release githubRelease, name string) (githubAsset, bool) {
 	for _, asset := range release.Assets {
-		if asset.Name != wanted {
-			continue
+		if asset.Name == name {
+			return asset, true
 		}
-		content, err := p.client.getText(ctx, asset.BrowserDownloadURL)
-		if err != nil {
-			return "", err
-		}
-		digest, err := parseDigest(content, assetName)
-		if err != nil {
-			return "", err
-		}
-		return digest, nil
 	}
-	return "", fmt.Errorf("版本资产 %s 缺少校验和文件，拒绝安装", assetName)
+	return githubAsset{}, false
+}
+
+func (p *OfficialProvider) fetchDigest(ctx context.Context, release githubRelease, ref, assetName string) (string, error) {
+	wanted := assetName + ".dgst"
+	if _, found := findAsset(release, wanted); !found {
+		return "", fmt.Errorf("资产 %s 缺少校验和文件", assetName)
+	}
+	content, err := p.client.getText(ctx, p.downloadURL(ref, wanted))
+	if err != nil {
+		return "", err
+	}
+	return parseDigest(content, assetName)
 }
 
 // parseDigest 从 .dgst 内容里取 sha256。

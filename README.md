@@ -24,7 +24,7 @@
 
 ## 快速安装
 
-依赖 Go 1.25.12+、Node.js 22+，运行环境需要 systemd，并预先安装可正常运行的 dae。
+依赖 Go 1.25.12+、Node.js 22+，运行环境需要 systemd，以及一个可正常运行的 dae——若这台机器上还没有 dae，也可以启用 dae 版本管理后由面板完成首次安装。
 
 ```bash
 git clone https://github.com/tuoro/kdae-panel.git

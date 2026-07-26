@@ -194,13 +194,21 @@ func readZipEntry(file *zip.File, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("读取 %s: %w", file.Name, err)
 	}
 	defer entry.Close()
-	// 即使声明的 UncompressedSize64 撒谎,LimitReader 仍然兜住实际读入量。
-	content, err := io.ReadAll(io.LimitReader(entry, limit+1))
-	if err != nil {
+	// 按 zip 声明的解压后大小预留容量。io.ReadAll 从 512 字节起反复翻倍，
+	// 解一个 34MB 的二进制要重新分配并拷贝十几轮，白白冲高堆峰值。
+	//
+	// 声明值只当提示：它完全可能撒谎，因此既不按它预留超过上限的内存，
+	// 也仍然用 LimitReader 兜住实际读入量。
+	size := int64(file.UncompressedSize64)
+	if size < 0 || size > limit {
+		size = 0
+	}
+	buffer := bytes.NewBuffer(make([]byte, 0, size+1))
+	if _, err := buffer.ReadFrom(io.LimitReader(entry, limit+1)); err != nil {
 		return nil, fmt.Errorf("解压 %s: %w", file.Name, err)
 	}
-	if int64(len(content)) > limit {
+	if int64(buffer.Len()) > limit {
 		return nil, fmt.Errorf("%s 解压后超过 %d 字节限制", file.Name, limit)
 	}
-	return content, nil
+	return buffer.Bytes(), nil
 }

@@ -73,11 +73,59 @@ func TestProvisionReportsReadyOnFreshMachine(t *testing.T) {
 
 func TestProvisionRefusesWhenServiceExists(t *testing.T) {
 	installer, service, binaryPath := newFreshInstaller(t)
-	service.execStart = binaryPath // 已有 dae 服务
+	// 已有 dae 服务，且它启动的文件确实在
+	service.execStart = binaryPath
+	if err := os.WriteFile(binaryPath, elf("v1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	provision := installer.Provision(context.Background())
 	if provision.Possible || !provision.Installed {
 		t.Fatalf("已有服务时应引导去做版本切换: %+v", provision)
+	}
+}
+
+// 单元在、可执行文件不在时，升级路径会说"目标不存在"。首次安装若也以
+// "已有服务"为由拒绝，面板就再没有任何办法修好这台机器。
+func TestProvisionAllowsRepairWhenUnitExistsButBinaryMissing(t *testing.T) {
+	installer, service, binaryPath := newFreshInstaller(t)
+	service.execStart = binaryPath // 单元指向的正是面板要写的位置，但文件不存在
+
+	provision := installer.Provision(context.Background())
+	if !provision.Possible {
+		t.Fatalf("单元在而二进制丢失时应当允许补齐: %+v", provision)
+	}
+	if !strings.Contains(strings.Join(provision.Notes, " "), "补齐") {
+		t.Fatalf("应说明这次安装是在补齐丢失的文件: %v", provision.Notes)
+	}
+}
+
+// 单元指向别处而那个文件也不在时，补齐会装到错误的位置，必须拒绝并说明怎么改。
+func TestProvisionRefusesRepairWhenUnitPointsElsewhere(t *testing.T) {
+	installer, service, _ := newFreshInstaller(t)
+	service.execStart = filepath.Join(t.TempDir(), "elsewhere", "dae")
+
+	provision := installer.Provision(context.Background())
+	if provision.Possible {
+		t.Fatalf("单元指向别处时不应报告可以安装: %+v", provision)
+	}
+	if !strings.Contains(strings.Join(provision.Blockers, " "), "KDAE_PANEL_DAE_BINARY") {
+		t.Fatalf("应指明该改哪个配置项: %v", provision.Blockers)
+	}
+}
+
+// 状态查不出来时绝不能当成"这台机器上没有 dae"——那会把一次 systemctl 抽风
+// 变成一次无备份的覆盖安装。
+func TestProvisionBlocksWhenServiceStatusUnreadable(t *testing.T) {
+	installer, service, _ := newFreshInstaller(t)
+	service.statusErr = errors.New("systemctl 不可用")
+
+	provision := installer.Provision(context.Background())
+	if provision.Possible {
+		t.Fatalf("状态查不出来时不应报告可以安装: %+v", provision)
+	}
+	if !strings.Contains(strings.Join(provision.Blockers, " "), "不能确认") {
+		t.Fatalf("应说明拒绝的理由: %v", provision.Blockers)
 	}
 }
 

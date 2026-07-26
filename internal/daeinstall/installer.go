@@ -20,6 +20,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -142,7 +143,7 @@ func New(options Options) (*Installer, error) {
 	if options.Service == nil {
 		return nil, errors.New("服务控制器不能为空")
 	}
-	binaryPath, err := filepath.Abs(options.BinaryPath)
+	binaryPath, err := resolveBinaryPath(options.BinaryPath)
 	if err != nil {
 		return nil, fmt.Errorf("解析 dae 路径: %w", err)
 	}
@@ -167,6 +168,22 @@ func New(options Options) (*Installer, error) {
 		health:      healthWindow,
 		interval:    healthInterval,
 	}, nil
+}
+
+// resolveBinaryPath 把配置里的 dae 路径解析成绝对路径。
+//
+// 默认值是裸名 "dae"，靠 PATH 查找即可满足探测。但首次安装要往这个路径写文件，
+// 而 filepath.Abs 会把裸名解析成进程 cwd 下的位置——systemd 启动的面板 cwd 是
+// 根目录，于是预检会一本正经地建议把 / 加进 ReadWritePaths，安装则把 dae 装到
+// /dae。裸名必须先按 PATH 查，查不到再退回约定俗成的 /usr/bin。
+func resolveBinaryPath(configured string) (string, error) {
+	if configured != filepath.Base(configured) {
+		return filepath.Abs(configured)
+	}
+	if found, err := exec.LookPath(configured); err == nil {
+		return filepath.Abs(found)
+	}
+	return filepath.Join("/usr/bin", configured), nil
 }
 
 func (i *Installer) Versions(ctx context.Context, source upstream.Source, limit int) ([]upstream.Version, error) {
@@ -223,6 +240,12 @@ func (i *Installer) Status(ctx context.Context) Status {
 	}
 	status.Present = true
 	status.Ready = true
+	// 备份与磁盘上完全相同时，回滚是个空操作，不该在界面上亮出按钮。
+	if status.RollbackAvailable {
+		if backup, err := i.cachedDigest(i.backupPath); err == nil && backup == digest {
+			status.RollbackAvailable = false
+		}
+	}
 
 	if report := i.newProbe(target).Inspect(ctx); report.Available {
 		status.Version = report.Version
@@ -236,6 +259,13 @@ func (i *Installer) Status(ctx context.Context) Status {
 	if i.binaryPath != target {
 		status.Warnings = append(status.Warnings, fmt.Sprintf(
 			"面板配置的 dae 路径是 %s，而服务实际启动的是 %s；安装会替换后者", i.binaryPath, target))
+	}
+	// 暂存备份只在事务进行中存在，结算时必然被提升或删除。它还留在磁盘上，
+	// 说明上一次安装是被打断的（面板重启、进程被杀），当时磁盘处于哪一步无从
+	// 得知，必须让用户自己核对版本，而不是假装什么都没发生。
+	if _, err := os.Stat(i.pendingBackupPath()); err == nil {
+		status.Warnings = append(status.Warnings,
+			"发现上一次安装留下的暂存备份，说明它在中途被打断；请核对上面的运行版本是否符合预期")
 	}
 	status.Warnings = append(status.Warnings, i.geoWarnings()...)
 	return status
@@ -328,6 +358,12 @@ func (i *Installer) Rollback(ctx context.Context) (Status, error) {
 
 // applyBinary 是共用的替换事务：验证 → 备份 → 替换 → 重启 → 失败回滚。
 func (i *Installer) applyBinary(ctx context.Context, binary []byte, state *State) (Status, error) {
+	// 这些字节马上就要以 root 落到 ExecStart 指向的位置并被执行。
+	// 首次安装会做这项检查，升级同样不能少：上游若改了打包方式，
+	// 按条目名挑出来的可能根本不是可执行文件。
+	if err := assertELF(binary); err != nil {
+		return Status{}, err
+	}
 	target, _, err := i.target(ctx)
 	if err != nil {
 		return Status{}, err
@@ -386,23 +422,66 @@ func (i *Installer) applyBinary(ctx context.Context, binary []byte, state *State
 		}
 	}
 
-	if err := i.backupCurrent(target); err != nil {
+	pending, err := i.backupCurrent(target)
+	if err != nil {
 		return Status{}, err
 	}
+	// 暂存的回滚点必须恰好结算一次：磁盘留下新版本就提升它，
+	// 退回旧版本就丢弃它。早退路径（如替换失败）磁盘没变，回滚点原样保留。
+	backupSettled := false
+	defer func() {
+		if !backupSettled {
+			i.discardBackup()
+		}
+	}()
+
 	if err := replaceFile(staged, target); err != nil {
 		return Status{}, fmt.Errorf("替换 dae 可执行文件: %w", err)
 	}
 	committed = true
 
 	if err := i.restart(ctx); err != nil {
-		// 换上去起不来，必须退回原样；连备份都恢复不了时如实上报双重失败。
-		restoreErr := i.restorePrevious(ctx, target)
-		return Status{}, &ApplyError{Cause: err, RolledBack: restoreErr == nil, RestoreErr: restoreErr}
+		// 换上去起不来，必须退回原样。回滚用独立的 context：安装用的那个
+		// 预算已被下载和这次失败的重启耗掉大半，甚至可能已经取消——
+		// 而回滚恰恰是最不能因为超时或取消而半途而废的一步。
+		restoreCtx, cancelRestore := context.WithTimeout(
+			context.WithoutCancel(ctx), restartTimeout+i.health)
+		outcome := i.restorePrevious(restoreCtx, target)
+		cancelRestore()
+
+		backupSettled = true
+		if outcome.RestoreErr == nil {
+			i.discardBackup() // 磁盘已退回旧版本，原有回滚点仍然有效
+		} else {
+			i.commitBackup(pending) // 磁盘上留着新版本，暂存的旧版本正是它的上一版
+		}
+		failure := outcome.RestoreErr
+		if failure == nil {
+			failure = outcome.RestartErr
+		}
+		return Status{}, &ApplyError{
+			Cause:            err,
+			RolledBack:       outcome.RestoreErr == nil,
+			ServiceRecovered: outcome.RestoreErr == nil && outcome.RestartErr == nil,
+			RestoreErr:       failure,
+		}
 	}
-	if err := i.writeState(state); err != nil {
-		i.logger.Warn("记录 dae 安装状态失败", "error", err)
+	i.commitBackup(pending)
+	backupSettled = true
+
+	// 账本要在读状态之前写，否则 Status 拿到的还是上一版的记录。
+	stateErr := i.writeState(state)
+	if stateErr != nil {
+		i.logger.Warn("记录 dae 安装状态失败", "error", stateErr)
 	}
-	return i.Status(ctx), nil
+	status := i.Status(ctx)
+	if stateErr != nil {
+		// 安装本身已经成功，不能因此报错；但账本没写上，后续状态查询会把这次
+		// 安装误报成"在面板之外被替换过"，必须让用户当场看见。
+		status.Warnings = append(status.Warnings, fmt.Sprintf(
+			"新版本已装上并运行，但安装记录写入失败（%v）；面板会把它显示为在面板之外替换过", stateErr))
+	}
+	return status, nil
 }
 
 // ApplyError 表示二进制已替换但服务未能起来。
@@ -477,29 +556,71 @@ func (i *Installer) stage(binary []byte, target string, mode os.FileMode) (strin
 	return path, cleanup, nil
 }
 
-func (i *Installer) backupCurrent(target string) error {
-	current, err := os.ReadFile(target)
-	if err != nil {
-		return fmt.Errorf("读取当前 dae: %w", err)
-	}
-	if err := writeFileSynced(i.backupPath, current, binaryMode); err != nil {
-		return fmt.Errorf("备份当前 dae: %w", err)
-	}
-	// 一并记下旧版本的账本，回滚后才能如实显示回到了哪一版。
-	if state, err := i.readState(); err == nil && state != nil {
-		if encoded, err := json.Marshal(state); err == nil {
-			_ = writeFileSynced(i.previousStatePath(), encoded, 0o600)
-		}
-	} else {
-		_ = os.Remove(i.previousStatePath())
-	}
-	return nil
+// backupCurrent 把当前版本写进暂存回滚位，而不是直接覆盖正式回滚点。
+//
+// 正式回滚点的含义始终是"磁盘上这一版的前一版"。替换可能失败，重启失败还要把
+// 磁盘退回原样——那些情况下磁盘上仍是旧版本，此时若已经覆盖了正式回滚点，
+// 用户真正想回去的那一版就被本次安装永久删掉了。因此先写暂存位，
+// 等结算时才知道该提升它还是丢弃它。
+// pendingBackup 是一次事务里暂存的回滚材料。
+// 账本只在内存里留到结算，没必要为它也在磁盘上开一个暂存文件。
+type pendingBackup struct {
+	// state 是被顶掉那一版的账本；为空表示它不是面板装的，没有记录可继承。
+	state []byte
 }
 
-func (i *Installer) restorePrevious(ctx context.Context, target string) error {
-	binary, err := os.ReadFile(i.backupPath)
+func (i *Installer) backupCurrent(target string) (*pendingBackup, error) {
+	current, err := os.ReadFile(target)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("读取当前 dae: %w", err)
+	}
+	if err := writeFileSynced(i.pendingBackupPath(), current, binaryMode); err != nil {
+		return nil, fmt.Errorf("备份当前 dae: %w", err)
+	}
+	pending := &pendingBackup{}
+	// 一并记下旧版本的账本，回滚后才能如实显示回到了哪一版。
+	if state, err := i.readState(); err == nil && state != nil {
+		pending.state, _ = json.Marshal(state)
+	}
+	return pending, nil
+}
+
+// commitBackup 在磁盘上确实留下新版本后，把暂存位提升为正式回滚点。
+func (i *Installer) commitBackup(pending *pendingBackup) {
+	if err := os.Rename(i.pendingBackupPath(), i.backupPath); err != nil {
+		i.logger.Warn("提交 dae 回滚点失败", "error", err)
+		return
+	}
+	// 上一版可能是面板之外装的，没有账本；此时必须清掉更旧的那份，
+	// 否则回滚后会显示一个根本不对应的版本。
+	if len(pending.state) == 0 {
+		_ = os.Remove(i.previousStatePath())
+		return
+	}
+	if err := writeFileSynced(i.previousStatePath(), pending.state, 0o600); err != nil {
+		i.logger.Warn("记录上一版本的安装信息失败", "error", err)
+	}
+}
+
+// discardBackup 在磁盘已退回原样时丢弃暂存位，原封不动保住既有回滚点。
+func (i *Installer) discardBackup() {
+	_ = os.Remove(i.pendingBackupPath())
+}
+
+// restoreOutcome 区分"磁盘已还原"与"旧版本重新跑起来了"两件事。
+// 把两者合成一个 error，调用方就无法分辨，只能对着成功的回滚报告失败。
+type restoreOutcome struct {
+	// RestoreErr 非空表示磁盘上的二进制没能还原。
+	RestoreErr error
+	// RestartErr 非空表示文件已还原，但旧版本没能重新起来。
+	RestartErr error
+}
+
+func (i *Installer) restorePrevious(ctx context.Context, target string) restoreOutcome {
+	// 要还原的是本次事务开始前的那一份（暂存位），不是历史回滚点。
+	binary, err := os.ReadFile(i.pendingBackupPath())
+	if err != nil {
+		return restoreOutcome{RestoreErr: err}
 	}
 	mode := os.FileMode(binaryMode)
 	if info, err := os.Stat(target); err == nil {
@@ -507,7 +628,7 @@ func (i *Installer) restorePrevious(ctx context.Context, target string) error {
 	}
 	staged, cleanup, err := i.stage(binary, target, mode)
 	if err != nil {
-		return err
+		return restoreOutcome{RestoreErr: err}
 	}
 	committed := false
 	defer func() {
@@ -516,10 +637,10 @@ func (i *Installer) restorePrevious(ctx context.Context, target string) error {
 		}
 	}()
 	if err := replaceFile(staged, target); err != nil {
-		return err
+		return restoreOutcome{RestoreErr: err}
 	}
 	committed = true
-	return i.restart(ctx)
+	return restoreOutcome{RestartErr: i.restart(ctx)}
 }
 
 // restart 重启服务并在一个观察窗口内反复确认它稳住了。
@@ -532,6 +653,8 @@ func (i *Installer) restart(ctx context.Context) error {
 	}
 
 	deadline := time.Now().Add(i.health)
+	var baseline uint64
+	sampled := false
 	for {
 		select {
 		case <-time.After(i.interval):
@@ -547,6 +670,15 @@ func (i *Installer) restart(ctx context.Context) error {
 		if status.ActiveState != "active" {
 			return fmt.Errorf("重启后服务状态为 %s/%s", status.ActiveState, status.SubState)
 		}
+		// 只看 ActiveState 会漏掉采样间隔内跑完的崩溃-重启循环：
+		// 两次采样都是 active，中间其实已经挂掉并被 systemd 拉起来过。
+		// NRestarts 单调递增，正好把这种"看不见的崩溃"暴露出来。
+		if !sampled {
+			baseline, sampled = status.Restarts, true
+		} else if status.Restarts > baseline {
+			return fmt.Errorf("重启后服务在观察窗口内又重启了 %d 次，新版本很可能起不稳",
+				status.Restarts-baseline)
+		}
 		if !time.Now().Before(deadline) {
 			return nil
 		}
@@ -555,6 +687,17 @@ func (i *Installer) restart(ctx context.Context) error {
 
 func (i *Installer) previousStatePath() string {
 	return i.statePath + ".previous"
+}
+
+// pendingBackupPath / pendingPreviousStatePath 是回滚点的暂存位，
+// 事务结算时才决定提升还是丢弃。进程中途退出留下的暂存文件无害：
+// 下一次 backupCurrent 会直接覆盖它们。
+func (i *Installer) pendingBackupPath() string {
+	return i.backupPath + ".pending"
+}
+
+func (i *Installer) pendingPreviousStatePath() string {
+	return i.previousStatePath() + ".pending"
 }
 
 func (i *Installer) readState() (*State, error) {

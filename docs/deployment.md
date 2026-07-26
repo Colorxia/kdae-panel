@@ -3,8 +3,8 @@
 ## 前置条件
 
 - Linux 与 systemd；
-- 已安装并能够通过 `systemctl status dae` 正常运行的 dae；
-- `/etc/dae/config.dae` 是实际入口配置；
+- 已安装并能够通过 `systemctl status dae` 正常运行的 dae——若这台机器上还没有 dae，可以启用下面的 dae 版本管理，由面板完成首次安装；
+- `/etc/dae/config.dae` 是实际入口配置（首次安装时由面板写入不劫持流量的种子配置）；
 - 构建阶段需要 Go 1.25.12+ 和 Node.js 22+；
 - 运行阶段不需要 Node.js。
 
@@ -61,9 +61,16 @@ sudo systemctl restart kdae-panel
 该功能默认关闭。开启需要两步，缺一不可：
 
 ```bash
-# 1. 把 env 文件里已有的那一行改为 true（不要追加，否则会出现两行同名变量）
-sed -i 's/^KDAE_PANEL_ENABLE_DAE_INSTALL=.*/KDAE_PANEL_ENABLE_DAE_INSTALL=true/' \
-  /etc/kdae-panel/kdae-panel.env
+# 1. 把 env 文件里那一行改为 true。
+#    升级安装的 env 文件可能还没有这一行，此时 sed 是静默空操作——
+#    因此有则改、无则追加，最后数一遍确认只有一行（两行同名变量时后一行生效，很难排查）。
+env_file=/etc/kdae-panel/kdae-panel.env
+if grep -q '^KDAE_PANEL_ENABLE_DAE_INSTALL=' "$env_file"; then
+  sed -i 's/^KDAE_PANEL_ENABLE_DAE_INSTALL=.*/KDAE_PANEL_ENABLE_DAE_INSTALL=true/' "$env_file"
+else
+  echo 'KDAE_PANEL_ENABLE_DAE_INSTALL=true' >> "$env_file"
+fi
+grep -c '^KDAE_PANEL_ENABLE_DAE_INSTALL=' "$env_file"   # 必须输出 1
 
 # 2. 让面板能写入 dae 可执行文件所在目录（以服务实际启动的路径为准）
 systemctl show dae --property=ExecStart
