@@ -7,15 +7,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/tuoro/kdae-panel/internal/atomicfile"
 	"github.com/tuoro/kdae-panel/internal/upstream"
 )
 
-// Download 取回并校验最新的 geo 数据。
+// Download 取回并校验指定来源最新的 geo 数据。
 // 这一步耗时最长且不触碰任何共享状态，因此调用方可以不持有控制锁先做完。
-func (m *Manager) Download(ctx context.Context) (upstream.GeoData, error) {
-	release, err := m.fetcher.Latest(ctx)
+func (m *Manager) Download(ctx context.Context, source upstream.GeoSource) (upstream.GeoData, error) {
+	release, err := m.fetcher.Latest(ctx, source)
 	if err != nil {
 		return upstream.GeoData{}, err
 	}
@@ -24,7 +25,7 @@ func (m *Manager) Download(ctx context.Context) (upstream.GeoData, error) {
 		return upstream.GeoData{}, err
 	}
 	m.logger.Info("已取得并校验 geo 数据",
-		"repository", m.fetcher.Repository(), "tag", release.Tag, "files", len(data.Files))
+		"source", source, "tag", release.Tag, "files", len(data.Files))
 	return data, nil
 }
 
@@ -76,13 +77,18 @@ func (m *Manager) Apply(ctx context.Context, data upstream.GeoData) (Status, err
 	}
 	transaction.done()
 
-	state := &State{Repository: m.fetcher.Repository(), Tag: data.Release.Tag, UpdatedAt: nowUTC()}
+	state := &State{
+		Source:       data.Release.Source,
+		Repositories: repositoriesOf(data.Release),
+		Tag:          data.Release.Tag,
+		UpdatedAt:    nowUTC(),
+	}
 	stateErr := m.writeState(state)
 	if stateErr != nil {
 		m.logger.Warn("记录 geo 更新状态失败", "error", stateErr)
 	}
 	m.logger.Info("已更新 geo 数据",
-		"repository", state.Repository, "tag", state.Tag, "directory", status.TargetDir)
+		"source", state.Source, "tag", state.Tag, "directory", status.TargetDir)
 
 	updated := m.Status(ctx)
 	if stateErr != nil {
@@ -90,6 +96,20 @@ func (m *Manager) Apply(ctx context.Context, data upstream.GeoData) (Status, err
 			fmt.Sprintf("geo 数据已更新并生效，但更新记录写入失败（%v）", stateErr))
 	}
 	return updated, nil
+}
+
+// repositoriesOf 汇总本次数据实际来自哪些仓库。
+// 同一来源可能横跨多个仓库（v2fly 的 geoip 与 domain-list-community），
+// 账本如实记下全部信任根，日后来源改名或换仓库时旧记录仍然读得懂。
+func repositoriesOf(release upstream.GeoRelease) []string {
+	repositories := make([]string, 0, len(release.Files))
+	for _, file := range release.Files {
+		if !slices.Contains(repositories, file.Repository) {
+			repositories = append(repositories, file.Repository)
+		}
+	}
+	slices.Sort(repositories)
+	return repositories
 }
 
 // geoTransaction 管理一次多文件替换：要么两个文件都换成新的，要么都退回旧的。

@@ -800,22 +800,32 @@ func TestDaeInstallRejectsConcurrentJobs(t *testing.T) {
 }
 
 type stubGeoService struct {
-	status  geodata.Status
-	err     error
-	mu      sync.Mutex
-	applied int
+	status    geodata.Status
+	err       error
+	mu        sync.Mutex
+	applied   int
+	requested upstream.GeoSource
 }
 
 func (s *stubGeoService) Status(context.Context) geodata.Status { return s.status }
 
-func (s *stubGeoService) Download(context.Context) (upstream.GeoData, error) {
+func (s *stubGeoService) Download(_ context.Context, source upstream.GeoSource) (upstream.GeoData, error) {
+	s.mu.Lock()
+	s.requested = source
+	s.mu.Unlock()
 	if s.err != nil {
 		return upstream.GeoData{}, s.err
 	}
 	return upstream.GeoData{
-		Release: upstream.GeoRelease{Tag: "202607252248"},
+		Release: upstream.GeoRelease{Source: source, Tag: "202607252248"},
 		Files:   map[string][]byte{upstream.GeoIPName: []byte("ip"), upstream.GeoSiteName: []byte("site")},
 	}, nil
+}
+
+func (s *stubGeoService) requestedSource() upstream.GeoSource {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.requested
 }
 
 func (s *stubGeoService) Apply(context.Context, upstream.GeoData) (geodata.Status, error) {
@@ -866,9 +876,10 @@ func TestGeoUpdateDisabledByDefault(t *testing.T) {
 // geo 更新与 dae 版本管理是两个独立开关：只开 geo 的部署是正常情况。
 func TestGeoUpdateWorksWithoutDaeInstall(t *testing.T) {
 	service := &stubGeoService{status: geodata.Status{
-		Repository: "Loyalsoldier/v2ray-rules-dat",
-		TargetDir:  "/etc/dae",
-		Updatable:  true,
+		Sources:       []upstream.GeoSourceInfo{{Source: upstream.GeoSourceLoyalsoldier}},
+		DefaultSource: upstream.GeoSourceLoyalsoldier,
+		TargetDir:     "/etc/dae",
+		Updatable:     true,
 	}}
 	application := newGeoApp(t, service)
 
@@ -901,6 +912,69 @@ func TestGeoUpdateRunsAsynchronously(t *testing.T) {
 	}
 	if service.applyCount() != 1 {
 		t.Fatalf("应恰好应用一次，实际 %d 次", service.applyCount())
+	}
+}
+
+// 请求体里指定的来源必须真正透传下去；两个来源的规则集不是同一套，
+// 选了 v2fly 却装了 Loyalsoldier 会静默改变路由行为。
+func TestGeoUpdateHonoursRequestedSource(t *testing.T) {
+	service := &stubGeoService{status: geodata.Status{
+		DefaultSource: upstream.GeoSourceLoyalsoldier,
+		Updatable:     true,
+	}}
+	application := newGeoApp(t, service)
+
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/dae/geo",
+		strings.NewReader(`{"source":"v2fly"}`)))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("状态码 = %d，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && service.requestedSource() == "" {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := service.requestedSource(); got != upstream.GeoSourceV2fly {
+		t.Fatalf("上游收到的来源 = %q，期望 v2fly", got)
+	}
+}
+
+// 省略来源时沿用状态里给出的默认值（上次用过的那个）。
+func TestGeoUpdateFallsBackToDefaultSource(t *testing.T) {
+	service := &stubGeoService{status: geodata.Status{
+		DefaultSource: upstream.GeoSourceV2fly,
+		Updatable:     true,
+	}}
+	application := newGeoApp(t, service)
+
+	application.Handler().ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/api/v1/dae/geo", nil))
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && service.requestedSource() == "" {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := service.requestedSource(); got != upstream.GeoSourceV2fly {
+		t.Fatalf("应沿用默认来源，实际 %q", got)
+	}
+}
+
+func TestGeoUpdateRejectsUnknownSource(t *testing.T) {
+	service := &stubGeoService{status: geodata.Status{Updatable: true}}
+	application := newGeoApp(t, service)
+
+	for _, body := range []string{`{"source":"evil"}`, `{"source":"../etc"}`, `{"source":"v2rayA"}`} {
+		recorder := httptest.NewRecorder()
+		application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/dae/geo",
+			strings.NewReader(body)))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("%s 状态码 = %d，期望 400", body, recorder.Code)
+		}
+		if !strings.Contains(recorder.Body.String(), "invalid_geo_source") {
+			t.Fatalf("错误码应为 invalid_geo_source: %s", recorder.Body.String())
+		}
+	}
+	if service.requestedSource() != "" {
+		t.Fatal("来源非法时不该发起任何下载")
 	}
 }
 

@@ -112,9 +112,16 @@ systemctl restart kdae-panel
 
 通常不需要额外放宽 `ReadWritePaths`：面板更新的是 dae **当前实际读取**的那份 geo，而它多半就在配置目录（已经可写）。若你的 geo 在 `/usr/local/share/dae`（例如用 `dae-installer` 装的），界面会明确提示该目录不可写以及要追加哪一条。
 
+界面上可以在两个来源之间切换：
+
+| 来源 | 仓库 | 适合谁 |
+|---|---|---|
+| Loyalsoldier 规则集 | `Loyalsoldier/v2ray-rules-dat` | 想要更细分类（`geosite:gfw`、`geosite:greatfire` 等）、每天更新 |
+| v2fly 官方 | `v2fly/geoip` + `v2fly/domain-list-community` | 想与 dae 发布包保持同一套数据，切过去不会改变现有规则的含义 |
+
 两点务必知悉：
 
-- **规则集会变。** 数据来自 `Loyalsoldier/v2ray-rules-dat`，而 dae 发布包自带的来自 v2fly。切换后 `geosite:` 开头的路由规则所匹配的域名集合会改变，dae 不会因此报错。
+- **切换来源会改变路由行为。** 两套规则集里同名分类所含的域名不同，切换后 `geosite:` 开头的路由规则匹配的范围会变，而 dae 不会因此报错。界面只在切换时警告，沿用同一来源不会反复打扰。
 - **更新会触发 `dae reload`。** 新连接不受影响，但进行中的长连接（大文件下载、SSH、串流）最多约 10 秒后可能被断开。若 dae 不接受新数据，面板会自动还原旧文件并重新加载。
 
 `setup_url` 默认使用面板的直接监听地址。通过 HTTPS 反向代理访问时，保留 `/setup#bootstrap=...` 部分，并将其协议和主机替换为实际面板地址；URL 片段不会发送给反向代理或写入访问日志。

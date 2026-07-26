@@ -94,33 +94,37 @@ func TestLiveGeoUpstream(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	provider := NewDefaultGeoProvider()
-	release, err := provider.Latest(ctx)
-	if err != nil {
-		t.Fatalf("解析 %s 的最新 geo 发布失败: %v", provider.Repository(), err)
-	}
-	if len(release.Files) != 2 {
-		t.Fatalf("应解析出两个 geo 文件，实际 %d 个: %+v", len(release.Files), release.Files)
-	}
-	t.Logf("%s %s（%s）", provider.Repository(), release.Tag, release.PublishedAt.Format(time.RFC3339))
+	registry := NewGeoRegistry()
+	for _, info := range registry.Sources() {
+		t.Run(string(info.Source), func(t *testing.T) {
+			release, err := registry.Latest(ctx, info.Source)
+			if err != nil {
+				t.Fatalf("解析 %v 的最新 geo 发布失败: %v", info.Repositories, err)
+			}
+			if len(release.Files) != 2 {
+				t.Fatalf("应解析出两个 geo 文件，实际 %d 个: %+v", len(release.Files), release.Files)
+			}
+			t.Logf("%s %s（%s）", info.Source, release.Tag, release.PublishedAt.Format(time.RFC3339))
 
-	data, err := provider.Fetch(ctx, release)
-	if err != nil {
-		t.Fatalf("下载并校验 geo 数据失败: %v", err)
-	}
-	for _, name := range []string{GeoIPName, GeoSiteName} {
-		content, ok := data.Files[name]
-		if !ok {
-			t.Fatalf("缺少 %s", name)
-		}
-		// V2Ray dat 是 protobuf，没有魔数可验；退而检查它不是 HTML 错误页
-		// 或空文件——上游改动路径时最典型的表现就是拿回一个 404 页面。
-		if len(content) < 1<<20 {
-			t.Errorf("%s 只有 %d 字节，不像是真实的 geo 数据", name, len(content))
-		}
-		if bytes.HasPrefix(bytes.TrimSpace(content), []byte("<")) {
-			t.Errorf("%s 看起来是 HTML 而不是 geo 数据", name)
-		}
-		t.Logf("%s: %d 字节", name, len(content))
+			data, err := registry.Fetch(ctx, release)
+			if err != nil {
+				t.Fatalf("下载并校验 geo 数据失败: %v", err)
+			}
+			for _, name := range []string{GeoIPName, GeoSiteName} {
+				content, ok := data.Files[name]
+				if !ok {
+					t.Fatalf("缺少 %s", name)
+				}
+				// V2Ray dat 是 protobuf，没有魔数可验；退而检查它不是 HTML 错误页
+				// 或空文件——上游改动路径时最典型的表现就是拿回一个 404 页面。
+				if len(content) < 1<<20 {
+					t.Errorf("%s 只有 %d 字节，不像是真实的 geo 数据", name, len(content))
+				}
+				if bytes.HasPrefix(bytes.TrimSpace(content), []byte("<")) {
+					t.Errorf("%s 看起来是 HTML 而不是 geo 数据", name)
+				}
+				t.Logf("%s（上游 %s）: %d 字节", name, release.Files[name].Asset, len(content))
+			}
+		})
 	}
 }

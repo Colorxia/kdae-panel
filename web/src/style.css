@@ -480,6 +480,12 @@ pre,
   line-height: 1.7;
 }
 
+.geo-sources {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
 .orchestration-stats {
   margin-bottom: 16px;
   display: grid;

@@ -23,10 +23,14 @@ func TestLiveGeoUpdate(t *testing.T) {
 	}
 	for _, testCase := range []struct {
 		name       string
+		source     upstream.GeoSource
 		reloadFail bool
 	}{
-		{"正常路径", false},
-		{"reload 失败应还原旧数据", true},
+		// 两个来源都要跑：v2fly 把两个文件放在两个仓库里，geosite 在上游还叫
+		// dlc.dat，这些差异只有对真实上游跑一遍才验证得到。
+		{"loyalsoldier 正常路径", upstream.GeoSourceLoyalsoldier, false},
+		{"v2fly 正常路径", upstream.GeoSourceV2fly, false},
+		{"reload 失败应还原旧数据", upstream.GeoSourceLoyalsoldier, true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			// 不用 t.TempDir()：它的清理失败会算作测试失败，而这里刚写下 28MB
@@ -52,7 +56,7 @@ func TestLiveGeoUpdate(t *testing.T) {
 			manager, err := New(Options{
 				ConfigPath: filepath.Join(directory, "config.dae"),
 				StatePath:  filepath.Join(directory, "state.json"),
-				Fetcher:    upstream.NewDefaultGeoProvider(),
+				Fetcher:    upstream.NewGeoRegistry(),
 				Reloader:   reloader,
 				Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 			})
@@ -63,7 +67,7 @@ func TestLiveGeoUpdate(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 			defer cancel()
 
-			data, err := manager.Download(ctx)
+			data, err := manager.Download(ctx, testCase.source)
 			if err != nil {
 				t.Fatalf("下载失败: %v", err)
 			}

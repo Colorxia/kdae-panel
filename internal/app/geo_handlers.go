@@ -14,8 +14,12 @@ import (
 // GeoService 是 geo 数据维护能力的消费者侧接口。
 type GeoService interface {
 	Status(ctx context.Context) geodata.Status
-	Download(ctx context.Context) (upstream.GeoData, error)
+	Download(ctx context.Context, source upstream.GeoSource) (upstream.GeoData, error)
 	Apply(ctx context.Context, data upstream.GeoData) (geodata.Status, error)
+}
+
+type geoRequest struct {
+	Source string `json:"source"`
 }
 
 // geoUpdateTimeout 覆盖下载与落盘的总时长。
@@ -47,22 +51,37 @@ func registerGeoRoutes(router *http.ServeMux, service GeoService, operations *sy
 	})
 
 	router.HandleFunc("POST /api/v1/dae/geo", func(writer http.ResponseWriter, request *http.Request) {
-		if !jobs.begin(PhaseDownloading, "", "", "geo 数据") {
+		// 来源可省略，此时沿用状态里给出的默认值（上次用过的那个）。
+		payload := geoRequest{}
+		if request.ContentLength > 0 && !decodeSmallJSONBody(writer, request, &payload) {
+			return
+		}
+		source := service.Status(request.Context()).DefaultSource
+		if payload.Source != "" {
+			parsed, err := upstream.ParseGeoSource(payload.Source)
+			if err != nil {
+				writeAPIError(writer, http.StatusBadRequest, "invalid_geo_source", err.Error())
+				return
+			}
+			source = parsed
+		}
+		if !jobs.begin(PhaseDownloading, string(source), "", "geo 数据") {
 			writeAPIError(writer, http.StatusConflict, "geo_update_in_progress", "已有 geo 更新任务正在执行")
 			return
 		}
-		go runGeoUpdate(jobs, service, operations, logger)
+		go runGeoUpdate(jobs, service, operations, logger, source)
 		writeJSON(writer, http.StatusAccepted, map[string]any{"job": jobs.snapshot()})
 	})
 }
 
-func runGeoUpdate(jobs *installJobs, service GeoService, operations *sync.Mutex, logger *slog.Logger) {
+func runGeoUpdate(jobs *installJobs, service GeoService, operations *sync.Mutex, logger *slog.Logger,
+	source upstream.GeoSource) {
 	ctx, cancel := context.WithTimeout(context.Background(), geoUpdateTimeout)
 	defer cancel()
 
 	// 下载与校验不触碰任何共享状态，因此不占控制锁：
 	// 二十多兆的下载不该把配置保存和订阅定时刷新一起堵住。
-	data, err := service.Download(ctx)
+	data, err := service.Download(ctx, source)
 	if err != nil {
 		logger.Warn("下载 geo 数据失败", "error", err)
 		jobs.finish(err)

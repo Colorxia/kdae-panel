@@ -133,7 +133,7 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		manager, err := geodata.New(geodata.Options{
 			ConfigPath: cfg.DaeConfigPath,
 			StatePath:  cfg.GeoStatePath,
-			Fetcher:    upstream.NewDefaultGeoProvider(),
+			Fetcher:    upstream.NewGeoRegistry(),
 			Service:    hostManager,
 			Reloader:   daeClient,
 			Logger:     logger,

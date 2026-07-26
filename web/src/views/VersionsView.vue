@@ -24,6 +24,7 @@ import {
 } from '@vicons/ionicons5'
 import { APIError, getJSON, postJSON } from '../api/client'
 import type {
+  GeoSource,
   GeoStatus,
   InstallJob,
   InstallProvision,
@@ -54,7 +55,11 @@ const geoStatus = ref<GeoStatus | null>(null)
 const geoJob = ref<InstallJob | null>(null)
 const geoDisabled = ref(false)
 const geoError = ref('')
+const geoSource = ref<GeoSource | null>(null)
 const geoBusy = computed(() => geoJob.value?.phase === 'downloading' || geoJob.value?.phase === 'applying')
+const activeGeoSource = computed(
+  () => geoStatus.value?.sources.find((item) => item.source === geoSource.value) || null,
+)
 
 let poller = 0
 let geoPoller = 0
@@ -278,6 +283,9 @@ async function loadGeo() {
     if (unmounted) return
     geoStatus.value = payload.status
     geoJob.value = payload.job
+    // 只在首次加载时采用后端的预选值。此后以用户的选择为准——轮询期间把它
+    // 重置回去，会让人刚点开 v2fly 就被弹回 Loyalsoldier。
+    if (geoSource.value === null) geoSource.value = payload.status.defaultSource
     geoError.value = ''
     geoDisabled.value = false
   } catch (error) {
@@ -292,14 +300,20 @@ async function loadGeo() {
 }
 
 function confirmUpdateGeo() {
-  const repository = geoStatus.value?.repository || '上游'
+  const chosen = activeGeoSource.value
+  const repositories = chosen?.repositories.join('、') || '上游'
+  // 换来源才是需要重点提醒的：它会改变 geosite: 规则的含义。
+  // 沿用同一个来源只是把数据往前推，把警告一并甩出去反而稀释了真正的风险。
+  const previous = geoStatus.value?.managed?.source
+  const switching = previous !== undefined && previous !== geoSource.value
   dialog.warning({
-    title: '更新 geo 数据',
-    // 两件事必须说清楚：换的是哪一套规则集，以及 reload 对连接的实际影响。
-    content: `面板会从 ${repository} 下载 geoip.dat 与 geosite.dat，逐个比对 sha256，`
+    title: `更新 geo 数据（${chosen?.label || geoSource.value}）`,
+    content: `面板会从 ${repositories} 下载 geoip.dat 与 geosite.dat，逐个比对 sha256，`
       + `写入 ${geoStatus.value?.targetDir}，然后执行 dae reload 让它生效。`
-      + '这套规则集与 dae 发布包自带的不是同一套（后者来自 v2fly），'
-      + `geosite: 开头的路由规则所匹配的域名集合会随之改变。`
+      + (switching
+        ? '⚠ 这次会切换到另一套规则集：geosite: 开头的路由规则所匹配的域名集合会随之改变，'
+          + '而 dae 不会因此报错。请确认你的路由规则在新规则集下仍然成立。'
+        : '')
       + 'reload 不会中断新连接，但进行中的长连接（大文件下载、SSH、串流）最多约 10 秒后可能被断开；'
       + '若 dae 不接受新数据，面板会自动还原成原来的 geo 并重新加载。',
     positiveText: '下载并更新',
@@ -310,7 +324,7 @@ function confirmUpdateGeo() {
 
 async function updateGeo() {
   try {
-    const payload = await postJSON<{ job: InstallJob }>('/api/v1/dae/geo')
+    const payload = await postJSON<{ job: InstallJob }>('/api/v1/dae/geo', { source: geoSource.value })
     geoJob.value = payload.job
     message.info('已开始更新 geo 数据')
     startGeoPolling()
@@ -646,20 +660,38 @@ onBeforeUnmount(() => {
           </dd>
         </div>
         <div>
-          <dt>数据来源</dt>
+          <dt>面板记录</dt>
           <dd>
-            <span class="mono">{{ geoStatus.repository }}</span>
-            <NText v-if="geoStatus.managed" depth="3">
-              （面板上次更新到 {{ geoStatus.managed.tag }}，{{ formatDateTime(geoStatus.managed.updatedAt) }}）
-            </NText>
-            <NText v-else depth="3">（面板尚未更新过）</NText>
+            <template v-if="geoStatus.managed">
+              {{ geoStatus.sources.find((item) => item.source === geoStatus!.managed!.source)?.label
+                || geoStatus.managed.source }}
+              · <span class="mono">{{ geoStatus.managed.tag }}</span>
+              <NText depth="3">（{{ formatDateTime(geoStatus.managed.updatedAt) }} 更新）</NText>
+            </template>
+            <NText v-else depth="3">面板尚未更新过 geo 数据</NText>
           </dd>
         </div>
       </dl>
+
+      <div v-if="geoStatus" class="geo-sources">
+        <NRadioGroup v-model:value="geoSource" size="small" :disabled="geoBusy">
+          <NRadioButton
+            v-for="item in geoStatus.sources"
+            :key="item.source"
+            :value="item.source"
+          >
+            {{ item.label }}
+          </NRadioButton>
+        </NRadioGroup>
+        <NText v-if="activeGeoSource" depth="3" class="geo-hint">
+          <span class="mono">{{ activeGeoSource.repositories.join('、') }}</span> —— {{ activeGeoSource.note }}
+        </NText>
+      </div>
+
       <NText depth="3" class="geo-hint">
-        更新只需 dae reload，不必重启：新连接不受影响，进行中的长连接最多约 10 秒后可能被断开。
-        这套规则集与 dae 发布包自带的（来自 v2fly）不是同一套，切换后 <code class="mono">geosite:</code>
-        规则匹配的域名集合会改变。
+        更新只需 dae reload，不必重启：新连接不受影响，但进行中的长连接最多约 10 秒后可能被断开。
+        两个来源的规则集不是同一套，切换会改变 <code class="mono">geosite:</code>
+        规则匹配的域名集合，而 dae 不会因此报错。
       </NText>
     </NCard>
   </div>

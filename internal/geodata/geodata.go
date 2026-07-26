@@ -27,9 +27,9 @@ const geoMode = 0o644
 
 // Fetcher 是 geo 数据上游的消费者侧接口。
 type Fetcher interface {
-	Latest(ctx context.Context) (upstream.GeoRelease, error)
+	Sources() []upstream.GeoSourceInfo
+	Latest(ctx context.Context, source upstream.GeoSource) (upstream.GeoRelease, error)
 	Fetch(ctx context.Context, release upstream.GeoRelease) (upstream.GeoData, error)
-	Repository() string
 }
 
 // ServiceController 读取 dae 服务状态，用于发现 DAE_LOCATION_ASSET。
@@ -57,8 +57,10 @@ type File struct {
 
 // Status 是 geo 数据的现状与可更新性。
 type Status struct {
-	// Repository 是数据来源，如实标明信任根。
-	Repository string `json:"repository"`
+	// Sources 是可选的数据来源。两个来源的规则集不是同一套，必须由用户显式选择。
+	Sources []upstream.GeoSourceInfo `json:"sources"`
+	// DefaultSource 是界面该预选的来源：用过就沿用上次那个，否则用内置默认。
+	DefaultSource upstream.GeoSource `json:"defaultSource"`
 	// TargetDir 是本次更新会写入的目录，即 dae 实际读取的那个目录。
 	TargetDir string `json:"targetDir"`
 	// SearchPath 是 dae 查找 geo 的完整顺序，便于用户理解为什么写这里。
@@ -74,9 +76,11 @@ type Status struct {
 
 // State 记录面板上次把 geo 更新到了哪一版。
 type State struct {
-	Repository string    `json:"repository"`
-	Tag        string    `json:"tag"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	Source upstream.GeoSource `json:"source"`
+	// Repositories 如实记录当时的信任根，来源改名或换仓库时旧记录仍可读。
+	Repositories []string  `json:"repositories,omitempty"`
+	Tag          string    `json:"tag"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 type Manager struct {

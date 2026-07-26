@@ -109,13 +109,19 @@ func (m *Manager) Status(ctx context.Context) Status {
 	target := targetDir(files, filepath.Dir(m.configPath))
 
 	status := Status{
-		Repository: m.fetcher.Repository(),
-		TargetDir:  target,
-		SearchPath: search,
-		Files:      files,
+		Sources:       m.fetcher.Sources(),
+		DefaultSource: upstream.GeoSourceLoyalsoldier,
+		TargetDir:     target,
+		SearchPath:    search,
+		Files:         files,
 	}
 	if state, err := m.readState(); err == nil && state != nil {
 		status.Managed = state
+		// 用过哪个就沿用哪个：换来源会改变 geosite: 规则的含义，
+		// 每次都把选择重置回默认值等于诱导用户反复来回切。
+		if state.Source != "" {
+			status.DefaultSource = state.Source
+		}
 	}
 
 	if err := writable(target); err != nil {

@@ -154,14 +154,27 @@ export interface GeoFile {
   shadowed?: string[]
 }
 
+export type GeoSource = 'loyalsoldier' | 'v2fly'
+
+export interface GeoSourceInfo {
+  source: GeoSource
+  label: string
+  /** 如实列出全部信任根；同一来源可能横跨多个仓库。 */
+  repositories: string[]
+  note: string
+}
+
 export interface GeoState {
-  repository: string
+  source: GeoSource
+  repositories?: string[]
   tag: string
   updatedAt: string
 }
 
 export interface GeoStatus {
-  repository: string
+  sources: GeoSourceInfo[]
+  /** 界面该预选的来源：用过就沿用上次那个，否则用内置默认。 */
+  defaultSource: GeoSource
   targetDir: string
   searchPath: string[]
   files: GeoFile[]

@@ -18,25 +18,33 @@ type fakeFetcher struct {
 	release upstream.GeoRelease
 	files   map[string][]byte
 	err     error
-	calls   int
+	// requested 记录实际被请求的来源，用于断言选择确实透传到了上游。
+	requested upstream.GeoSource
 }
 
-func (f *fakeFetcher) Latest(context.Context) (upstream.GeoRelease, error) {
+func (f *fakeFetcher) Sources() []upstream.GeoSourceInfo {
+	return []upstream.GeoSourceInfo{
+		{Source: upstream.GeoSourceLoyalsoldier, Label: "Loyalsoldier"},
+		{Source: upstream.GeoSourceV2fly, Label: "v2fly"},
+	}
+}
+
+func (f *fakeFetcher) Latest(_ context.Context, source upstream.GeoSource) (upstream.GeoRelease, error) {
+	f.requested = source
 	if f.err != nil {
 		return upstream.GeoRelease{}, f.err
 	}
-	return f.release, nil
+	release := f.release
+	release.Source = source
+	return release, nil
 }
 
 func (f *fakeFetcher) Fetch(_ context.Context, release upstream.GeoRelease) (upstream.GeoData, error) {
-	f.calls++
 	if f.err != nil {
 		return upstream.GeoData{}, f.err
 	}
 	return upstream.GeoData{Release: release, Files: f.files}, nil
 }
-
-func (f *fakeFetcher) Repository() string { return "example/geo" }
 
 type fakeService struct {
 	environment map[string]string
@@ -104,7 +112,7 @@ func seedGeo(t *testing.T, directory, name, content string) string {
 func TestUpdateWritesBothFilesAndReloads(t *testing.T) {
 	manager, _, reloader, directory := newTestManager(t)
 
-	data, err := manager.Download(context.Background())
+	data, err := manager.Download(context.Background(), upstream.GeoSourceLoyalsoldier)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +149,7 @@ func TestUpdateRestoresPreviousDataWhenReloadFails(t *testing.T) {
 	seedGeo(t, directory, upstream.GeoIPName, "old-geoip")
 	seedGeo(t, directory, upstream.GeoSiteName, "old-geosite")
 
-	data, err := manager.Download(context.Background())
+	data, err := manager.Download(context.Background(), upstream.GeoSourceLoyalsoldier)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +183,7 @@ func TestUpdateRemovesBackupAfterSuccess(t *testing.T) {
 	manager, _, _, directory := newTestManager(t)
 	seedGeo(t, directory, upstream.GeoIPName, "old-geoip")
 
-	data, err := manager.Download(context.Background())
+	data, err := manager.Download(context.Background(), upstream.GeoSourceLoyalsoldier)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,6 +198,43 @@ func TestUpdateRemovesBackupAfterSuccess(t *testing.T) {
 	staged, _ := filepath.Glob(filepath.Join(directory, ".kdae-panel-*"))
 	if len(staged) != 0 {
 		t.Fatalf("不应留下暂存文件: %v", staged)
+	}
+}
+
+// 选定的来源必须透传到上游，并如实记进账本——两个来源的规则集不是同一套，
+// 记错了会让用户以为自己用的是另一套数据。
+func TestUpdateRecordsChosenSource(t *testing.T) {
+	manager, fetcher, _, _ := newTestManager(t)
+
+	data, err := manager.Download(context.Background(), upstream.GeoSourceV2fly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetcher.requested != upstream.GeoSourceV2fly {
+		t.Fatalf("上游收到的来源 = %q", fetcher.requested)
+	}
+	status, err := manager.Apply(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Managed == nil || status.Managed.Source != upstream.GeoSourceV2fly {
+		t.Fatalf("账本应记下用的是哪个来源: %+v", status.Managed)
+	}
+	// 用过哪个就沿用哪个：每次都重置回默认值等于诱导用户反复来回切，
+	// 而来回切会改变 geosite: 规则的含义。
+	if status.DefaultSource != upstream.GeoSourceV2fly {
+		t.Fatalf("下次应预选上次用过的来源，实际 %q", status.DefaultSource)
+	}
+}
+
+func TestStatusDefaultsToLoyalsoldierBeforeAnyUpdate(t *testing.T) {
+	manager, _, _, _ := newTestManager(t)
+	status := manager.Status(context.Background())
+	if status.DefaultSource != upstream.GeoSourceLoyalsoldier {
+		t.Fatalf("尚未更新过时应预选内置默认来源，实际 %q", status.DefaultSource)
+	}
+	if len(status.Sources) != 2 {
+		t.Fatalf("应列出全部可选来源: %+v", status.Sources)
 	}
 }
 
@@ -285,7 +330,7 @@ func TestApplyRejectsEmptyContent(t *testing.T) {
 	}
 	seedGeo(t, directory, upstream.GeoIPName, "old-geoip")
 
-	data, err := manager.Download(context.Background())
+	data, err := manager.Download(context.Background(), upstream.GeoSourceLoyalsoldier)
 	if err != nil {
 		t.Fatal(err)
 	}

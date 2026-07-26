@@ -96,12 +96,20 @@ X-CSRF-Token: <csrfToken>
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/dae/geo` | geo 数据现状与正在进行的任务 |
-| `POST` | `/dae/geo` | 更新到上游最新版（无请求体） |
+| `GET` | `/dae/geo` | geo 数据现状、可选来源与正在进行的任务 |
+| `POST` | `/dae/geo` | 更新到指定来源的最新版 |
 
 独立开关 `KDAE_PANEL_ENABLE_GEO_UPDATE`，与 dae 版本管理互不影响；未启用时返回 `503 geo_update_disabled`。
 
-`GET` 返回 `status.targetDir`（本次会写入哪个目录）、`status.searchPath`（dae 的完整查找顺序）、每个文件的实际路径与大小，以及 `files[].shadowed`——被优先级更高的副本遮蔽、因而不会生效的同名文件。
+更新请求体（可省略，此时沿用 `status.defaultSource`）：
+
+```json
+{ "source": "loyalsoldier" }
+```
+
+`source` 只接受 `loyalsoldier` 与 `v2fly` 两个枚举值，仓库地址在代码中写死，不接受外部指定；未知值返回 `400 invalid_geo_source`。**两个来源的规则集不是同一套**，切换会改变 `geosite:` 规则匹配的域名集合。
+
+`GET` 返回 `status.sources`（每个来源的标识、展示名、全部信任根仓库与说明）、`status.defaultSource`（界面该预选哪个——用过就是上次那个）、`status.targetDir`（本次会写入哪个目录）、`status.searchPath`（dae 的完整查找顺序）、每个文件的实际路径与大小，以及 `files[].shadowed`——被优先级更高的副本遮蔽、因而不会生效的同名文件。
 
 `POST` 立即返回 `202` 与任务快照，进度靠轮询 `GET /dae/geo`，阶段与安装任务一致（`downloading` → `applying` → `done`/`failed`）。同一时刻只允许一个 geo 任务，重复提交返回 `409 geo_update_in_progress`；它与安装任务各有各的任务槽，但落盘阶段共用全局控制门。
 
