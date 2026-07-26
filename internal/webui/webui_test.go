@@ -48,8 +48,9 @@ func TestUnknownRoutesFallBackToIndex(t *testing.T) {
 	}
 }
 
-// 回退不能把真实资源也吃掉：构建产物必须原样送出。
-func TestRealAssetsAreServed(t *testing.T) {
+// firstAsset 从嵌入产物里找一个 .js 资源做样本，没有就跳过测试。
+func firstAsset(t *testing.T) string {
+	t.Helper()
 	dist, err := fs.Sub(assets, "dist")
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +71,12 @@ func TestRealAssetsAreServed(t *testing.T) {
 	if sample == "" {
 		t.Skip("嵌入产物里没有 .js 资源")
 	}
+	return sample
+}
+
+// 回退不能把真实资源也吃掉：构建产物必须原样送出。
+func TestRealAssetsAreServed(t *testing.T) {
+	sample := firstAsset(t)
 
 	response := get(t, "/"+sample)
 	if response.StatusCode != http.StatusOK {
@@ -85,5 +92,23 @@ func TestRealAssetsAreServed(t *testing.T) {
 	}
 	if len(body) == 0 {
 		t.Fatalf("%s 内容为空", sample)
+	}
+}
+
+// embed 的文件没有修改时间，响应里发不出 Last-Modified/ETag，浏览器会
+// 启发式缓存入口页，面板升级后用户停留在旧界面。资产靠文件名里的内容
+// 哈希放心长缓存，入口页（含 SPA 兜底与直接请求）必须每次取新。
+func TestCacheHeaders(t *testing.T) {
+	for _, target := range []string{"/", "/index.html", "/dashboard", "/assets/"} {
+		response := get(t, target)
+		if got := response.Header.Get("Cache-Control"); got != "no-cache" {
+			t.Fatalf("%s Cache-Control = %q，期望 no-cache", target, got)
+		}
+	}
+
+	response := get(t, "/"+firstAsset(t))
+	want := "public, max-age=31536000, immutable"
+	if got := response.Header.Get("Cache-Control"); got != want {
+		t.Fatalf("资产 Cache-Control = %q，期望 %q", got, want)
 	}
 }
