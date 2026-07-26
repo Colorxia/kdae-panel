@@ -4,6 +4,18 @@
 
 面板不引用 dae 的内部 Go 包，也不读取其内部 eBPF Map。它只依赖 dae 的公开命令、`.dae` 配置文件、systemd 和 journald，因此 dae 内部重构、协议实现变化和普通配置字段新增通常不需要同步修改面板。
 
+## 界面预览
+
+| 运行概览 | 代理编排 |
+| :--: | :--: |
+| ![运行概览](docs/screenshots/dashboard.png) | ![代理编排](docs/screenshots/orchestration.png) |
+
+| dae 版本管理 | 登录 |
+| :--: | :--: |
+| ![dae 版本管理](docs/screenshots/versions.png) | ![登录](docs/screenshots/login.png) |
+
+*截图来自本地演示环境，节点、订阅与延迟均为示例数据。*
+
 ## 功能
 
 - 通过 `dae export outline` 动态发现当前版本的配置结构；
