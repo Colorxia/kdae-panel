@@ -43,7 +43,7 @@ jobs:
           go vet ./...
 
       - name: 并发竞争检查
-        run: go test -race ./internal/app ./internal/auth ./internal/configstore ./internal/dae ./internal/daeinstall ./internal/host ./internal/netprobe ./internal/schedule ./internal/upstream
+        run: go test -race ./internal/app ./internal/atomicfile ./internal/auth ./internal/command ./internal/configstore ./internal/dae ./internal/daeinstall ./internal/geodata ./internal/host ./internal/netprobe ./internal/schedule ./internal/upstream
 
       - name: Go 漏洞扫描
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...

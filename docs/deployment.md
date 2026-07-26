@@ -53,6 +53,8 @@ sudo systemctl restart kdae-panel
 | `KDAE_PANEL_SCHEDULE_FILE` | `/var/lib/kdae-panel/schedule.json` | 订阅自动刷新的设置与上次执行时间 |
 | `KDAE_PANEL_INSTALL_STATE_FILE` | `/var/lib/kdae-panel/dae-install.json` | dae 版本安装记录，同前缀下还存放回滚用的上一版二进制 |
 | `KDAE_PANEL_ENABLE_DAE_INSTALL` | `false` | 允许通过面板安装与切换 dae 版本，开启后还需放宽单元的 `ReadWritePaths` |
+| `KDAE_PANEL_GEO_STATE_FILE` | `/var/lib/kdae-panel/geo-update.json` | geo 数据更新记录 |
+| `KDAE_PANEL_ENABLE_GEO_UPDATE` | `false` | 允许一键更新 geo 数据，与上一项相互独立 |
 | `KDAE_PANEL_SESSION_TTL` | `12h` | 会话绝对有效期 |
 | `KDAE_PANEL_SECURE_COOKIE` | `false` | Cookie 是否仅允许 HTTPS |
 
@@ -93,6 +95,27 @@ systemctl restart kdae-panel
 首次安装会写入可执行文件、geo 数据、服务单元，以及一份不劫持任何流量的种子配置（仅在配置不存在时）。**它不会自动启动 dae**——请先在配置管理页写好规则再手动启动，否则透明代理可能切断你当前的连接。已存在的服务单元与配置一律不覆盖。
 
 只想升级已有的 dae 时不需要这一步。若你更习惯官方工具，[dae-installer](https://github.com/daeuniverse/dae-installer) 依然可用，两者互不冲突。
+
+### 启用 geo 数据更新
+
+这是**另一个独立开关**，不需要开启上面的 dae 版本管理：
+
+```bash
+env_file=/etc/kdae-panel/kdae-panel.env
+if grep -q '^KDAE_PANEL_ENABLE_GEO_UPDATE=' "$env_file"; then
+  sed -i 's/^KDAE_PANEL_ENABLE_GEO_UPDATE=.*/KDAE_PANEL_ENABLE_GEO_UPDATE=true/' "$env_file"
+else
+  echo 'KDAE_PANEL_ENABLE_GEO_UPDATE=true' >> "$env_file"
+fi
+systemctl restart kdae-panel
+```
+
+通常不需要额外放宽 `ReadWritePaths`：面板更新的是 dae **当前实际读取**的那份 geo，而它多半就在配置目录（已经可写）。若你的 geo 在 `/usr/local/share/dae`（例如用 `dae-installer` 装的），界面会明确提示该目录不可写以及要追加哪一条。
+
+两点务必知悉：
+
+- **规则集会变。** 数据来自 `Loyalsoldier/v2ray-rules-dat`，而 dae 发布包自带的来自 v2fly。切换后 `geosite:` 开头的路由规则所匹配的域名集合会改变，dae 不会因此报错。
+- **更新会触发 `dae reload`。** 新连接不受影响，但进行中的长连接（大文件下载、SSH、串流）最多约 10 秒后可能被断开。若 dae 不接受新数据，面板会自动还原旧文件并重新加载。
 
 `setup_url` 默认使用面板的直接监听地址。通过 HTTPS 反向代理访问时，保留 `/setup#bootstrap=...` 部分，并将其协议和主机替换为实际面板地址；URL 片段不会发送给反向代理或写入访问日志。
 

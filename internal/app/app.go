@@ -20,6 +20,7 @@ import (
 	"github.com/tuoro/kdae-panel/internal/configstore"
 	"github.com/tuoro/kdae-panel/internal/dae"
 	"github.com/tuoro/kdae-panel/internal/daeinstall"
+	"github.com/tuoro/kdae-panel/internal/geodata"
 	"github.com/tuoro/kdae-panel/internal/host"
 	"github.com/tuoro/kdae-panel/internal/netprobe"
 	"github.com/tuoro/kdae-panel/internal/schedule"
@@ -57,6 +58,7 @@ type Dependencies struct {
 	Probe          ProbeService
 	Schedule       ScheduleService
 	Install        InstallService
+	Geo            GeoService
 }
 
 type AuthenticationService interface {
@@ -127,6 +129,21 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		}
 		dependencies.Install = installer
 	}
+	if cfg.EnableGeoUpdate {
+		manager, err := geodata.New(geodata.Options{
+			ConfigPath: cfg.DaeConfigPath,
+			StatePath:  cfg.GeoStatePath,
+			Fetcher:    upstream.NewDefaultGeoProvider(),
+			Service:    hostManager,
+			Reloader:   daeClient,
+			Logger:     logger,
+		})
+		if err != nil {
+			_ = authStore.Close()
+			return nil, fmt.Errorf("初始化 geo 数据更新: %w", err)
+		}
+		dependencies.Geo = manager
+	}
 	application, err := NewWithDependencies(cfg, logger, dependencies)
 	if err != nil {
 		_ = authStore.Close()
@@ -189,6 +206,7 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 	registerProbeRoutes(router, dependencies.Probe, logger)
 	registerScheduleRoutes(router, scheduleService)
 	registerUpstreamRoutes(router, dependencies.Install, operations, logger)
+	registerGeoRoutes(router, dependencies.Geo, operations, logger)
 	registerAuthenticationRoutes(router, dependencies.Authentication, cfg.SecureCookie, cfg.BootstrapToken, proxyTrust)
 	apiNotFound := func(writer http.ResponseWriter, _ *http.Request) {
 		writeAPIError(writer, http.StatusNotFound, "api_not_found", "API 路径不存在")

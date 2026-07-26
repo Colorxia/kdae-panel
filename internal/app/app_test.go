@@ -19,6 +19,7 @@ import (
 	"github.com/tuoro/kdae-panel/internal/configstore"
 	"github.com/tuoro/kdae-panel/internal/dae"
 	"github.com/tuoro/kdae-panel/internal/daeinstall"
+	"github.com/tuoro/kdae-panel/internal/geodata"
 	"github.com/tuoro/kdae-panel/internal/host"
 	"github.com/tuoro/kdae-panel/internal/netprobe"
 	"github.com/tuoro/kdae-panel/internal/schedule"
@@ -796,6 +797,144 @@ func TestDaeInstallRejectsConcurrentJobs(t *testing.T) {
 		t.Fatalf("并发任务状态码 = %d，期望 409", second.Code)
 	}
 	close(release)
+}
+
+type stubGeoService struct {
+	status  geodata.Status
+	err     error
+	mu      sync.Mutex
+	applied int
+}
+
+func (s *stubGeoService) Status(context.Context) geodata.Status { return s.status }
+
+func (s *stubGeoService) Download(context.Context) (upstream.GeoData, error) {
+	if s.err != nil {
+		return upstream.GeoData{}, s.err
+	}
+	return upstream.GeoData{
+		Release: upstream.GeoRelease{Tag: "202607252248"},
+		Files:   map[string][]byte{upstream.GeoIPName: []byte("ip"), upstream.GeoSiteName: []byte("site")},
+	}, nil
+}
+
+func (s *stubGeoService) Apply(context.Context, upstream.GeoData) (geodata.Status, error) {
+	s.mu.Lock()
+	s.applied++
+	s.mu.Unlock()
+	return s.status, s.err
+}
+
+func (s *stubGeoService) applyCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.applied
+}
+
+func newGeoApp(t *testing.T, service GeoService) *App {
+	t.Helper()
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{Dae: stubDaeService{}, Geo: service},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return application
+}
+
+// 未注入 geo 服务即代表功能关闭。必须返回可读的 geo_update_disabled，
+// 而不是落到 api_not_found——前端正是按这个错误码分支处理的。
+func TestGeoUpdateDisabledByDefault(t *testing.T) {
+	application := newGeoApp(t, nil)
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/api/v1/dae/geo", nil),
+		httptest.NewRequest(http.MethodPost, "/api/v1/dae/geo", nil),
+	} {
+		recorder := httptest.NewRecorder()
+		application.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s 状态码 = %d，期望 503", request.Method, recorder.Code)
+		}
+		if !strings.Contains(recorder.Body.String(), "geo_update_disabled") {
+			t.Fatalf("响应应说明功能未启用: %s", recorder.Body.String())
+		}
+	}
+}
+
+// geo 更新与 dae 版本管理是两个独立开关：只开 geo 的部署是正常情况。
+func TestGeoUpdateWorksWithoutDaeInstall(t *testing.T) {
+	service := &stubGeoService{status: geodata.Status{
+		Repository: "Loyalsoldier/v2ray-rules-dat",
+		TargetDir:  "/etc/dae",
+		Updatable:  true,
+	}}
+	application := newGeoApp(t, service)
+
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/dae/geo", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+	// dae 版本管理没开，它的端点仍应各自返回自己的未启用提示
+	installRecorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(installRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/dae/install", nil))
+	if !strings.Contains(installRecorder.Body.String(), "dae_install_disabled") {
+		t.Fatalf("dae 版本管理应报告自己未启用: %s", installRecorder.Body.String())
+	}
+}
+
+func TestGeoUpdateRunsAsynchronously(t *testing.T) {
+	service := &stubGeoService{status: geodata.Status{Updatable: true}}
+	application := newGeoApp(t, service)
+
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/dae/geo", nil))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("状态码 = %d，期望 202，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && service.applyCount() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if service.applyCount() != 1 {
+		t.Fatalf("应恰好应用一次，实际 %d 次", service.applyCount())
+	}
+}
+
+func TestGeoUpdateReportsFailure(t *testing.T) {
+	service := &stubGeoService{
+		status: geodata.Status{Updatable: true},
+		err:    errors.New("校验和不匹配"),
+	}
+	application := newGeoApp(t, service)
+	application.Handler().ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/api/v1/dae/geo", nil))
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		recorder := httptest.NewRecorder()
+		application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/dae/geo", nil))
+		var payload struct {
+			Job Job `json:"job"`
+		}
+		if err := json.NewDecoder(recorder.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Job.Phase == PhaseFailed {
+			if !strings.Contains(payload.Job.Error, "校验和") {
+				t.Fatalf("失败原因应透传: %q", payload.Job.Error)
+			}
+			return
+		}
+		if payload.Job.Phase == PhaseDone {
+			t.Fatal("下载失败时任务不该报告成功")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("任务迟迟没有结束")
 }
 
 func TestDaeInstallRequiresAuthentication(t *testing.T) {

@@ -1,0 +1,126 @@
+// Package geodata 维护 dae 的 geo 数据文件（geoip.dat / geosite.dat）。
+//
+// 它和 dae 版本管理是两件事，刻意分开：更新 geo 只写一个数据目录，既不碰
+// 可执行文件也不碰 systemd 单元，因此不具备"面板缺陷升级为任意代码执行"的
+// 性质，不该逼着用户为了刷新 geo 而放宽二进制目录的写权限。
+//
+// 更新只需 dae reload，不必 restart：reload 会重建控制平面并重新编译路由规则，
+// 从而重读 geo 文件。这与替换二进制必须 restart（要重挂 eBPF）不同，
+// 因此更新 geo 不会中断现有连接。
+package geodata
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"time"
+
+	"github.com/tuoro/kdae-panel/internal/host"
+	"github.com/tuoro/kdae-panel/internal/upstream"
+)
+
+// LocationAssetEnv 是 dae 用来指定 geo 数据目录的环境变量。
+// 它的优先级高于所有默认搜索路径，不读它就无法确定 dae 究竟从哪里读。
+const LocationAssetEnv = "DAE_LOCATION_ASSET"
+
+const geoMode = 0o644
+
+// Fetcher 是 geo 数据上游的消费者侧接口。
+type Fetcher interface {
+	Latest(ctx context.Context) (upstream.GeoRelease, error)
+	Fetch(ctx context.Context, release upstream.GeoRelease) (upstream.GeoData, error)
+	Repository() string
+}
+
+// ServiceController 读取 dae 服务状态，用于发现 DAE_LOCATION_ASSET。
+type ServiceController interface {
+	Status(ctx context.Context) (host.Status, error)
+}
+
+// Reloader 让 dae 重新读取 geo 数据。
+type Reloader interface {
+	Reload(ctx context.Context) error
+}
+
+// File 是一个 geo 数据文件的现状。
+type File struct {
+	Name string `json:"name"`
+	// Path 是 dae 实际会读到的那一份的完整路径；不存在时为空。
+	Path    string     `json:"path,omitempty"`
+	Present bool       `json:"present"`
+	Size    int64      `json:"size,omitempty"`
+	ModTime *time.Time `json:"modTime,omitempty"`
+	// Shadowed 列出被 Path 遮蔽掉的同名文件。dae 只读优先级最高的那一份，
+	// 其余的既占磁盘又容易让人以为"更新了却没生效"。
+	Shadowed []string `json:"shadowed,omitempty"`
+}
+
+// Status 是 geo 数据的现状与可更新性。
+type Status struct {
+	// Repository 是数据来源，如实标明信任根。
+	Repository string `json:"repository"`
+	// TargetDir 是本次更新会写入的目录，即 dae 实际读取的那个目录。
+	TargetDir string `json:"targetDir"`
+	// SearchPath 是 dae 查找 geo 的完整顺序，便于用户理解为什么写这里。
+	SearchPath []string `json:"searchPath"`
+	Files      []File   `json:"files"`
+	// Updatable 为假表示还不能更新，Problem 说明原因。
+	Updatable bool   `json:"updatable"`
+	Problem   string `json:"problem,omitempty"`
+	// Managed 记录面板上次更新到哪一版。
+	Managed  *State   `json:"managed,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// State 记录面板上次把 geo 更新到了哪一版。
+type State struct {
+	Repository string    `json:"repository"`
+	Tag        string    `json:"tag"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
+
+type Manager struct {
+	configPath string
+	statePath  string
+	fetcher    Fetcher
+	service    ServiceController
+	reloader   Reloader
+	logger     *slog.Logger
+}
+
+type Options struct {
+	// ConfigPath 是 dae 的入口配置，其所在目录是 geo 搜索顺序里优先级最高的默认位置。
+	ConfigPath string
+	StatePath  string
+	Fetcher    Fetcher
+	Service    ServiceController
+	Reloader   Reloader
+	Logger     *slog.Logger
+}
+
+func New(options Options) (*Manager, error) {
+	if options.ConfigPath == "" {
+		return nil, errors.New("dae 配置路径不能为空")
+	}
+	if options.StatePath == "" {
+		return nil, errors.New("geo 状态文件路径不能为空")
+	}
+	if options.Fetcher == nil {
+		return nil, errors.New("geo 数据取回器不能为空")
+	}
+	if options.Reloader == nil {
+		return nil, errors.New("dae 重载器不能为空")
+	}
+	logger := options.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Manager{
+		configPath: options.ConfigPath,
+		statePath:  options.StatePath,
+		fetcher:    options.Fetcher,
+		service:    options.Service,
+		reloader:   options.Reloader,
+		logger:     logger,
+	}, nil
+}

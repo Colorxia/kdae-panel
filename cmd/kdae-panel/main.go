@@ -39,6 +39,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	enableGeoUpdateDefault, err := envBool("KDAE_PANEL_ENABLE_GEO_UPDATE", cfg.EnableGeoUpdate)
+	if err != nil {
+		return err
+	}
 	listen := flag.String("listen", envOr("KDAE_PANEL_LISTEN", cfg.ListenAddress), "HTTP 监听地址")
 	bootstrapToken := flag.String("bootstrap-token", envOr("KDAE_PANEL_BOOTSTRAP_TOKEN", cfg.BootstrapToken), "首次初始化 bootstrap token")
 	trustedProxies := flag.String("trusted-proxies", envOr("KDAE_PANEL_TRUSTED_PROXIES", cfg.TrustedProxies), "可信反向代理 CIDR，逗号分隔")
@@ -51,7 +55,9 @@ func run() error {
 	databasePath := flag.String("database", envOr("KDAE_PANEL_DATABASE", cfg.DatabasePath), "面板 SQLite 数据库路径")
 	schedulePath := flag.String("schedule-file", envOr("KDAE_PANEL_SCHEDULE_FILE", cfg.SchedulePath), "订阅自动刷新设置文件路径")
 	installStatePath := flag.String("install-state-file", envOr("KDAE_PANEL_INSTALL_STATE_FILE", cfg.InstallStatePath), "dae 版本安装状态文件路径")
+	geoStatePath := flag.String("geo-state-file", envOr("KDAE_PANEL_GEO_STATE_FILE", cfg.GeoStatePath), "geo 数据更新状态文件路径")
 	enableDaeInstall := flag.Bool("enable-dae-install", enableDaeInstallDefault, "允许通过面板安装与切换 dae 版本")
+	enableGeoUpdate := flag.Bool("enable-geo-update", enableGeoUpdateDefault, "允许通过面板一键更新 geo 数据")
 	sessionTTL := flag.Duration("session-ttl", sessionTTLDefault, "登录会话有效期")
 	secureCookie := flag.Bool("secure-cookie", secureCookieDefault, "仅通过 HTTPS 发送登录 Cookie")
 	showVersion := flag.Bool("version", false, "显示版本")
@@ -73,7 +79,9 @@ func run() error {
 	cfg.DatabasePath = *databasePath
 	cfg.SchedulePath = *schedulePath
 	cfg.InstallStatePath = *installStatePath
+	cfg.GeoStatePath = *geoStatePath
 	cfg.EnableDaeInstall = *enableDaeInstall
+	cfg.EnableGeoUpdate = *enableGeoUpdate
 	cfg.SessionTTL = *sessionTTL
 	cfg.SecureCookie = *secureCookie
 	cfg.Version = version

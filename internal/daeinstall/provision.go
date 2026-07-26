@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tuoro/kdae-panel/internal/atomicfile"
 	"github.com/tuoro/kdae-panel/internal/host"
 	"github.com/tuoro/kdae-panel/internal/upstream"
 )
@@ -202,7 +203,7 @@ func (i *Installer) FirstInstall(ctx context.Context, bundle upstream.Bundle, so
 	if err := i.backupExistingBinary(bundle.Binary); err != nil {
 		return Status{}, err
 	}
-	if err := replaceFile(staged, i.binaryPath); err != nil {
+	if err := atomicfile.Replace(staged, i.binaryPath); err != nil {
 		return Status{}, fmt.Errorf("安装 dae 可执行文件: %w", err)
 	}
 	committed = true

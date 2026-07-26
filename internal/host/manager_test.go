@@ -27,9 +27,9 @@ func (r *fakeRunner) Run(_ context.Context, name string, args ...string) (comman
 }
 
 func TestStatus(t *testing.T) {
-	key := "systemctl show dae --no-page --property=Id,Description,LoadState,ActiveState,SubState,UnitFileState,MainPID,ExecMainStatus,ActiveEnterTimestamp,ExecMainStartTimestamp,MemoryCurrent,CPUUsageNSec,TasksCurrent,NRestarts,FragmentPath,ExecStart"
+	key := "systemctl show dae --no-page --property=Id,Description,LoadState,ActiveState,SubState,UnitFileState,MainPID,ExecMainStatus,ActiveEnterTimestamp,ExecMainStartTimestamp,MemoryCurrent,CPUUsageNSec,TasksCurrent,NRestarts,FragmentPath,ExecStart,Environment"
 	runner := &fakeRunner{results: map[string]command.Result{
-		key: {Stdout: "Id=dae.service\nDescription=dae Service\nLoadState=loaded\nActiveState=active\nSubState=running\nMainPID=123\nMemoryCurrent=4096\nCPUUsageNSec=8000\nTasksCurrent=7\nNRestarts=2\nExecStart={ path=/usr/local/bin/dae ; argv[]=/usr/local/bin/dae run --disable-timestamp ; ignore_errors=no }\n"},
+		key: {Stdout: "Id=dae.service\nDescription=dae Service\nLoadState=loaded\nActiveState=active\nSubState=running\nMainPID=123\nMemoryCurrent=4096\nCPUUsageNSec=8000\nTasksCurrent=7\nNRestarts=2\nExecStart={ path=/usr/local/bin/dae ; argv[]=/usr/local/bin/dae run --disable-timestamp ; ignore_errors=no }\nEnvironment=DAE_LOCATION_ASSET=/opt/geo LANG=C\n"},
 	}, errors: map[string]error{}}
 	manager, err := NewManagerWithRunner("dae", "systemctl", "journalctl", runner, time.Second)
 	if err != nil {
@@ -46,6 +46,26 @@ func TestStatus(t *testing.T) {
 	// 安装新版本时要替换的正是这个路径，解析错会导致"装了但没换"
 	if status.ExecStartPath != "/usr/local/bin/dae" {
 		t.Fatalf("ExecStart 路径解析 = %q", status.ExecStartPath)
+	}
+	// DAE_LOCATION_ASSET 决定 dae 从哪里读 geo，漏了它会把更新写到不生效的地方
+	if status.Environment["DAE_LOCATION_ASSET"] != "/opt/geo" {
+		t.Fatalf("环境变量解析 = %+v", status.Environment)
+	}
+}
+
+func TestParseEnvironment(t *testing.T) {
+	got := parseEnvironment("DAE_LOCATION_ASSET=/etc/dae LANG=C EMPTY=")
+	if got["DAE_LOCATION_ASSET"] != "/etc/dae" || got["LANG"] != "C" {
+		t.Fatalf("解析结果 = %+v", got)
+	}
+	if value, ok := got["EMPTY"]; !ok || value != "" {
+		t.Fatalf("空值也应保留键: %+v", got)
+	}
+	if parseEnvironment("") != nil {
+		t.Fatal("空输入应返回 nil")
+	}
+	if parseEnvironment("没有等号") != nil {
+		t.Fatal("解析不出任何键值时应返回 nil")
 	}
 }
 

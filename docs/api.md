@@ -92,6 +92,21 @@ X-CSRF-Token: <csrfToken>
 
 校验和缺失或格式不符时拒绝安装，没有跳过校验的开关。kdae 的构建产物保留 90 天，过期版本在列表中标记为不可安装；面板只接受本仓库自己的构建，解析时会重新核对 `head_repository`、事件类型、分支与工作流文件路径四项。
 
+## geo 数据更新
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/dae/geo` | geo 数据现状与正在进行的任务 |
+| `POST` | `/dae/geo` | 更新到上游最新版（无请求体） |
+
+独立开关 `KDAE_PANEL_ENABLE_GEO_UPDATE`，与 dae 版本管理互不影响；未启用时返回 `503 geo_update_disabled`。
+
+`GET` 返回 `status.targetDir`（本次会写入哪个目录）、`status.searchPath`（dae 的完整查找顺序）、每个文件的实际路径与大小，以及 `files[].shadowed`——被优先级更高的副本遮蔽、因而不会生效的同名文件。
+
+`POST` 立即返回 `202` 与任务快照，进度靠轮询 `GET /dae/geo`，阶段与安装任务一致（`downloading` → `applying` → `done`/`failed`）。同一时刻只允许一个 geo 任务，重复提交返回 `409 geo_update_in_progress`；它与安装任务各有各的任务槽，但落盘阶段共用全局控制门。
+
+更新只触发 `dae reload`，不重启服务。若 dae 不接受新数据，面板会自动还原旧文件并再 reload 一次，任务标记为 `failed`。
+
 ## 订阅自动刷新
 
 | 方法 | 路径 | 说明 |

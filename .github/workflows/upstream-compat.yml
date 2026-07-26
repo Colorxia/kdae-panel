@@ -32,12 +32,12 @@ jobs:
           go-version: '1.25.12'
           cache: true
 
-      # 版本发现依赖上游的发布命名、.dgst 格式与 Actions 的 digest 字段，
-      # 这些都在面板之外，只有对真实上游跑一遍才能发现它们变了。
-      - name: 验证版本发现契约
+      # 版本发现与 geo 数据都依赖上游的资产命名与校验和格式，这些都在面板之外，
+      # 只有对真实上游跑一遍才能发现它们变了。
+      - name: 验证版本发现与 geo 数据契约
         env:
           KDAE_UPSTREAM_LIVE: '1'
-        run: go test -count=1 -run '^TestLiveUpstream$' -timeout=8m ./internal/upstream
+        run: go test -count=1 -run '^TestLive' -timeout=12m ./internal/upstream
 
   contract:
     runs-on: ubuntu-latest

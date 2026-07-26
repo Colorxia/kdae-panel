@@ -144,6 +144,33 @@ export interface InstallJob {
   error?: string
 }
 
+export interface GeoFile {
+  name: string
+  path?: string
+  present: boolean
+  size?: number
+  modTime?: string
+  /** 被 path 遮蔽的同名副本；dae 只读优先级最高的那一份。 */
+  shadowed?: string[]
+}
+
+export interface GeoState {
+  repository: string
+  tag: string
+  updatedAt: string
+}
+
+export interface GeoStatus {
+  repository: string
+  targetDir: string
+  searchPath: string[]
+  files: GeoFile[]
+  updatable: boolean
+  problem?: string
+  managed?: GeoState
+  warnings?: string[]
+}
+
 export interface ReloadSchedule {
   enabled: boolean
   intervalMinutes: number

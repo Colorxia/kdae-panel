@@ -46,6 +46,10 @@ type Status struct {
 	// ExecStartPath 是单元实际启动的可执行文件。安装新版本时必须替换这个路径，
 	// 否则会出现"替换成功但服务仍在跑旧二进制"的静默失败。
 	ExecStartPath string `json:"execStartPath,omitempty"`
+	// Environment 是单元里声明的环境变量。dae 用 DAE_LOCATION_ASSET 指定
+	// geo 数据目录，它的优先级高于所有默认搜索路径；不读它就无法确定
+	// dae 究竟从哪里读 geo，更新会写到一个根本不生效的地方。
+	Environment map[string]string `json:"-"`
 }
 
 type LogEntry struct {
@@ -119,6 +123,7 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 		"NRestarts",
 		"FragmentPath",
 		"ExecStart",
+		"Environment",
 	}, ",")
 	result, err := m.run(ctx, m.systemctl, "show", m.serviceName, "--no-page", "--property="+properties)
 	if err != nil {
@@ -142,8 +147,33 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 		Restarts:            parseUint(values["NRestarts"]),
 		UnitPath:            values["FragmentPath"],
 		ExecStartPath:       parseExecStartPath(values["ExecStart"]),
+		Environment:         parseEnvironment(values["Environment"]),
 	}
 	return status, nil
+}
+
+// parseEnvironment 解析 systemd 的 Environment 属性。
+// 形如：FOO=1 DAE_LOCATION_ASSET=/etc/dae BAR=2
+//
+// systemd 对含空格的值会加引号，这里只做朴素的空格切分：面板唯一关心的
+// DAE_LOCATION_ASSET 是一个目录路径，带空格的目录本就极罕见，宁可解析不出
+// 也不去猜——解析不出的后果是少一条提示，猜错的后果是把 geo 写到错误的地方。
+func parseEnvironment(value string) map[string]string {
+	if value == "" {
+		return nil
+	}
+	environment := map[string]string{}
+	for _, entry := range strings.Fields(value) {
+		name, content, found := strings.Cut(entry, "=")
+		if !found || name == "" {
+			continue
+		}
+		environment[name] = content
+	}
+	if len(environment) == 0 {
+		return nil
+	}
+	return environment
 }
 
 // parseExecStartPath 从 systemd 的 ExecStart 属性里取出可执行文件路径。

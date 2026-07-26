@@ -466,6 +466,20 @@ pre,
   line-height: 1.8;
 }
 
+/* geo 文件路径可能很长，允许换行而不是撑破卡片 */
+.geo-path {
+  color: #8d98a6;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.geo-hint {
+  display: block;
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
 .orchestration-stats {
   margin-bottom: 16px;
   display: grid;

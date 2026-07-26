@@ -25,7 +25,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tuoro/kdae-panel/internal/atomicfile"
 	"github.com/tuoro/kdae-panel/internal/dae"
+	"github.com/tuoro/kdae-panel/internal/geodata"
 	"github.com/tuoro/kdae-panel/internal/host"
 	"github.com/tuoro/kdae-panel/internal/upstream"
 )
@@ -267,38 +269,25 @@ func (i *Installer) Status(ctx context.Context) Status {
 		status.Warnings = append(status.Warnings,
 			"发现上一次安装留下的暂存备份，说明它在中途被打断；请核对上面的运行版本是否符合预期")
 	}
-	status.Warnings = append(status.Warnings, i.geoWarnings()...)
+	status.Warnings = append(status.Warnings, i.geoWarnings(ctx)...)
 	return status
 }
 
-// geoSearchPath 复刻 dae 查找 geo 数据文件的顺序。
-//
-// 最高优先级是配置文件所在目录（dae 用 filepath.Dir(cfgFile) 作为 externDirs），
-// 之后才轮到 XDG 的那几个系统目录。首次安装正是往配置目录写，因此这一条必须在
-// 列表里——早先漏掉它会把装好的文件报成缺失。
-func (i *Installer) geoSearchPath() []string {
-	paths := []string{}
-	if i.configPath != "" {
-		paths = append(paths, filepath.Dir(i.configPath))
+// geoSearchPath 取回 dae 查找 geo 数据文件的顺序。
+// 顺序本身由 geodata 包定义，这里只补上本机的环境变量——两处各写一份的话，
+// 早晚会出现"安装认为已就位、更新却写去了别处"这种自相矛盾。
+func (i *Installer) geoSearchPath(ctx context.Context) []string {
+	var environment map[string]string
+	if status, err := i.service.Status(ctx); err == nil {
+		environment = status.Environment
 	}
-	return append(paths, "/root/.local/share/dae", "/usr/local/share/dae", "/usr/share/dae")
+	return geodata.SearchPath(i.configPath, environment)
 }
 
 // geoWarnings 检查 dae 运行所需的 geo 数据文件。
-// 缺失时必须提醒：dae 只在路由规则用到 geosite/geoip 时才读它们，
-// 但一旦用到而文件不在，dae 会直接启动失败，且 dae validate 察觉不到。
-func (i *Installer) geoWarnings() []string {
-	for _, name := range []string{"geoip.dat", "geosite.dat"} {
-		found := false
-		for _, directory := range i.geoSearchPath() {
-			if _, err := os.Stat(filepath.Join(directory, name)); err == nil {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return []string{"未找到 geoip.dat / geosite.dat，若路由规则用到 geosite/geoip，dae 将无法启动"}
-		}
+func (i *Installer) geoWarnings(ctx context.Context) []string {
+	if warning := geodata.MissingWarning(i.geoSearchPath(ctx)); warning != "" {
+		return []string{warning}
 	}
 	return nil
 }
@@ -435,7 +424,7 @@ func (i *Installer) applyBinary(ctx context.Context, binary []byte, state *State
 		}
 	}()
 
-	if err := replaceFile(staged, target); err != nil {
+	if err := atomicfile.Replace(staged, target); err != nil {
 		return Status{}, fmt.Errorf("替换 dae 可执行文件: %w", err)
 	}
 	committed = true
@@ -524,36 +513,7 @@ func (i *Installer) stage(binary []byte, target string, mode os.FileMode) (strin
 	if mode.Perm() == 0 {
 		mode = binaryMode
 	}
-	directory := filepath.Dir(target)
-	if err := os.MkdirAll(directory, 0o755); err != nil {
-		return "", func() {}, fmt.Errorf("创建目标目录: %w", err)
-	}
-	file, err := os.CreateTemp(directory, ".kdae-panel-dae-*")
-	if err != nil {
-		return "", func() {}, fmt.Errorf("创建暂存文件: %w", err)
-	}
-	path := file.Name()
-	cleanup := func() { _ = os.Remove(path) }
-	if _, err := file.Write(binary); err != nil {
-		_ = file.Close()
-		cleanup()
-		return "", func() {}, fmt.Errorf("写入暂存文件: %w", err)
-	}
-	if err := file.Chmod(mode.Perm()); err != nil {
-		_ = file.Close()
-		cleanup()
-		return "", func() {}, fmt.Errorf("设置可执行权限: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		cleanup()
-		return "", func() {}, fmt.Errorf("同步暂存文件: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		cleanup()
-		return "", func() {}, fmt.Errorf("关闭暂存文件: %w", err)
-	}
-	return path, cleanup, nil
+	return atomicfile.Stage(filepath.Dir(target), binary, mode)
 }
 
 // backupCurrent 把当前版本写进暂存回滚位，而不是直接覆盖正式回滚点。
@@ -636,7 +596,7 @@ func (i *Installer) restorePrevious(ctx context.Context, target string) restoreO
 			cleanup()
 		}
 	}()
-	if err := replaceFile(staged, target); err != nil {
+	if err := atomicfile.Replace(staged, target); err != nil {
 		return restoreOutcome{RestoreErr: err}
 	}
 	committed = true
@@ -732,38 +692,7 @@ func (i *Installer) writeState(state *State) error {
 }
 
 func writeFileSynced(path string, content []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	temp := path + ".tmp"
-	file, err := os.OpenFile(temp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := file.Write(content); err != nil {
-		_ = file.Close()
-		_ = os.Remove(temp)
-		return err
-	}
-	if err := file.Chmod(mode); err != nil {
-		_ = file.Close()
-		_ = os.Remove(temp)
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(temp)
-		return err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(temp)
-		return err
-	}
-	if err := os.Rename(temp, path); err != nil {
-		_ = os.Remove(temp)
-		return err
-	}
-	return nil
+	return atomicfile.Write(path, content, mode)
 }
 
 // elfMagic 是 ELF 文件的前四个字节。

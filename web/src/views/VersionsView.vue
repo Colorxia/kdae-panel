@@ -24,13 +24,14 @@ import {
 } from '@vicons/ionicons5'
 import { APIError, getJSON, postJSON } from '../api/client'
 import type {
+  GeoStatus,
   InstallJob,
   InstallProvision,
   InstallStatus,
   UpstreamSource,
   UpstreamVersion,
 } from '../types/api'
-import { formatDateTime } from '../utils/format'
+import { formatBytes, formatDateTime } from '../utils/format'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -47,7 +48,16 @@ const source = ref<UpstreamSource>('official')
 const loadError = ref('')
 const listError = ref('')
 
+// geo 数据是独立开关（KDAE_PANEL_ENABLE_GEO_UPDATE），因此状态与 dae 版本管理
+// 分开维护：只开其中一个的部署是正常情况，不是异常。
+const geoStatus = ref<GeoStatus | null>(null)
+const geoJob = ref<InstallJob | null>(null)
+const geoDisabled = ref(false)
+const geoError = ref('')
+const geoBusy = computed(() => geoJob.value?.phase === 'downloading' || geoJob.value?.phase === 'applying')
+
 let poller = 0
+let geoPoller = 0
 let unmounted = false
 
 // 两个来源的"版本"含义不同，必须分开呈现，不能排进同一个序列。
@@ -262,6 +272,92 @@ function stopPolling() {
   }
 }
 
+async function loadGeo() {
+  try {
+    const payload = await getJSON<{ status: GeoStatus; job: InstallJob }>('/api/v1/dae/geo')
+    if (unmounted) return
+    geoStatus.value = payload.status
+    geoJob.value = payload.job
+    geoError.value = ''
+    geoDisabled.value = false
+  } catch (error) {
+    if (unmounted) return
+    if (error instanceof APIError && error.code === 'geo_update_disabled') {
+      geoDisabled.value = true
+      geoError.value = error.message
+      return
+    }
+    geoError.value = error instanceof Error ? error.message : '读取 geo 数据状态失败'
+  }
+}
+
+function confirmUpdateGeo() {
+  const repository = geoStatus.value?.repository || '上游'
+  dialog.warning({
+    title: '更新 geo 数据',
+    // 两件事必须说清楚：换的是哪一套规则集，以及 reload 对连接的实际影响。
+    content: `面板会从 ${repository} 下载 geoip.dat 与 geosite.dat，逐个比对 sha256，`
+      + `写入 ${geoStatus.value?.targetDir}，然后执行 dae reload 让它生效。`
+      + '这套规则集与 dae 发布包自带的不是同一套（后者来自 v2fly），'
+      + `geosite: 开头的路由规则所匹配的域名集合会随之改变。`
+      + 'reload 不会中断新连接，但进行中的长连接（大文件下载、SSH、串流）最多约 10 秒后可能被断开；'
+      + '若 dae 不接受新数据，面板会自动还原成原来的 geo 并重新加载。',
+    positiveText: '下载并更新',
+    negativeText: '取消',
+    onPositiveClick: updateGeo,
+  })
+}
+
+async function updateGeo() {
+  try {
+    const payload = await postJSON<{ job: InstallJob }>('/api/v1/dae/geo')
+    geoJob.value = payload.job
+    message.info('已开始更新 geo 数据')
+    startGeoPolling()
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '启动 geo 更新失败')
+    if (error instanceof APIError && error.status === 409) {
+      await loadGeo()
+      if (geoBusy.value) startGeoPolling()
+    }
+  }
+}
+
+function startGeoPolling() {
+  stopGeoPolling()
+  if (unmounted) return
+  let inFlight = false
+  geoPoller = window.setInterval(async () => {
+    if (inFlight) return
+    inFlight = true
+    try {
+      const previous = geoJob.value?.phase
+      await loadGeo()
+      if (unmounted) {
+        stopGeoPolling()
+        return
+      }
+      const phase = geoJob.value?.phase
+      if (phase !== 'downloading' && phase !== 'applying') {
+        stopGeoPolling()
+        if (previous && previous !== phase) {
+          if (phase === 'done') message.success('geo 数据已更新并生效')
+          else if (phase === 'failed') message.error(geoJob.value?.error || 'geo 更新失败')
+        }
+      }
+    } finally {
+      inFlight = false
+    }
+  }, 2000)
+}
+
+function stopGeoPolling() {
+  if (geoPoller) {
+    window.clearInterval(geoPoller)
+    geoPoller = 0
+  }
+}
+
 const columns = computed<DataTableColumns<UpstreamVersion>>(() => [
   {
     title: '版本',
@@ -342,12 +438,16 @@ onMounted(async () => {
   await loadStatus()
   if (unmounted) return
   await loadVersions()
+  if (unmounted) return
   // 任务可能在本页打开之前就已在跑，这时也要接上轮询
   if (busy.value) startPolling()
+  await loadGeo()
+  if (!unmounted && geoBusy.value) startGeoPolling()
 })
 onBeforeUnmount(() => {
   unmounted = true
   stopPolling()
+  stopGeoPolling()
 })
 </script>
 
@@ -492,5 +592,75 @@ onBeforeUnmount(() => {
         </NDataTable>
       </NCard>
     </template>
+
+    <!-- geo 数据是独立开关，因此不放在 dae 版本管理的 v-if 里：
+         只开其中一个的部署是正常情况 -->
+    <NCard v-if="!geoDisabled" title="geo 数据" class="panel-card">
+      <template #header-extra>
+        <NButton
+          size="small"
+          secondary
+          type="primary"
+          :loading="geoBusy"
+          :disabled="geoBusy || !geoStatus?.updatable"
+          @click="confirmUpdateGeo"
+        >
+          <template #icon><NIcon><CloudDownloadOutline /></NIcon></template>
+          一键更新
+        </NButton>
+      </template>
+
+      <NAlert v-if="geoError" type="error" :bordered="false" class="card-alert">{{ geoError }}</NAlert>
+      <NAlert v-if="geoJob?.phase === 'downloading'" type="info" :bordered="false" class="card-alert">
+        正在下载并校验 geo 数据…
+      </NAlert>
+      <NAlert v-else-if="geoJob?.phase === 'applying'" type="warning" :bordered="false" class="card-alert">
+        正在写入并重新加载 dae…
+      </NAlert>
+      <NAlert v-else-if="geoJob?.phase === 'failed'" type="error" :bordered="false" class="card-alert">
+        上次更新失败：{{ geoJob.error }}
+      </NAlert>
+      <NAlert v-if="geoStatus?.problem" type="warning" :bordered="false" class="card-alert">
+        {{ geoStatus.problem }}
+      </NAlert>
+      <NAlert
+        v-for="warning in geoStatus?.warnings || []"
+        :key="warning"
+        type="warning"
+        :bordered="false"
+        class="card-alert"
+      >
+        {{ warning }}
+      </NAlert>
+
+      <dl v-if="geoStatus" class="details-list">
+        <div v-for="file in geoStatus.files" :key="file.name">
+          <dt>{{ file.name }}</dt>
+          <dd>
+            <template v-if="file.present">
+              {{ formatBytes(file.size) }}
+              <NText depth="3">（{{ formatDateTime(file.modTime) }}）</NText>
+              <div class="mono geo-path">{{ file.path }}</div>
+            </template>
+            <NText v-else depth="3">未安装</NText>
+          </dd>
+        </div>
+        <div>
+          <dt>数据来源</dt>
+          <dd>
+            <span class="mono">{{ geoStatus.repository }}</span>
+            <NText v-if="geoStatus.managed" depth="3">
+              （面板上次更新到 {{ geoStatus.managed.tag }}，{{ formatDateTime(geoStatus.managed.updatedAt) }}）
+            </NText>
+            <NText v-else depth="3">（面板尚未更新过）</NText>
+          </dd>
+        </div>
+      </dl>
+      <NText depth="3" class="geo-hint">
+        更新只需 dae reload，不必重启：新连接不受影响，进行中的长连接最多约 10 秒后可能被断开。
+        这套规则集与 dae 发布包自带的（来自 v2fly）不是同一套，切换后 <code class="mono">geosite:</code>
+        规则匹配的域名集合会改变。
+      </NText>
+    </NCard>
   </div>
 </template>
