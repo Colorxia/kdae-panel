@@ -15,7 +15,8 @@
   --text-muted: #8d98a6;
   --text-faint: #5d6a7d;
 
-  /* 品牌青（Tailwind cyan-300 系）。hover/pressed 供 themeOverrides 使用 */
+  /* 品牌青（Tailwind cyan-300 系）。曾试过调深到 cyan-400，实际观感反而不如
+     浅青通透，故定在 300。hover/pressed 供 themeOverrides 使用 */
   --accent: #67e8f9;
   --accent-hover: #a5f3fc;
   --accent-pressed: #22d3ee;
