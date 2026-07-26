@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/tuoro/kdae-panel/internal/configstore"
 	"github.com/tuoro/kdae-panel/internal/dae"
 	"github.com/tuoro/kdae-panel/internal/host"
+	"github.com/tuoro/kdae-panel/internal/netprobe"
 )
 
 type stubDaeService struct {
@@ -309,6 +311,109 @@ func TestSysdumpDownload(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Header().Get("Content-Disposition"), "dae-sysdump.test.tar.gz") {
 		t.Fatalf("Content-Disposition = %q", recorder.Header().Get("Content-Disposition"))
+	}
+}
+
+type stubProbeService struct {
+	results []netprobe.Result
+	err     error
+	targets []netprobe.Target
+}
+
+func (s *stubProbeService) Probe(_ context.Context, targets []netprobe.Target) ([]netprobe.Result, error) {
+	s.targets = targets
+	return s.results, s.err
+}
+
+func TestLatencyProbeEndpoint(t *testing.T) {
+	prober := &stubProbeService{results: []netprobe.Result{{Host: "example.com", Port: 443, Reachable: true, LatencyMs: 12.5}}}
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{Dae: stubDaeService{}, Probe: prober},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/net/latency", strings.NewReader(`{"targets":[{"host":"example.com","port":443}]}`))
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Results []netprobe.Result `json:"results"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if len(response.Results) != 1 || !response.Results[0].Reachable || response.Results[0].LatencyMs != 12.5 {
+		t.Fatalf("响应内容异常: %+v", response.Results)
+	}
+	if len(prober.targets) != 1 || prober.targets[0].Host != "example.com" {
+		t.Fatalf("探测目标异常: %+v", prober.targets)
+	}
+
+	invalid := httptest.NewRecorder()
+	prober.err = errors.New("探测目标不能为空")
+	application.Handler().ServeHTTP(invalid, httptest.NewRequest(http.MethodPost, "/api/v1/net/latency", strings.NewReader(`{"targets":[]}`)))
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("无效请求状态码 = %d，响应 = %s", invalid.Code, invalid.Body.String())
+	}
+}
+
+func TestLatencyProbeLogsTargets(t *testing.T) {
+	var logs strings.Builder
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel"},
+		slog.New(slog.NewTextHandler(&logs, nil)),
+		Dependencies{Dae: stubDaeService{}, Probe: &stubProbeService{}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/net/latency", strings.NewReader(`{"targets":[{"host":"hk.example.com","port":443}]}`))
+	application.Handler().ServeHTTP(httptest.NewRecorder(), request)
+	if !strings.Contains(logs.String(), "hk.example.com:443") {
+		t.Fatalf("探测目标应记入审计日志，实际日志 = %s", logs.String())
+	}
+}
+
+func TestLatencyProbeRequiresAuthentication(t *testing.T) {
+	session := auth.Session{Token: "session", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour), User: auth.User{ID: 1, Username: "admin"}}
+	prober := &stubProbeService{}
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{
+			Dae:            stubDaeService{},
+			Probe:          prober,
+			Authentication: &stubAuthenticationService{initialized: true, session: session},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := func() *strings.Reader {
+		return strings.NewReader(`{"targets":[{"host":"example.com","port":443}]}`)
+	}
+
+	anonymous := httptest.NewRecorder()
+	application.Handler().ServeHTTP(anonymous, httptest.NewRequest(http.MethodPost, "/api/v1/net/latency", body()))
+	if anonymous.Code != http.StatusUnauthorized {
+		t.Fatalf("未登录状态码 = %d，响应 = %s", anonymous.Code, anonymous.Body.String())
+	}
+
+	withoutCSRFRequest := httptest.NewRequest(http.MethodPost, "/api/v1/net/latency", body())
+	withoutCSRFRequest.AddCookie(&http.Cookie{Name: sessionCookieName, Value: session.Token})
+	withoutCSRF := httptest.NewRecorder()
+	application.Handler().ServeHTTP(withoutCSRF, withoutCSRFRequest)
+	if withoutCSRF.Code != http.StatusForbidden {
+		t.Fatalf("缺少 CSRF 状态码 = %d，响应 = %s", withoutCSRF.Code, withoutCSRF.Body.String())
+	}
+	if prober.targets != nil {
+		t.Fatalf("未授权请求不应触发探测: %+v", prober.targets)
 	}
 }
 

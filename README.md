@@ -9,6 +9,8 @@
 - 通过 `dae export outline` 动态发现当前版本的配置结构；
 - systemd 服务状态、启动、停止和重启；
 - dae 无损重载、暂停和 sysdump 诊断；
+- 节点、订阅与分组的可视化编排：分享链接批量导入、打标签、策略与过滤条件编辑，注释与未涉及的配置节逐字节保留；
+- 路由规则可视化预览与面板主机侧的节点 TCP 直连延迟探测；
 - 原始配置编辑、独立校验、并发冲突检测和事务保存；
 - 保存前备份、原子替换及重载失败后的磁盘回滚；
 - 配置历史浏览与指定版本恢复；
@@ -65,6 +67,7 @@ npm run dev --prefix web
 
 ```bash
 npm run typecheck --prefix web
+npm test --prefix web
 npm run build --prefix web
 go test ./...
 go vet ./...

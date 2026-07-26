@@ -76,18 +76,21 @@ async function save(apply: boolean) {
   saving.value = true
   validationMessage.value = ''
   validationError.value = ''
+  // 提交的是点击那一刻的快照。请求在途时用户可能继续编辑，
+  // 因此成功后只把快照记为已保存，dirty 会如实保留其后的新改动。
+  const submitted = content.value
   try {
     const result = await putJSON<ConfigSaveResult>('/api/v1/config', {
-      content: content.value,
+      content: submitted,
       expectedHash: document.value?.hash || '',
       apply,
     })
-    originalContent.value = content.value
+    originalContent.value = submitted
     document.value = {
       path: document.value?.path || '/etc/dae/config.dae',
-      content: content.value,
+      content: submitted,
       hash: result.hash,
-      size: new Blob([content.value]).size,
+      size: new Blob([submitted]).size,
       mode: document.value?.mode || '-rw-------',
       modifiedAt: result.savedAt,
     }

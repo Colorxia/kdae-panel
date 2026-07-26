@@ -31,6 +31,7 @@ jobs:
       - name: 检查前端类型并生成嵌入资源
         run: |
           npm run typecheck --prefix web
+          npm test --prefix web
           npm run build --prefix web
 
       - name: 确认嵌入资源已同步
@@ -42,7 +43,7 @@ jobs:
           go vet ./...
 
       - name: 并发竞争检查
-        run: go test -race ./internal/app ./internal/auth ./internal/configstore ./internal/dae ./internal/host
+        run: go test -race ./internal/app ./internal/auth ./internal/configstore ./internal/dae ./internal/host ./internal/netprobe
 
       - name: Go 漏洞扫描
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...

@@ -20,6 +20,7 @@ import (
 	"github.com/tuoro/kdae-panel/internal/configstore"
 	"github.com/tuoro/kdae-panel/internal/dae"
 	"github.com/tuoro/kdae-panel/internal/host"
+	"github.com/tuoro/kdae-panel/internal/netprobe"
 	"github.com/tuoro/kdae-panel/internal/webui"
 )
 
@@ -50,6 +51,7 @@ type Dependencies struct {
 	Configuration  ConfigurationService
 	Host           HostService
 	Authentication AuthenticationService
+	Probe          ProbeService
 }
 
 type AuthenticationService interface {
@@ -102,6 +104,7 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		Configuration:  configuration,
 		Host:           hostManager,
 		Authentication: authStore,
+		Probe:          netprobe.New(),
 	})
 	if err != nil {
 		_ = authStore.Close()
@@ -144,6 +147,7 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 	})
 	registerConfigurationRoutes(router, dependencies.Configuration, operations)
 	registerServiceRoutes(router, dependencies.Dae, dependencies.Host, operations)
+	registerProbeRoutes(router, dependencies.Probe, logger)
 	registerAuthenticationRoutes(router, dependencies.Authentication, cfg.SecureCookie, cfg.BootstrapToken, proxyTrust)
 	apiNotFound := func(writer http.ResponseWriter, _ *http.Request) {
 		writeAPIError(writer, http.StatusNotFound, "api_not_found", "API 路径不存在")

@@ -63,6 +63,40 @@ X-CSRF-Token: <csrfToken>
 | `422` | `configuration_invalid` | dae 拒绝候选配置 |
 | `502` | `configuration_apply_failed` | 保存后重载失败，响应包含回滚状态 |
 
+## 网络探测
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/net/latency` | 从面板主机对目标做 TCP 握手延迟探测 |
+
+请求与响应示例：
+
+```json
+{
+  "targets": [
+    { "host": "hk.example.com", "port": 443 }
+  ]
+}
+```
+
+```json
+{
+  "results": [
+    { "host": "hk.example.com", "port": 443, "reachable": true, "latencyMs": 42.7 }
+  ]
+}
+```
+
+单次最多 64 个目标，单目标超时 4 秒，同一时刻最多 16 个并发拨号（上限属于面板进程，多个并发请求共享）。
+
+`latencyMs` 是从发起拨号到 TCP 连接建立的耗时。目标为域名时它包含名称解析时间，因此冷缓存下的首次结果会偏高。该值反映面板主机到节点服务器的可达性，不等同于 dae 内部按 `tcp_check_url`/`udp_check_dns` 进行的健康检查，也不是 dae 选路时使用的延迟。
+
+还有一层需要注意：dae 配置 `wan_interface` 时会劫持本机进程发出的流量，只有 dae 自身的连接凭 `so_mark_from_dae` 豁免。面板与 dae 同机运行，因此探测连接同样会进入 dae 的转发平面并按 routing 规则选路，测到的可能是经代理转发的路径而非物理直连。
+
+单个目标不合法只影响它自己那条结果（`reachable: false` 并带 `error`），不会让整批探测失败；只有请求为空或超过 64 个目标才返回 `400`。目标列表会记入面板日志以供审计。
+
+目标地址来自管理员自己的 dae 配置，可能合法指向内网或回环地址，因此服务端不按地址段过滤；该端点与其他写接口一样要求有效会话与 CSRF 令牌。
+
 ## 服务与日志
 
 | 方法 | 路径 | 说明 |

@@ -15,15 +15,18 @@ import {
   useMessage,
 } from 'naive-ui'
 import {
+  ArrowForwardOutline,
   PauseOutline,
   PlayOutline,
   RefreshOutline,
   ReloadOutline,
   StopOutline,
 } from '@vicons/ionicons5'
-import { getJSON, postJSON } from '../api/client'
-import type { DaeReport, ServiceStatus } from '../types/api'
+import { RouterLink } from 'vue-router'
+import { APIError, getJSON, postJSON } from '../api/client'
+import type { ConfigDocument, DaeReport, ServiceStatus } from '../types/api'
 import { formatBytes, formatDurationNanoseconds } from '../utils/format'
+import { findSection, parseEntries, parseGroups, parseRoutingRules } from '../utils/daeconf'
 
 const message = useMessage()
 const loading = ref(true)
@@ -31,20 +34,38 @@ const refreshing = ref(false)
 const actionLoading = ref('')
 const service = ref<ServiceStatus | null>(null)
 const dae = ref<DaeReport | null>(null)
+const configContent = ref<string | null>(null)
 const serviceError = ref('')
 const daeError = ref('')
+const configError = ref('')
 
 const running = computed(() => service.value?.activeState === 'active')
 const statusType = computed(() => running.value ? 'success' : service.value?.activeState === 'failed' ? 'error' : 'warning')
 const statusLabel = computed(() => running.value ? '运行中' : service.value?.activeState === 'failed' ? '运行失败' : '未运行')
 const supportedCommands = computed(() => Object.entries(dae.value?.commands || {}).filter(([, enabled]) => enabled).map(([name]) => name))
 
+const orchestration = computed(() => {
+  const text = configContent.value
+  if (text === null) return null
+  const count = (name: string) => {
+    const section = findSection(text, name)
+    return section ? parseEntries(text, section).length : 0
+  }
+  return {
+    nodes: count('node'),
+    subscriptions: count('subscription'),
+    groups: parseGroups(text),
+    rules: parseRoutingRules(text).length,
+  }
+})
+
 async function refresh(silent = false) {
   if (silent) refreshing.value = true
   else loading.value = true
-  const [serviceResult, daeResult] = await Promise.allSettled([
+  const [serviceResult, daeResult, configResult] = await Promise.allSettled([
     getJSON<ServiceStatus>('/api/v1/service'),
     getJSON<DaeReport>('/api/v1/dae/capabilities'),
+    getJSON<ConfigDocument>('/api/v1/config'),
   ])
   if (serviceResult.status === 'fulfilled') {
     service.value = serviceResult.value
@@ -57,6 +78,16 @@ async function refresh(silent = false) {
     daeError.value = ''
   } else {
     daeError.value = daeResult.reason instanceof Error ? daeResult.reason.message : '无法探测 dae'
+  }
+  if (configResult.status === 'fulfilled') {
+    configContent.value = configResult.value.content
+    configError.value = ''
+  } else if (configResult.reason instanceof APIError && configResult.reason.status === 404) {
+    // 只有 404 才代表配置确实不存在；其他失败保留上次读到的内容并报错
+    configContent.value = null
+    configError.value = ''
+  } else {
+    configError.value = configResult.reason instanceof Error ? configResult.reason.message : '读取配置失败'
   }
   loading.value = false
   refreshing.value = false
@@ -134,7 +165,7 @@ onMounted(() => void refresh())
       </NGridItem>
     </NGrid>
 
-    <NGrid responsive="screen" cols="1 l:2" :x-gap="16" :y-gap="16">
+    <NGrid responsive="screen" cols="1 l:2 xl:3" :x-gap="16" :y-gap="16">
       <NGridItem>
         <NCard title="服务控制" class="panel-card">
           <template #header-extra><NTag size="small" :type="statusType">{{ service?.name || 'dae' }}</NTag></template>
@@ -170,6 +201,40 @@ onMounted(() => void refresh())
               停止 dae 后代理流量将不可用。
             </NPopconfirm>
           </NSpace>
+        </NCard>
+      </NGridItem>
+
+      <NGridItem>
+        <NCard title="代理编排" class="panel-card">
+          <template #header-extra>
+            <RouterLink :to="{ name: 'orchestration' }" custom>
+              <template #default="{ navigate }">
+                <NButton size="small" quaternary type="primary" icon-placement="right" @click="navigate">
+                  <template #icon><NIcon><ArrowForwardOutline /></NIcon></template>前往编排
+                </NButton>
+              </template>
+            </RouterLink>
+          </template>
+          <NSkeleton v-if="loading" text :repeat="3" />
+          <template v-else>
+            <NAlert v-if="configError" type="warning" :bordered="false" class="card-alert">
+              读取配置失败：{{ configError }}
+            </NAlert>
+            <template v-if="orchestration">
+              <div class="orchestration-stats">
+                <div><strong>{{ orchestration.nodes }}</strong><span>手工节点</span></div>
+                <div><strong>{{ orchestration.subscriptions }}</strong><span>订阅</span></div>
+                <div><strong>{{ orchestration.groups.length }}</strong><span>分组</span></div>
+                <div><strong>{{ orchestration.rules }}</strong><span>路由规则</span></div>
+              </div>
+              <NSpace v-if="orchestration.groups.length" size="small" wrap>
+                <NTag v-for="group in orchestration.groups" :key="group.name" size="small" :bordered="false" type="info">
+                  {{ group.name }} · {{ group.policy?.value || 'min_moving_avg' }}
+                </NTag>
+              </NSpace>
+            </template>
+            <NText v-else-if="!configError" depth="3">入口配置尚不存在，可以在代理编排页从零创建。</NText>
+          </template>
         </NCard>
       </NGridItem>
 

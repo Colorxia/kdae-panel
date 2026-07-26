@@ -85,6 +85,19 @@ export interface ConfigBackup {
   sourcePath: string
 }
 
+export interface LatencyTarget {
+  host: string
+  port: number
+}
+
+export interface LatencyResult {
+  host: string
+  port: number
+  reachable: boolean
+  latencyMs?: number
+  error?: string
+}
+
 export interface LogEntry {
   timestamp: string
   priority: number

@@ -439,6 +439,180 @@ pre,
   min-height: auto;
 }
 
+.orchestrate-page .panel-card {
+  min-height: auto;
+}
+
+.card-alert {
+  margin-bottom: 14px;
+}
+
+.orchestration-stats {
+  margin-bottom: 16px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.orchestration-stats > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.orchestration-stats strong {
+  font-size: 22px;
+  font-weight: 720;
+}
+
+.orchestration-stats span {
+  color: #8d98a6;
+  font-size: 12px;
+}
+
+.orchestrate-empty {
+  padding: 26px 18px;
+  text-align: center;
+}
+
+.orchestrate-add {
+  padding: 12px 14px;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.orchestrate-add.borderless {
+  padding: 14px 0 0;
+  border-top: 0;
+}
+
+.orchestrate-tag-input {
+  max-width: 130px;
+}
+
+.group-policy-select {
+  max-width: 240px;
+}
+
+.group-item {
+  padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.group-item:first-of-type {
+  padding-top: 0;
+}
+
+.group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.group-head code {
+  color: #67e8f9;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.group-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.group-row.filters {
+  align-items: start;
+}
+
+.group-row.filters .n-text {
+  line-height: 24px;
+}
+
+.group-fixed-index {
+  width: 92px;
+}
+
+.filter-tag {
+  max-width: 100%;
+}
+
+.filter-value {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.filter-tag.locked {
+  opacity: 0.62;
+}
+
+.filter-tag.locked .filter-value {
+  cursor: help;
+}
+
+.column-hint {
+  border-bottom: 1px dotted rgba(148, 163, 184, 0.5);
+  cursor: help;
+}
+
+.routing-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: routing;
+}
+
+.routing-rule {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.07);
+  counter-increment: routing;
+}
+
+.routing-rule::before {
+  content: counter(routing, decimal-leading-zero);
+  flex: 0 0 auto;
+  color: #5d6a7d;
+  font-size: 11px;
+}
+
+.routing-rule.fallback {
+  border-bottom: 0;
+}
+
+.routing-rule.fallback .routing-match {
+  color: #fbbf24;
+}
+
+.routing-match {
+  min-width: 0;
+  color: #cbd5df;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.routing-arrow {
+  flex: 0 0 auto;
+  color: #55c5ea;
+}
+
+.orchestrate-modal {
+  width: min(560px, 92vw);
+}
+
+.orchestrate-modal .n-input {
+  margin-top: 14px;
+}
+
+.error-detail {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 820px) {
   .auth-page {
     grid-template-columns: 1fr;
