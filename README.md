@@ -65,6 +65,14 @@ ssh -L 2023:127.0.0.1:2023 root@router.example
 
 首次启动会在服务日志中生成一次性初始化链接。通过 systemd 安装时可执行 `sudo journalctl -u kdae-panel -n 20 --no-pager` 查看并直接打开 `setup_url`；页面会自动完成授权，注册表单只需填写用户名和密码。创建管理员后初始化接口会永久关闭。
 
+## 卸载
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)"
+```
+
+默认只移除程序与服务单元，配置、账户数据库与配置备份全部保留；要连数据一并清除，在命令前加 `KDAE_PANEL_PURGE=true`。两种模式都不触碰 dae——它的服务、二进制、配置与 geo 数据原样保留。安装时会在本地落一份等效脚本，离线也可卸载：`sudo bash /usr/share/kdae-panel/uninstall.sh`；这份文件不存在的话（早期安装脚本不落盘），用上面的一键命令即可。
+
 ## 开发
 
 ```bash

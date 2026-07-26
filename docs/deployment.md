@@ -239,13 +239,29 @@ sudo systemctl restart dae
 
 ## 卸载
 
-安装时（无论一键部署还是源码安装）会在 `/usr/share/kdae-panel/` 落一份卸载脚本：
+一键卸载（信任边界是一键部署的子集：只有 `raw.githubusercontent.com` 上 main 分支的脚本本身，不涉及 Release 资产，因此也没有校验和环节）：
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)"
+```
+
+安装时（无论一键部署还是源码安装）也会在本地落一份等效脚本，离线可用（早期安装的机器没有这份副本，重跑一次安装即可补上）：
 
 ```bash
 sudo bash /usr/share/kdae-panel/uninstall.sh
 ```
 
-源码检出还在的话，`sudo ./scripts/uninstall.sh` 等效。两者都保留 `/etc/kdae-panel` 和 `/var/lib/kdae-panel`，确认不再需要账户和备份后再手工删除。
+源码检出还在的话，`sudo ./scripts/uninstall.sh` 同样等效。
+
+默认保留 `/etc/kdae-panel` 与 `/var/lib/kdae-panel`（配置、账户数据库、配置备份、dae 回滚副本），确认不再需要后可用清除模式重跑。本地副本会随普通卸载一起移除，因此重跑要用一键命令（或源码检出）：
+
+```bash
+sudo KDAE_PANEL_PURGE=true bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)"
+```
+
+清除模式会按 env 文件里配置的实际路径删除数据（数据库、订阅刷新、geo 更新与安装状态文件即使被挪到默认目录之外也会被找到），随后删除上述两个目录本身。唯一的例外是备份目录：它需要以 root 递归删除，取值又来自 env 配置，因此只有位于默认数据目录 `/var/lib/kdae-panel` 之内时才自动删，挪到别处的会打印路径请你确认后手工处理——env 里一个手滑的取值不该变成 root 下的 `rm -rf`。
+
+**任何模式都不触碰 dae**：它的服务、二进制、`/etc/dae` 配置与 geo 数据原样保留；`/etc/dae` 下的 geo 文件（无论是面板首次安装写入还是自行放置的）也会留下（dae 还在用），脚本会把它们的位置与大小如实列出。清除模式删掉 env 文件后，重装会使用发布包内的默认配置——自定义过 env 的话请先自行备份一份。
 
 ## 排障
 
