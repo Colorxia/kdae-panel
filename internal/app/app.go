@@ -57,6 +57,7 @@ type Dependencies struct {
 	Authentication AuthenticationService
 	Probe          ProbeService
 	Schedule       ScheduleService
+	GeoSchedule    ScheduleService
 	Install        InstallService
 	Geo            GeoService
 }
@@ -171,18 +172,44 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 
 	scheduleService := dependencies.Schedule
 	if scheduleService == nil && cfg.SchedulePath != "" {
-		runner, err := schedule.New(cfg.SchedulePath, func(ctx context.Context) error {
-			if !operations.TryLock() {
-				return errors.New("另一个控制操作正在执行，本轮已跳过")
-			}
-			defer operations.Unlock()
-			return dependencies.Dae.Reload(ctx)
-		}, logger)
+		runner, err := schedule.New(schedule.Options{
+			Path:   cfg.SchedulePath,
+			Name:   "订阅自动刷新",
+			Logger: logger,
+			Task: func(ctx context.Context) error {
+				if !operations.TryLock() {
+					return errors.New("另一个控制操作正在执行，本轮已跳过")
+				}
+				defer operations.Unlock()
+				return dependencies.Dae.Reload(ctx)
+			},
+		})
 		if err != nil {
 			return nil, fmt.Errorf("初始化订阅自动刷新: %w", err)
 		}
 		application.closers = append(application.closers, runner)
 		scheduleService = runner
+	}
+
+	// geo 更新器同时服务手动端点与定时任务，任务追踪器只有一份。
+	var geo *geoUpdater
+	if dependencies.Geo != nil {
+		geo = newGeoUpdater(dependencies.Geo, operations, logger)
+	}
+	geoScheduleService := dependencies.GeoSchedule
+	if geoScheduleService == nil && geo != nil && cfg.GeoSchedulePath != "" {
+		runner, err := schedule.New(schedule.Options{
+			Path:    cfg.GeoSchedulePath,
+			Name:    "geo 数据自动更新",
+			Logger:  logger,
+			Timeout: geoUpdateTimeout,
+			Task:    geo.runScheduled,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("初始化 geo 数据自动更新: %w", err)
+		}
+		application.closers = append(application.closers, runner)
+		geoScheduleService = runner
 	}
 	router.HandleFunc("GET /api/v1/health", func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, http.StatusOK, map[string]any{
@@ -204,9 +231,10 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 	registerConfigurationRoutes(router, dependencies.Configuration, operations)
 	registerServiceRoutes(router, dependencies.Dae, dependencies.Host, operations)
 	registerProbeRoutes(router, dependencies.Probe, logger)
-	registerScheduleRoutes(router, scheduleService)
+	registerScheduleRoutes(router, "/api/v1/schedule/reload", scheduleService)
+	registerScheduleRoutes(router, "/api/v1/schedule/geo", geoScheduleService)
 	registerUpstreamRoutes(router, dependencies.Install, operations, logger)
-	registerGeoRoutes(router, dependencies.Geo, operations, logger)
+	registerGeoRoutes(router, geo)
 	registerAuthenticationRoutes(router, dependencies.Authentication, cfg.SecureCookie, cfg.BootstrapToken, proxyTrust)
 	apiNotFound := func(writer http.ResponseWriter, _ *http.Request) {
 		writeAPIError(writer, http.StatusNotFound, "api_not_found", "API 路径不存在")

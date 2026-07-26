@@ -25,6 +25,8 @@ type Config struct {
 	EnableDaeInstall bool
 	// GeoStatePath 记录面板上次把 geo 数据更新到了哪一版。
 	GeoStatePath string
+	// GeoSchedulePath 持久化 geo 数据自动更新的设置与上次执行时间。
+	GeoSchedulePath string
 	// EnableGeoUpdate 打开一键更新 geo 数据的能力，与 EnableDaeInstall 相互独立。
 	//
 	// 分成两个开关是有意为之：更新 geo 只写 dae 的数据目录（通常就是已经可写的
@@ -53,6 +55,7 @@ func DefaultConfig() Config {
 		// 上一版二进制也放在这个前缀下，因此目录必须在 ReadWritePaths 内。
 		InstallStatePath: "/var/lib/kdae-panel/dae-install.json",
 		GeoStatePath:     "/var/lib/kdae-panel/geo-update.json",
+		GeoSchedulePath:  "/var/lib/kdae-panel/geo-schedule.json",
 		SessionTTL:       12 * time.Hour,
 	}
 }
@@ -94,6 +97,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.GeoStatePath == "" {
 		c.GeoStatePath = defaults.GeoStatePath
+	}
+	if c.GeoSchedulePath == "" {
+		c.GeoSchedulePath = defaults.GeoSchedulePath
 	}
 	if c.InstallStatePath == "" {
 		c.InstallStatePath = defaults.InstallStatePath

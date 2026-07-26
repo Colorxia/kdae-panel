@@ -1,7 +1,7 @@
-// Package schedule 按固定间隔触发 dae 无损重载,使订阅内容定期重新拉取。
-// dae 只在 reload 时重拉 subscription 链接,因此"订阅自动刷新"的诚实实现
-// 就是定时 reload;每轮执行前尝试获取全局操作锁,拿不到就跳过本轮,
-// 绝不与用户发起的控制操作交叉。
+// Package schedule 按固定间隔执行一项维护任务,并把设置与上次执行时间持久化。
+// 面板用它跑两件事:订阅自动刷新(dae 只在 reload 时重拉 subscription 链接,
+// 诚实的实现就是定时 reload)和 geo 数据自动更新。任务在拿不到全局操作锁时
+// 应当返回错误跳过本轮,绝不与用户发起的控制操作交叉。
 package schedule
 
 import (
@@ -19,9 +19,10 @@ import (
 
 const (
 	MinIntervalMinutes = 5
-	MaxIntervalMinutes = 7 * 24 * 60
+	// 上限一个月:订阅刷新用不到这么长,但 geo 数据月更是真实存在的偏好。
+	MaxIntervalMinutes = 30 * 24 * 60
 	defaultInterval    = 24 * 60
-	taskTimeout        = 3 * time.Minute
+	defaultTaskTimeout = 3 * time.Minute
 	// 补做错过的轮次时留出的缓冲，避免开机瞬间与 dae 自身启动抢操作锁。
 	startupGrace = time.Minute
 	// 上一轮失败或被跳过后的重试间隔。
@@ -66,11 +67,23 @@ func (e *InvalidSettingsError) Unwrap() error {
 // 错误只记录在状态里,不会停止调度。
 type Task func(ctx context.Context) error
 
+// Options 描述一个定时任务。Name 出现在日志与错误文案里;
+// Timeout 是单轮执行时限,零值用默认 3 分钟。
+type Options struct {
+	Path    string
+	Name    string
+	Task    Task
+	Logger  *slog.Logger
+	Timeout time.Duration
+}
+
 type Runner struct {
-	path   string
-	task   Task
-	logger *slog.Logger
-	now    func() time.Time
+	path    string
+	name    string
+	task    Task
+	timeout time.Duration
+	logger  *slog.Logger
+	now     func() time.Time
 
 	mu        sync.Mutex
 	settings  Settings
@@ -80,7 +93,7 @@ type Runner struct {
 
 	reset chan struct{}
 	// ctx 在 Close 时取消,同时用于停止循环和中断在途任务,
-	// 避免关闭被一轮最长 taskTimeout 的执行拖住。
+	// 避免关闭被一轮最长 timeout 的执行拖住。
 	ctx       context.Context
 	cancel    context.CancelFunc
 	closeOnce sync.Once
@@ -96,18 +109,26 @@ func (s Settings) validate() error {
 
 // New 加载持久化设置并启动调度循环。设置文件损坏时退回默认值并告警,
 // 不阻止面板启动。
-func New(path string, task Task, logger *slog.Logger) (*Runner, error) {
-	if path == "" {
+func New(options Options) (*Runner, error) {
+	if options.Path == "" {
 		return nil, errors.New("定时任务设置路径不能为空")
 	}
-	if task == nil {
+	if options.Task == nil {
 		return nil, errors.New("定时任务不能为空")
+	}
+	if options.Name == "" {
+		options.Name = "定时任务"
+	}
+	if options.Timeout <= 0 {
+		options.Timeout = defaultTaskTimeout
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	runner := &Runner{
-		path:     path,
-		task:     task,
-		logger:   logger,
+		path:     options.Path,
+		name:     options.Name,
+		task:     options.Task,
+		timeout:  options.Timeout,
+		logger:   options.Logger,
 		now:      time.Now,
 		settings: Settings{Enabled: false, IntervalMinutes: defaultInterval},
 		reset:    make(chan struct{}, 1),
@@ -115,7 +136,7 @@ func New(path string, task Task, logger *slog.Logger) (*Runner, error) {
 		cancel:   cancel,
 	}
 	if err := runner.load(); err != nil {
-		logger.Warn("读取订阅自动刷新设置失败，使用默认值", "path", path, "error", err)
+		runner.logger.Warn("读取"+runner.name+"设置失败，使用默认值", "path", runner.path, "error", err)
 	}
 	runner.scheduleNextLocked()
 	runner.wg.Add(1)
@@ -266,7 +287,7 @@ func (r *Runner) loop() {
 }
 
 func (r *Runner) runOnce() {
-	ctx, cancel := context.WithTimeout(r.ctx, taskTimeout)
+	ctx, cancel := context.WithTimeout(r.ctx, r.timeout)
 	defer cancel()
 	err := r.task(ctx)
 	if r.ctx.Err() != nil {
@@ -283,14 +304,14 @@ func (r *Runner) runOnce() {
 	r.lastRunAt = r.now()
 	if err != nil {
 		r.lastError = err.Error()
-		r.logger.Warn("订阅自动刷新执行失败", "error", err)
+		r.logger.Warn(r.name+"执行失败", "error", err)
 	} else {
 		r.lastError = ""
-		r.logger.Info("订阅自动刷新完成")
+		r.logger.Info(r.name + "完成")
 	}
 	// 落盘执行时间，使重启后的倒计时接续而不是重新开始
 	if saveErr := r.save(); saveErr != nil {
-		r.logger.Warn("记录订阅自动刷新时间失败", "error", saveErr)
+		r.logger.Warn("记录"+r.name+"时间失败", "error", saveErr)
 	}
 	r.scheduleNextLocked()
 }

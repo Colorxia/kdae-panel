@@ -12,20 +12,22 @@ type ScheduleService interface {
 	Update(settings schedule.Settings) (schedule.Status, error)
 }
 
-func registerScheduleRoutes(router *http.ServeMux, service ScheduleService) {
+// registerScheduleRoutes 为一个定时任务挂上读写两个端点；
+// 订阅刷新与 geo 自动更新各调用一次，路径不同、行为完全一致。
+func registerScheduleRoutes(router *http.ServeMux, path string, service ScheduleService) {
 	if service == nil {
 		unavailable := func(writer http.ResponseWriter, _ *http.Request) {
 			writeAPIError(writer, http.StatusServiceUnavailable, "schedule_unavailable", "定时任务服务尚未初始化")
 		}
-		router.HandleFunc("GET /api/v1/schedule/reload", unavailable)
-		router.HandleFunc("PUT /api/v1/schedule/reload", unavailable)
+		router.HandleFunc("GET "+path, unavailable)
+		router.HandleFunc("PUT "+path, unavailable)
 		return
 	}
 
-	router.HandleFunc("GET /api/v1/schedule/reload", func(writer http.ResponseWriter, request *http.Request) {
+	router.HandleFunc("GET "+path, func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, http.StatusOK, service.Status())
 	})
-	router.HandleFunc("PUT /api/v1/schedule/reload", func(writer http.ResponseWriter, request *http.Request) {
+	router.HandleFunc("PUT "+path, func(writer http.ResponseWriter, request *http.Request) {
 		var payload schedule.Settings
 		if !decodeSmallJSONBody(writer, request, &payload) {
 			return

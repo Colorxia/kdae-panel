@@ -56,6 +56,7 @@ func run() error {
 	schedulePath := flag.String("schedule-file", envOr("KDAE_PANEL_SCHEDULE_FILE", cfg.SchedulePath), "订阅自动刷新设置文件路径")
 	installStatePath := flag.String("install-state-file", envOr("KDAE_PANEL_INSTALL_STATE_FILE", cfg.InstallStatePath), "dae 版本安装状态文件路径")
 	geoStatePath := flag.String("geo-state-file", envOr("KDAE_PANEL_GEO_STATE_FILE", cfg.GeoStatePath), "geo 数据更新状态文件路径")
+	geoSchedulePath := flag.String("geo-schedule-file", envOr("KDAE_PANEL_GEO_SCHEDULE_FILE", cfg.GeoSchedulePath), "geo 数据自动更新设置文件路径")
 	enableDaeInstall := flag.Bool("enable-dae-install", enableDaeInstallDefault, "允许通过面板安装与切换 dae 版本")
 	enableGeoUpdate := flag.Bool("enable-geo-update", enableGeoUpdateDefault, "允许通过面板一键更新 geo 数据")
 	sessionTTL := flag.Duration("session-ttl", sessionTTLDefault, "登录会话有效期")
@@ -80,6 +81,7 @@ func run() error {
 	cfg.SchedulePath = *schedulePath
 	cfg.InstallStatePath = *installStatePath
 	cfg.GeoStatePath = *geoStatePath
+	cfg.GeoSchedulePath = *geoSchedulePath
 	cfg.EnableDaeInstall = *enableDaeInstall
 	cfg.EnableGeoUpdate = *enableGeoUpdate
 	cfg.SessionTTL = *sessionTTL

@@ -18,10 +18,15 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// newRunner 用测试默认项构造,让既有用例不关心 Options 的新字段。
+func newRunner(path string, task Task) (*Runner, error) {
+	return New(Options{Path: path, Name: "订阅自动刷新", Task: task, Logger: discardLogger()})
+}
+
 func newTestRunner(t *testing.T, task Task) (*Runner, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "schedule.json")
-	runner, err := New(path, task, discardLogger())
+	runner, err := newRunner(path, task)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +68,7 @@ func TestSaveFailureIsNotReportedAsInvalidInput(t *testing.T) {
 	if err := os.MkdirAll(directory, 0700); err != nil {
 		t.Fatal(err)
 	}
-	runner, err := New(directory, func(context.Context) error { return nil }, discardLogger())
+	runner, err := newRunner(directory, func(context.Context) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +100,7 @@ func TestUpdatePersistsAndReloads(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restored, err := New(path, func(context.Context) error { return nil }, discardLogger())
+	restored, err := newRunner(path, func(context.Context) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,11 +126,13 @@ func TestZeroTimesAreOmittedFromJSON(t *testing.T) {
 // 倒计时必须按"上次执行 + 间隔"接续，否则间隔长于重启周期时永远不会触发。
 func TestRestartContinuesCountdown(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "schedule.json")
-	runner, err := New(path, func(context.Context) error { return nil }, discardLogger())
+	runner, err := newRunner(path, func(context.Context) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runner.Update(Settings{Enabled: true, IntervalMinutes: MaxIntervalMinutes}); err != nil {
+	// 用固定的七天而不是 MaxIntervalMinutes：本测试只要求"间隔长于重启周期"，
+	// 不该随上限常量的调整而漂移
+	if _, err := runner.Update(Settings{Enabled: true, IntervalMinutes: 7 * 24 * 60}); err != nil {
 		t.Fatal(err)
 	}
 	// 模拟六天前执行过一轮并落盘
@@ -140,7 +147,7 @@ func TestRestartContinuesCountdown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restored, err := New(path, func(context.Context) error { return nil }, discardLogger())
+	restored, err := newRunner(path, func(context.Context) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +169,7 @@ func TestRestartContinuesCountdown(t *testing.T) {
 // 错过的轮次要补做，但至少留出 startupGrace 的缓冲。
 func TestMissedRunIsCaughtUpAfterGrace(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "schedule.json")
-	runner, err := New(path, func(context.Context) error { return nil }, discardLogger())
+	runner, err := newRunner(path, func(context.Context) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +187,7 @@ func TestMissedRunIsCaughtUpAfterGrace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restored, err := New(path, func(context.Context) error { return nil }, discardLogger())
+	restored, err := newRunner(path, func(context.Context) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +250,7 @@ func TestCorruptSettingsFallBackToDefaults(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{broken"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	runner, err := New(path, func(context.Context) error { return nil }, discardLogger())
+	runner, err := newRunner(path, func(context.Context) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -852,6 +853,107 @@ func newGeoApp(t *testing.T, service GeoService) *App {
 		t.Fatal(err)
 	}
 	return application
+}
+
+// 定时轮次在 apply 阶段拿不到操作锁必须跳过并如实记录，绝不排队：
+// 排在一个可能长达数分钟的安装操作后面，会让调度器"失败后尽快重试"
+// 的短间隔退化成长时间悬挂。
+func TestScheduledGeoUpdateSkipsWhenOperationBusy(t *testing.T) {
+	service := &stubGeoService{status: geodata.Status{
+		DefaultSource: upstream.GeoSourceLoyalsoldier,
+		Updatable:     true,
+	}}
+	operations := &sync.Mutex{}
+	updater := newGeoUpdater(service, operations, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	operations.Lock()
+	defer operations.Unlock()
+	err := updater.runScheduled(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "本轮已跳过") {
+		t.Fatalf("锁被占用时应跳过本轮，err = %v", err)
+	}
+	if service.applyCount() != 0 {
+		t.Fatal("跳过的轮次不应写入任何数据")
+	}
+	// 跳过的原因必须进任务状态，geo 卡片才能解释"为什么没更新"
+	job := updater.jobs.snapshot()
+	if job.Phase != PhaseFailed || !strings.Contains(job.Error, "本轮已跳过") {
+		t.Fatalf("任务状态应记录跳过原因，实际 %+v", job)
+	}
+}
+
+// 定时轮次必须沿用上次的来源：静默改换规则集会改变 geosite: 规则的含义。
+func TestScheduledGeoUpdateFollowsDefaultSource(t *testing.T) {
+	service := &stubGeoService{status: geodata.Status{
+		DefaultSource: upstream.GeoSourceV2fly,
+		Updatable:     true,
+	}}
+	updater := newGeoUpdater(service, &sync.Mutex{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if err := updater.runScheduled(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := service.requestedSource(); got != upstream.GeoSourceV2fly {
+		t.Fatalf("下载来源 = %q，期望沿用状态里的 %q", got, upstream.GeoSourceV2fly)
+	}
+	if service.applyCount() != 1 {
+		t.Fatalf("应用次数 = %d，期望 1", service.applyCount())
+	}
+}
+
+// 手动任务在跑时定时轮次必须让路，反之亦然——追踪器只有一份。
+func TestScheduledGeoUpdateYieldsToRunningJob(t *testing.T) {
+	service := &stubGeoService{status: geodata.Status{Updatable: true}}
+	updater := newGeoUpdater(service, &sync.Mutex{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if !updater.jobs.begin(PhaseDownloading, "manual", "", "geo 数据") {
+		t.Fatal("预置手动任务失败")
+	}
+	err := updater.runScheduled(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "已有 geo 更新任务") {
+		t.Fatalf("已有任务时应拒绝，err = %v", err)
+	}
+	if service.applyCount() != 0 {
+		t.Fatal("被拒绝的轮次不应写入任何数据")
+	}
+}
+
+// geo 自动更新的设置端点随 geo 功能一起出现，路径与订阅刷新平行。
+func TestGeoScheduleRoutes(t *testing.T) {
+	service := &stubGeoService{status: geodata.Status{Updatable: true}}
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel", GeoSchedulePath: filepath.Join(t.TempDir(), "geo-schedule.json")},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{Dae: stubDaeService{}, Geo: service},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/schedule/geo", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET 状态码 = %d，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+
+	putRecorder := httptest.NewRecorder()
+	putRequest := httptest.NewRequest(http.MethodPut, "/api/v1/schedule/geo",
+		strings.NewReader(`{"enabled":true,"intervalMinutes":4320}`))
+	application.Handler().ServeHTTP(putRecorder, putRequest)
+	if putRecorder.Code != http.StatusOK {
+		t.Fatalf("PUT 状态码 = %d，响应 = %s", putRecorder.Code, putRecorder.Body.String())
+	}
+	if !strings.Contains(putRecorder.Body.String(), `"intervalMinutes":4320`) {
+		t.Fatalf("PUT 应回读生效设置: %s", putRecorder.Body.String())
+	}
+
+	// geo 功能关闭时，它的调度端点也应报告未初始化而不是 404
+	disabled := newGeoApp(t, nil)
+	disabledRecorder := httptest.NewRecorder()
+	disabled.Handler().ServeHTTP(disabledRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/schedule/geo", nil))
+	if disabledRecorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("功能关闭时状态码 = %d，期望 503", disabledRecorder.Code)
+	}
 }
 
 // 未注入 geo 服务即代表功能关闭。必须返回可读的 geo_update_disabled，
