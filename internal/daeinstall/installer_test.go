@@ -56,13 +56,14 @@ type fakeService struct {
 	execStart string
 	actions   []host.Action
 	// failFrom 表示从第几次状态查询开始返回非 active，0 表示始终 active。
-	failFrom int
-	calls    int
+	failFrom  int
+	calls     int
+	actionErr error
 }
 
 func (s *fakeService) Action(_ context.Context, action host.Action) error {
 	s.actions = append(s.actions, action)
-	return nil
+	return s.actionErr
 }
 
 func (s *fakeService) Status(context.Context) (host.Status, error) {

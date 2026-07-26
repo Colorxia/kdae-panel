@@ -79,7 +79,13 @@ async function loadStatus() {
     )
     status.value = payload.status
     job.value = payload.job
-    provision.value = payload.provision ?? null
+    // 安装进行中后端会略去 provision（探测有副作用，不宜每两秒做一次）。
+    // 此时沿用上一次的结果，避免界面在"首次安装"与"当前安装"之间来回跳。
+    if (payload.provision) {
+      provision.value = payload.provision
+    } else if (payload.status.ready) {
+      provision.value = null
+    }
     loadError.value = ''
     disabled.value = false
   } catch (error) {

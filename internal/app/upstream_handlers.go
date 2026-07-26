@@ -118,9 +118,12 @@ func registerUpstreamRoutes(router *http.ServeMux, service InstallService, opera
 
 	router.HandleFunc("GET /api/v1/dae/install", func(writer http.ResponseWriter, request *http.Request) {
 		status := service.Status(request.Context())
-		payload := map[string]any{"status": status, "job": jobs.snapshot()}
+		job := jobs.snapshot()
+		payload := map[string]any{"status": status, "job": job}
 		// 还没有 dae 时附上首次安装的可行性，让界面能直接说清缺什么。
-		if !status.Ready {
+		// 任务进行中不计算：这个查询会被界面每两秒轮询一次，而可行性探测要
+		// 实际试写目标目录，其中之一是 systemd 正在监视的单元目录。
+		if !status.Ready && job.Phase != PhaseDownloading && job.Phase != PhaseApplying {
 			payload["provision"] = service.Provision(request.Context())
 		}
 		writeJSON(writer, http.StatusOK, payload)

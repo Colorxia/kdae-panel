@@ -44,17 +44,8 @@ type Bundle struct {
 	GeoSite     []byte
 }
 
-// Fetch 下载资产、比对 sha256 并取出其中的 dae 可执行文件。
+// FetchBundle 下载资产、比对 sha256 并取出其中全部可用物料。
 // 校验不通过时返回错误且不产出任何内容——调用方据此保证只有可信字节进入后续流程。
-func (r *Registry) Fetch(ctx context.Context, asset Asset) ([]byte, error) {
-	bundle, err := r.FetchBundle(ctx, asset)
-	if err != nil {
-		return nil, err
-	}
-	return bundle.Binary, nil
-}
-
-// FetchBundle 下载并校验资产,取出其中全部可用物料。
 func (r *Registry) FetchBundle(ctx context.Context, asset Asset) (Bundle, error) {
 	if asset.SHA256 == "" {
 		return Bundle{}, errors.New("资产缺少校验和，拒绝下载")
@@ -142,49 +133,14 @@ func extractBundle(payload []byte, nested bool) (Bundle, error) {
 	return bundle, nil
 }
 
-// extractBinary 从 zip 中取出 dae 可执行文件。
-//
-// nested 为真时对应 GitHub Actions 产物：它总是被 GitHub 再包一层 zip，
-// 里面可能是发布包 zip，也可能是直接平铺的文件——取决于工作流怎么 upload。
-// 两种都要能处理，因此先试着剥壳，剥不出内层 zip 就按外层直接找。
+// extractBinary 只取发布包里的可执行文件，供测试直接调用。
+// 生产路径一律走 extractBundle：解包逻辑只有一份，不会分叉。
 func extractBinary(payload []byte, nested bool) ([]byte, error) {
-	if nested {
-		inner, err := extractInnerArchive(payload)
-		switch {
-		case err == nil:
-			payload = inner
-		case errors.Is(err, errNoInnerArchive):
-			// 外层就是内容本身，继续按下面的流程处理
-		default:
-			return nil, err
-		}
-	}
-	reader, err := zip.NewReader(bytes.NewReader(payload), int64(len(payload)))
+	bundle, err := extractBundle(payload, nested)
 	if err != nil {
-		return nil, fmt.Errorf("解析发布包: %w", err)
+		return nil, err
 	}
-	if len(reader.File) > maxZipEntries {
-		return nil, fmt.Errorf("发布包条目数超过 %d 限制", maxZipEntries)
-	}
-	// zip 允许重名条目,匹配到多个时无法判断该信哪个,直接拒绝。
-	var found *zip.File
-	for _, file := range reader.File {
-		// 只按基名匹配,忽略条目里的目录部分,天然免疫 zip 路径穿越。
-		if !isBinaryEntry(path.Base(file.Name)) || file.FileInfo().IsDir() {
-			continue
-		}
-		if !file.Mode().IsRegular() {
-			return nil, errors.New("发布包中的 dae 不是普通文件")
-		}
-		if found != nil {
-			return nil, errors.New("发布包中有多个 dae 条目，无法判断该用哪个")
-		}
-		found = file
-	}
-	if found == nil {
-		return nil, errors.New("发布包中没有找到 dae 可执行文件")
-	}
-	return readZipEntry(found, maxBinaryBytes)
+	return bundle.Binary, nil
 }
 
 // isBinaryEntry 判断 zip 条目是否是 dae 可执行文件。

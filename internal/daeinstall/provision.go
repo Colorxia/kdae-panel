@@ -88,11 +88,26 @@ func (i *Installer) Provision(ctx context.Context) Provision {
 
 // writable 通过实际创建并删除一个临时文件来判断目录可写。
 // 只看权限位不够：ProtectSystem=strict 下 root 对只读挂载同样写不进去。
+//
+// 探测本身不创建目录。Provision 会被界面轮询反复调用，一个用于展示的检查
+// 不该在文件系统上留下痕迹；目录尚不存在时改为探测最近的已存在祖先——
+// 那正是安装时真正要写入的地方。
 func writable(directory string) error {
-	if err := os.MkdirAll(directory, 0o755); err != nil {
-		return err
+	existing := directory
+	for {
+		if info, err := os.Stat(existing); err == nil {
+			if !info.IsDir() {
+				return fmt.Errorf("%s 不是目录", existing)
+			}
+			break
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return fmt.Errorf("找不到 %s 的任何已存在上级目录", directory)
+		}
+		existing = parent
 	}
-	file, err := os.CreateTemp(directory, ".kdae-panel-probe-*")
+	file, err := os.CreateTemp(existing, ".kdae-panel-probe-*")
 	if err != nil {
 		return err
 	}
@@ -122,8 +137,10 @@ func (i *Installer) FirstInstall(ctx context.Context, bundle upstream.Bundle, so
 	if !provision.Possible {
 		return Status{}, errors.New(strings.Join(provision.Blockers, "；"))
 	}
-	if len(bundle.Binary) == 0 {
-		return Status{}, errors.New("发布包内没有可执行文件")
+	// 可执行文件是按条目名从 zip 里挑的；确认它真是 ELF，
+	// 免得上游改了打包方式后装上一个文本文件，直到启动才发现。
+	if err := assertELF(bundle.Binary); err != nil {
+		return Status{}, err
 	}
 
 	// 先放数据文件与配置，最后才放单元：单元一旦就位，服务就可被启动，
@@ -207,21 +224,64 @@ func (i *Installer) writeSeedConfig(bundle upstream.Bundle) error {
 }
 
 // writeUnit 安装 systemd 单元，并把其中的路径改写为面板实际使用的路径。
+//
+// 已存在的单元一律不覆盖，除非它与本次将要写入的内容逐字节相同——那说明它正是
+// 上一轮安装留下的。少了这个例外，一旦 daemon-reload 失败，重试就会被自己写下
+// 的单元永久挡住：systemd 还不认识它，所以预检仍认为没装，而写入又拒绝覆盖。
 func (i *Installer) writeUnit(bundle upstream.Bundle, path string) error {
 	unit := bundle.Unit
 	if len(unit) == 0 {
 		return errors.New("发布包内没有 dae.service，无法创建服务单元")
 	}
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("%s 已存在，面板不覆盖既有服务单元", path)
-	} else if !os.IsNotExist(err) {
+	rendered, err := i.render(string(unit))
+	if err != nil {
 		return err
 	}
-	rendered := retargetUnit(string(unit), i.binaryPath, i.configPath)
+
+	switch existing, err := os.ReadFile(path); {
+	case err == nil && string(existing) == rendered:
+		return nil // 上一轮已经写好，继续往下走
+	case err == nil:
+		return fmt.Errorf("%s 已存在且内容不同，面板不覆盖既有服务单元", path)
+	case !os.IsNotExist(err):
+		return err
+	}
 	if err := writeFileSynced(path, []byte(rendered), unitMode); err != nil {
 		return fmt.Errorf("写入服务单元: %w", err)
 	}
 	return nil
+}
+
+// render 生成最终落盘的单元内容，并确认改写确实生效。
+//
+// 替换靠的是上游单元里那两个字面量默认值。上游若换了默认路径，替换会悄无声息
+// 地不生效，写出一个指向别处的单元——那样 dae 起不来，而错误现场离真正的原因
+// 很远。宁可在这里直接拒绝，把原因说清楚。
+func (i *Installer) render(unit string) (string, error) {
+	rendered := retargetUnit(unit, i.binaryPath, i.configPath)
+	execStart := unitExecStart(rendered)
+	if execStart == "" {
+		return "", errors.New("发布包内的 dae.service 没有 ExecStart，无法安装")
+	}
+	if !strings.HasPrefix(execStart, i.binaryPath+" ") && execStart != i.binaryPath {
+		return "", fmt.Errorf(
+			"发布包内的 dae.service 启动的是 %q，面板无法把它改写为 %s；"+
+				"上游可能变更了默认路径，请手动创建服务单元", execStart, i.binaryPath)
+	}
+	return rendered, nil
+}
+
+// unitExecStart 取出单元里 ExecStart= 的值（忽略 ExecStartPre）。
+func unitExecStart(unit string) string {
+	for _, line := range strings.Split(unit, "\n") {
+		trimmed := strings.TrimSpace(line)
+		value, found := strings.CutPrefix(trimmed, "ExecStart=")
+		if !found {
+			continue
+		}
+		return strings.TrimSpace(value)
+	}
+	return ""
 }
 
 // retargetUnit 把单元里默认的 /usr/bin/dae 与 /etc/dae/config.dae

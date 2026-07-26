@@ -62,15 +62,51 @@ func TestExtractBinaryAcceptsPlainName(t *testing.T) {
 }
 
 func TestIsBinaryEntry(t *testing.T) {
-	for _, name := range []string{"dae", "dae-linux-x86_64", "dae-linux-arm64", "dae-linux-x86_64_v3_avx2"} {
+	// 覆盖 DetectPlatform 会产出的每一个平台标识，确保它们都能被识别。
+	// 这些名字里只有下划线没有点，因此 path.Ext 为空。
+	platforms := []string{
+		"x86_64", "x86_64_v2_sse", "x86_64_v3_avx2", "x86_32",
+		"arm64", "armv5", "armv6", "armv7", "riscv64", "loongarch64",
+		"s390x", "powerpc64", "powerpc64le", "mips32", "mips32le", "mips64", "mips64le",
+	}
+	for _, platform := range platforms {
+		name := "dae-linux-" + platform
 		if !isBinaryEntry(name) {
 			t.Fatalf("%q 应被识别为可执行文件", name)
 		}
 	}
+	if !isBinaryEntry("dae") {
+		t.Fatal("裸 dae 也应被识别")
+	}
 	// 同一个包里的其它物料都不能被误认
-	for _, name := range []string{"dae.service", "example.dae", "empty.dae", "geoip.dat", "geosite.dat", "README.md", "daemon", ""} {
+	for _, name := range []string{
+		"dae.service", "example.dae", "empty.dae", "geoip.dat", "geosite.dat",
+		"README.md", "daemon", "dae-linux-x86_64.zip", "dae-linux-x86_64.sha256", "",
+	} {
 		if isBinaryEntry(name) {
 			t.Fatalf("%q 不应被识别为可执行文件", name)
+		}
+	}
+}
+
+// 每个受支持架构的候选资产名都必须能被 isBinaryEntry 认出来，
+// 否则该架构上的安装会在解包这步失败——正是 3fab31f 修的那个 bug。
+func TestEveryPlatformCandidateIsRecognizable(t *testing.T) {
+	for _, goarch := range []string{
+		"amd64", "386", "arm64", "arm", "riscv64", "loong64",
+		"s390x", "ppc64", "ppc64le", "mips", "mipsle", "mips64", "mips64le",
+	} {
+		platform, err := detectPlatform(goarch, flagSet("avx2", "sse4_2", "neon"))
+		if err != nil {
+			t.Fatalf("%s: %v", goarch, err)
+		}
+		for _, candidate := range platform.Candidates() {
+			asset := AssetName(candidate)
+			// 发布包内的可执行文件名是去掉 .zip 的资产名
+			entry := strings.TrimSuffix(asset, ".zip")
+			if !isBinaryEntry(entry) {
+				t.Fatalf("%s 的候选 %q 对应的包内条目 %q 无法被识别", goarch, candidate, entry)
+			}
 		}
 	}
 }

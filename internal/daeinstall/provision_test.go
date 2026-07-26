@@ -2,8 +2,10 @@ package daeinstall
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -81,8 +83,13 @@ func TestProvisionRefusesWhenServiceExists(t *testing.T) {
 
 func TestProvisionReportsUnwritableDirectories(t *testing.T) {
 	installer, _, _ := newFreshInstaller(t)
-	// 指向一个无法创建的路径，模拟 ProtectSystem=strict 挡住写入
-	installer.unitDir = string([]byte{0})
+	// 祖先是普通文件而非目录：这条路径永远建不出来，
+	// 对应现实中把路径配错、或挂载点缺失的情形
+	blocker := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installer.unitDir = filepath.Join(blocker, "systemd")
 
 	provision := installer.Provision(context.Background())
 	if provision.Possible {
@@ -90,6 +97,102 @@ func TestProvisionReportsUnwritableDirectories(t *testing.T) {
 	}
 	if len(provision.Blockers) == 0 || !strings.Contains(strings.Join(provision.Blockers, " "), "ReadWritePaths") {
 		t.Fatalf("应指明需要加入 ReadWritePaths: %v", provision.Blockers)
+	}
+}
+
+// 探测不该在文件系统上留下痕迹：Provision 会被界面轮询反复调用，
+// 而其中一个探测目标是 /etc/systemd/system——systemd 对它有 inotify 监视。
+func TestProvisionLeavesNoTraces(t *testing.T) {
+	installer, _, _ := newFreshInstaller(t)
+	before := listDir(t, installer.unitDir)
+
+	for range 3 {
+		installer.Provision(context.Background())
+	}
+	if after := listDir(t, installer.unitDir); !slices.Equal(before, after) {
+		t.Fatalf("探测后目录内容变化: %v -> %v", before, after)
+	}
+}
+
+// 目标目录尚不存在时，探测其最近的已存在祖先即可——安装时会由我们创建它。
+func TestProvisionAcceptsMissingDirectoryWithWritableParent(t *testing.T) {
+	installer, _, _ := newFreshInstaller(t)
+	installer.unitDir = filepath.Join(installer.unitDir, "not-created-yet")
+
+	provision := installer.Provision(context.Background())
+	if !provision.Possible {
+		t.Fatalf("上级目录可写时应当可以安装: %+v", provision)
+	}
+	if _, err := os.Stat(installer.unitDir); !os.IsNotExist(err) {
+		t.Fatal("探测不应创建目标目录")
+	}
+}
+
+func listDir(t *testing.T, directory string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	slices.Sort(names)
+	return names
+}
+
+// 上游若变更单元里的默认路径，改写会静默失效并写出指向别处的单元。
+// 那样 dae 起不来，而错误现场离真正的原因很远，因此必须当场拒绝。
+func TestFirstInstallRefusesUnitItCannotRetarget(t *testing.T) {
+	installer, _, _ := newFreshInstaller(t)
+	bundle := testBundle()
+	bundle.Unit = []byte("[Service]\nExecStart=/opt/somewhere/dae run -c /opt/somewhere/config.dae\n")
+
+	_, err := installer.FirstInstall(context.Background(), bundle,
+		upstream.SourceOfficial, "v2.0.0", "v2.0.0")
+	if err == nil || !strings.Contains(err.Error(), "无法把它改写为") {
+		t.Fatalf("无法改写的单元应被拒绝，得到 %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(installer.unitDir, "dae.service")); !os.IsNotExist(err) {
+		t.Fatal("被拒绝时不应写下任何单元")
+	}
+}
+
+func TestFirstInstallRefusesUnitWithoutExecStart(t *testing.T) {
+	installer, _, _ := newFreshInstaller(t)
+	bundle := testBundle()
+	bundle.Unit = []byte("[Unit]\nDescription=没有 ExecStart\n")
+
+	_, err := installer.FirstInstall(context.Background(), bundle,
+		upstream.SourceOfficial, "v2.0.0", "v2.0.0")
+	if err == nil || !strings.Contains(err.Error(), "没有 ExecStart") {
+		t.Fatalf("缺少 ExecStart 的单元应被拒绝，得到 %v", err)
+	}
+}
+
+// 可执行文件是按条目名从 zip 里挑的，必须确认它真是 ELF。
+func TestFirstInstallRejectsNonELFBinary(t *testing.T) {
+	installer, _, binaryPath := newFreshInstaller(t)
+	bundle := testBundle()
+	bundle.Binary = []byte("#!/bin/sh\necho not a binary\n")
+
+	_, err := installer.FirstInstall(context.Background(), bundle,
+		upstream.SourceOfficial, "v2.0.0", "v2.0.0")
+	if err == nil || !strings.Contains(err.Error(), "不是 ELF") {
+		t.Fatalf("非 ELF 内容应被拒绝，得到 %v", err)
+	}
+	if _, err := os.Stat(binaryPath); !os.IsNotExist(err) {
+		t.Fatal("被拒绝时不应写下可执行文件")
+	}
+}
+
+func TestUnitExecStartIgnoresExecStartPre(t *testing.T) {
+	// ExecStartPre 也以 ExecStart 开头，前缀匹配必须区分开
+	unit := "[Service]\nExecStartPre=/usr/bin/dae validate -c /etc/dae/config.dae\n" +
+		"ExecStart=/usr/bin/dae run -c /etc/dae/config.dae\n"
+	if got := unitExecStart(unit); got != "/usr/bin/dae run -c /etc/dae/config.dae" {
+		t.Fatalf("ExecStart = %q", got)
 	}
 }
 
@@ -188,6 +291,33 @@ func TestFirstInstallFallsBackToBuiltinSeedConfig(t *testing.T) {
 	content, err := os.ReadFile(installer.configPath)
 	if err != nil || strings.TrimSpace(string(content)) != SeedConfig {
 		t.Fatalf("应回退到内置种子配置，实际 %q, err = %v", content, err)
+	}
+}
+
+// daemon-reload 失败后重试不能被自己上一轮写下的单元卡死。
+// 此时 systemd 还不认识那个单元，所以 Provision 仍认为没装；若 writeUnit
+// 一律拒绝覆盖，用户就永远走不完首次安装。
+func TestFirstInstallRetryAfterDaemonReloadFailure(t *testing.T) {
+	installer, service, binaryPath := newFreshInstaller(t)
+	service.actionErr = errors.New("systemctl daemon-reload 失败")
+
+	if _, err := installer.FirstInstall(context.Background(), testBundle(),
+		upstream.SourceOfficial, "v2.0.0", "v2.0.0"); err == nil {
+		t.Fatal("daemon-reload 失败时首次安装应报错")
+	}
+	// 单元已经落盘，但 systemd 还不知道它
+	unitPath := filepath.Join(installer.unitDir, "dae.service")
+	if _, err := os.Stat(unitPath); err != nil {
+		t.Fatalf("单元应已写入: %v", err)
+	}
+
+	service.actionErr = nil
+	if _, err := installer.FirstInstall(context.Background(), testBundle(),
+		upstream.SourceOfficial, "v2.0.0", "v2.0.0"); err != nil {
+		t.Fatalf("重试应当成功，得到: %v", err)
+	}
+	if content, _ := os.ReadFile(binaryPath); string(content) != string(elf("v1")) {
+		t.Fatalf("重试后二进制内容 = %q", content)
 	}
 }
 

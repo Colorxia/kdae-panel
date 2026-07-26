@@ -623,6 +623,20 @@ func writeFileSynced(path string, content []byte, mode os.FileMode) error {
 	return nil
 }
 
+// elfMagic 是 ELF 文件的前四个字节。
+const elfMagic = "\x7fELF"
+
+// assertELF 确认内容是原生可执行文件。
+func assertELF(content []byte) error {
+	if len(content) == 0 {
+		return errors.New("发布包内没有可执行文件")
+	}
+	if len(content) < len(elfMagic) || string(content[:len(elfMagic)]) != elfMagic {
+		return errors.New("发布包内取出的文件不是 ELF 可执行文件，上游打包方式可能已变更")
+	}
+	return nil
+}
+
 // assertExecutable 确认目标是原生可执行文件而不是脚本。
 // 面板只替换 dae 本体；ExecStart 指向包装脚本时应当由运维自己处理。
 func assertExecutable(path string) error {
@@ -631,11 +645,11 @@ func assertExecutable(path string) error {
 		return err
 	}
 	defer file.Close()
-	header := make([]byte, 4)
+	header := make([]byte, len(elfMagic))
 	if _, err := io.ReadFull(file, header); err != nil {
 		return fmt.Errorf("读取 %s 的文件头: %w", path, err)
 	}
-	if string(header) != "\x7fELF" {
+	if string(header) != elfMagic {
 		return fmt.Errorf("服务启动的 %s 不是 ELF 可执行文件，看起来是启动脚本；"+
 			"面板只替换 dae 本体，请把 ExecStart 指向 dae 可执行文件本身", path)
 	}
