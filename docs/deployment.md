@@ -8,6 +8,29 @@
 - 构建阶段需要 Go 1.25.12+ 和 Node.js 22+；
 - 运行阶段不需要 Node.js。
 
+## 一键部署
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/get.sh)"
+```
+
+脚本按 `uname -m` 选择发布资产（amd64 / arm64 / riscv64），从 GitHub Release 的 latest 直链下载、比对 `SHA256SUMS` 后运行包内的 `install.sh`，效果与源码安装完全一致。设置 `KDAE_PANEL_VERSION=v0.1.0` 可固定版本。
+
+三点如实说明：
+
+- **信任边界**：`curl | bash` 等于信任本仓库与 GitHub。校验和与发布包由同一个发布者签出、放在同一个 Release，防的是传输损坏与不完整下载，防不住发布者本身。发布包另附 GitHub OIDC 来源证明，可用 `gh attestation verify kdae-panel_linux_<arch>.tar.gz --repo tuoro/kdae-panel` 进一步确认归档确实由本仓库的发布流程构建——它不依赖与包同源的清单，防得住"资产被事后替换"，仍防不住发布者提交的代码本身。
+- **网络前提**：`raw.githubusercontent.com` 与 `github.com` 都必须可达。无法直连时，请在能访问的机器上手动下载 `kdae-panel_linux_<arch>.tar.gz` 与 `SHA256SUMS` 两个文件，核对通过后拷到目标机器解压，运行包内 `install.sh`。核对命令：
+
+  ```bash
+  # SHA256SUMS 列有全部三个架构；只下载了一个包时必须加 --ignore-missing，
+  # 否则会因另两个文件不存在而报错。预期恰好输出一行 "…tar.gz: OK"。
+  sha256sum -c --ignore-missing SHA256SUMS
+  ```
+
+- **可重复执行**：脚本可用于升级——`install.sh` 会覆盖二进制与服务单元并重启面板，但不覆盖已有的 `/etc/kdae-panel/kdae-panel.env`。
+
+安装完成后的访问方式见下方「首次访问」。
+
 ## 从源码安装
 
 ```bash
@@ -29,6 +52,24 @@ sudo ./scripts/install.sh
 ```
 
 安装脚本不会覆盖现有 `/etc/kdae-panel/kdae-panel.env`，也不会修改 dae 配置。
+
+## 首次访问
+
+面板默认只监听 `127.0.0.1:2023`。从其他机器访问请先建立 SSH 端口转发：
+
+```bash
+ssh -L 2023:127.0.0.1:2023 root@router.example
+```
+
+然后打开 `http://127.0.0.1:2023`。首次启动会在服务日志里生成一次性初始化链接：
+
+```bash
+sudo journalctl -u kdae-panel -n 20 --no-pager
+```
+
+找到 `setup_url` 并打开，页面会自动完成授权，注册表单只需填写用户名和密码。创建管理员后初始化接口永久关闭。
+
+`setup_url` 默认使用面板的直接监听地址。通过 HTTPS 反向代理访问时，保留 `/setup#bootstrap=...` 部分，并将其协议和主机替换为实际面板地址；URL 片段不会发送给反向代理或写入访问日志。
 
 ## 配置项
 
@@ -124,8 +165,6 @@ systemctl restart kdae-panel
 - **切换来源会改变路由行为。** 两套规则集里同名分类所含的域名不同，切换后 `geosite:` 开头的路由规则匹配的范围会变，而 dae 不会因此报错。界面只在切换时警告，沿用同一来源不会反复打扰。
 - **更新会触发 `dae reload`。** 新连接不受影响，但进行中的长连接（大文件下载、SSH、串流）最多约 10 秒后可能被断开。若 dae 不接受新数据，面板会自动还原旧文件并重新加载。
 
-`setup_url` 默认使用面板的直接监听地址。通过 HTTPS 反向代理访问时，保留 `/setup#bootstrap=...` 部分，并将其协议和主机替换为实际面板地址；URL 片段不会发送给反向代理或写入访问日志。
-
 ## HTTPS
 
 不建议直接将面板的 HTTP 端口暴露到公网。保持监听回环地址，并使用反向代理提供 TLS。
@@ -198,15 +237,15 @@ sudo systemctl restart dae
 
 刷新面板后，它会重新执行 `--help` 和 `export outline`，自动读取新版本能力。生产环境仍应保留旧二进制，以便遇到上游破坏性变化时回滚。
 
-正式发布包会附带 SHA-256 清单和 GitHub OIDC 来源证明，可使用 `gh attestation verify <归档> --repo tuoro/kdae-panel` 验证归档确实由仓库发布流程生成。
-
 ## 卸载
 
+安装时（无论一键部署还是源码安装）会在 `/usr/share/kdae-panel/` 落一份卸载脚本：
+
 ```bash
-sudo ./scripts/uninstall.sh
+sudo bash /usr/share/kdae-panel/uninstall.sh
 ```
 
-卸载脚本保留 `/etc/kdae-panel` 和 `/var/lib/kdae-panel`。确认不再需要账户和备份后再手工删除。
+源码检出还在的话，`sudo ./scripts/uninstall.sh` 等效。两者都保留 `/etc/kdae-panel` 和 `/var/lib/kdae-panel`，确认不再需要账户和备份后再手工删除。
 
 ## 排障
 

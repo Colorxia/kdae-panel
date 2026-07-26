@@ -6,22 +6,40 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
-repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-default_binary="${repo_root}/bin/kdae-panel"
-if [[ -x ${repo_root}/kdae-panel ]]; then
-  default_binary="${repo_root}/kdae-panel"
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# 布局判定必须原子：三个文件要么全部来自发布包，要么全部来自源码仓库，
+# 绝不允许"新二进制配旧 unit/env"的混装——发布包被解压进旧源码检出里时，
+# 逐文件回退会让这种混装静默发生。判据：包内脚本与 kdae-panel 二进制同目录
+# （build-release.sh 保证的布局），源码仓库的 scripts/ 下永远没有该二进制。
+#
+# 探测用 -f 而不是 -x：安装时 install -Dm0755 会重设权限，源文件的执行位
+# 与结果无关；而 tar 解包后的权限位取决于打包环境，靠它探测会静默落空。
+if [[ -f ${script_dir}/kdae-panel ]]; then
+  # 发布包布局：全部取包内文件
+  default_binary="${script_dir}/kdae-panel"
+  service_file="${script_dir}/kdae-panel.service"
+  environment_file="${script_dir}/kdae-panel.env"
+  uninstall_file="${script_dir}/uninstall.sh"
+else
+  # 源码仓库布局：全部取仓库文件
+  repo_root=$(cd "${script_dir}/.." && pwd)
+  default_binary="${repo_root}/bin/kdae-panel"
+  service_file="${repo_root}/packaging/kdae-panel.service"
+  environment_file="${repo_root}/packaging/kdae-panel.env"
+  uninstall_file="${script_dir}/uninstall.sh"
 fi
 binary=${1:-"${default_binary}"}
-service_file="${repo_root}/packaging/kdae-panel.service"
-environment_file="${repo_root}/packaging/kdae-panel.env"
-if [[ ! -f ${service_file} ]]; then
-  service_file="${repo_root}/kdae-panel.service"
-fi
-if [[ ! -f ${environment_file} ]]; then
-  environment_file="${repo_root}/kdae-panel.env"
-fi
 
-if [[ ! -x ${binary} ]]; then
+for required in "${service_file}" "${environment_file}"; do
+  if [[ ! -f ${required} ]]; then
+    echo "未找到安装所需文件：${required}" >&2
+    echo "发布包不完整或目录布局异常，请重新解压完整的发布包后重试" >&2
+    exit 1
+  fi
+done
+
+if [[ ! -f ${binary} ]]; then
   echo "未找到可执行文件：${binary}" >&2
   echo "请先运行 make build，或将二进制路径作为第一个参数传入" >&2
   exit 1
@@ -35,9 +53,24 @@ if [[ ! -f /etc/kdae-panel/kdae-panel.env ]]; then
   install -Dm0600 "${environment_file}" /etc/kdae-panel/kdae-panel.env
 fi
 
+# 卸载脚本一并落盘：一键安装的临时目录用完即删，不留这份的话，
+# 用户想卸载时手里连脚本都没有。
+if [[ -f ${uninstall_file} ]]; then
+  install -Dm0755 "${uninstall_file}" /usr/share/kdae-panel/uninstall.sh
+fi
+
 install -Dm0644 "${service_file}" /etc/systemd/system/kdae-panel.service
 systemctl daemon-reload
-systemctl enable --now kdae-panel.service
+# 升级场景必须重启：enable --now 对已在运行的服务是空操作，
+# 旧二进制会继续跑，升级看似成功实则没有生效。
+if systemctl is-active --quiet kdae-panel.service; then
+  systemctl restart kdae-panel.service
+else
+  systemctl enable --now kdae-panel.service
+fi
 
 echo "kdae-panel 已启动：http://127.0.0.1:2023"
+echo "面板只监听本机回环地址；从其他机器访问请先建立 SSH 端口转发："
+echo "  ssh -L 2023:127.0.0.1:2023 root@<这台机器>"
 echo "首次初始化请通过 journalctl -u kdae-panel -n 20 --no-pager 查看并打开 setup_url。"
+echo "卸载：sudo bash /usr/share/kdae-panel/uninstall.sh"

@@ -1,8 +1,12 @@
 name: Release
 
+# 只认规范的版本 tag。v* 会把随手打的实验 tag 也发成正式 release——
+# 而 releases/latest 直链正是一键部署的数据源，实验版会被所有新装机装上。
 on:
   push:
-    tags: ['v*']
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
 
 permissions:
   contents: write
@@ -37,7 +41,7 @@ jobs:
           git diff --exit-code -- internal/webui/dist
           go test ./...
           go vet ./...
-          go test -race ./internal/app ./internal/auth ./internal/configstore ./internal/dae ./internal/daeinstall ./internal/host ./internal/netprobe ./internal/schedule ./internal/upstream
+          go test -race ./...
           go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - run: bash scripts/build-release.sh "${GITHUB_REF_NAME}"
 
@@ -49,6 +53,9 @@ jobs:
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           generate_release_notes: true
+          # 带连字符的 tag（v1.0.0-rc.1）标为预发布：它不会成为 releases/latest，
+          # 一键部署的用户不会装到它，而发布链路本身仍被完整演练一遍。
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS

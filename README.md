@@ -23,9 +23,27 @@
 - Vue 3 响应式管理界面，前端资源嵌入单个 Go 二进制；
 - Linux `amd64`、`arm64` 和 `riscv64` 发布构建。
 
-## 快速安装
+## 一键部署
 
-依赖 Go 1.25.12+、Node.js 22+，运行环境需要 systemd，以及一个可正常运行的 dae——若这台机器上还没有 dae，也可以启用 dae 版本管理后由面板完成首次安装。
+在有 systemd 的 Linux（amd64 / arm64 / riscv64）上，以 root 执行：
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/get.sh)"
+```
+
+脚本会下载最新发布包、比对 `SHA256SUMS`、安装并启动服务。固定安装某个版本：
+
+```bash
+KDAE_PANEL_VERSION=v0.1.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/get.sh)"
+```
+
+这条命令等于信任本仓库与 GitHub：校验和与发布包同处一个 Release，防传输损坏，防不住发布者本身。不接受这个前提、或网络无法直连 GitHub 时，请手动到 [Releases](https://github.com/tuoro/kdae-panel/releases) 下载对应架构的 `kdae-panel_linux_<arch>.tar.gz` 与 `SHA256SUMS`，用 `sha256sum -c --ignore-missing SHA256SUMS` 核对（清单含全部架构，勿直接整份 `-c`）后运行包内的 `install.sh`——或直接用下面的源码方式。发布包另附构建来源证明，验证方式见 [docs/deployment.md](docs/deployment.md)。
+
+若这台机器上还没有 dae，装好面板后可启用 dae 版本管理，由面板完成 dae 的首次安装。安装完成后的访问方式见下方「首次访问」。
+
+## 从源码安装
+
+依赖 Go 1.25.12+、Node.js 22+，运行环境需要 systemd：
 
 ```bash
 git clone https://github.com/tuoro/kdae-panel.git
@@ -35,7 +53,9 @@ make build
 sudo ./scripts/install.sh
 ```
 
-默认只监听 `127.0.0.1:2023`。首次访问建议使用 SSH 端口转发：
+## 首次访问
+
+无论哪种方式装的，面板都只监听 `127.0.0.1:2023`。从其他机器访问请使用 SSH 端口转发：
 
 ```bash
 ssh -L 2023:127.0.0.1:2023 root@router.example

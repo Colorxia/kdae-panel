@@ -8,6 +8,9 @@ fi
 
 systemctl disable --now kdae-panel.service 2>/dev/null || true
 rm -f /etc/systemd/system/kdae-panel.service /usr/bin/kdae-panel
+# 安装时落盘的卸载脚本副本也一并清掉，保持安装/卸载对称。
+# bash 已把整个脚本读进内存，删除正在执行的文件是安全的。
+rm -rf /usr/share/kdae-panel
 systemctl daemon-reload
 
 echo "程序与 systemd 单元已移除。dae 本身不受影响。"
