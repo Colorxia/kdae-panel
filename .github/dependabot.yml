@@ -1,19 +1,46 @@
 version: 2
+
+# 分组是为了控制噪音：不分组时每个依赖各开一个 PR，三个生态一次能涌进十几个，
+# 每个都要单独评估、单独等 CI，结果往往是全都被拖着不处理——反而更不安全。
+#
+# 分组只覆盖 minor/patch。major 刻意留在组外各自开 PR：它们才是需要实际升级、
+# 跑完验证再决定的那类，混进批量组里容易被顺手合掉。
+#
+# 安全更新不受分组约束，dependabot 始终单独提 PR，不会被这里的配置延迟。
 updates:
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      go-minor-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
 
   - package-ecosystem: npm
     directory: /web
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      frontend-minor-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      # vue-router 5 实测全绿，但代价是 +37 个传递依赖（整套 Babel 解析器、
+      # chokidar、unplugin），它们服务的是文件式/类型化路由——而本仓库是
+      # router/index.ts 里几条手写静态路由，永远用不到。4.x 仍在安全支持期。
+      # 只挡 major：4.x 若出安全公告，修复走 patch/minor，不会被这条拦下。
+      # 重新评估的触发条件：4.x 出安全公告，或上游宣布 4.x EOL。
+      - dependency-name: vue-router
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ['*']
