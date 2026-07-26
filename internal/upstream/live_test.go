@@ -51,5 +51,17 @@ func TestLiveUpstream(t *testing.T) {
 		}
 		t.Logf("%s %s -> %s (%d 字节, sha256 %s…)",
 			source, installable.Label, asset.Filename, asset.Size, asset.SHA256[:12])
+
+		// 必须真的下载并解包：只验证到 Resolve 会漏掉发布包内部结构的变化，
+		// 例如可执行文件在包里的实际命名。
+		binary, err := registry.Fetch(ctx, asset)
+		if err != nil {
+			t.Fatalf("%s: 下载并解包 %s 失败: %v", source, installable.Ref, err)
+		}
+		if len(binary) < 4 || string(binary[:4]) != "\x7fELF" {
+			t.Fatalf("%s: 取出的内容不是 ELF 可执行文件（前 4 字节 %q，共 %d 字节）",
+				source, binary[:min(4, len(binary))], len(binary))
+		}
+		t.Logf("%s %s 解包出 %d 字节的 ELF 可执行文件", source, installable.Label, len(binary))
 	}
 }

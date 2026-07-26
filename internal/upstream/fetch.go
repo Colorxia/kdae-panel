@@ -57,14 +57,21 @@ func verifyDigest(payload []byte, expected string) error {
 }
 
 // extractBinary 从 zip 中取出 dae 可执行文件。
-// nested 为真时先剥掉 Actions 产物那层外壳。
+//
+// nested 为真时对应 GitHub Actions 产物：它总是被 GitHub 再包一层 zip，
+// 里面可能是发布包 zip，也可能是直接平铺的文件——取决于工作流怎么 upload。
+// 两种都要能处理，因此先试着剥壳，剥不出内层 zip 就按外层直接找。
 func extractBinary(payload []byte, nested bool) ([]byte, error) {
 	if nested {
 		inner, err := extractInnerArchive(payload)
-		if err != nil {
+		switch {
+		case err == nil:
+			payload = inner
+		case errors.Is(err, errNoInnerArchive):
+			// 外层就是内容本身，继续按下面的流程处理
+		default:
 			return nil, err
 		}
-		payload = inner
 	}
 	reader, err := zip.NewReader(bytes.NewReader(payload), int64(len(payload)))
 	if err != nil {
@@ -77,7 +84,7 @@ func extractBinary(payload []byte, nested bool) ([]byte, error) {
 	var found *zip.File
 	for _, file := range reader.File {
 		// 只按基名匹配,忽略条目里的目录部分,天然免疫 zip 路径穿越。
-		if path.Base(file.Name) != BinaryName || file.FileInfo().IsDir() {
+		if !isBinaryEntry(path.Base(file.Name)) || file.FileInfo().IsDir() {
 			continue
 		}
 		if !file.Mode().IsRegular() {
@@ -92,6 +99,19 @@ func extractBinary(payload []byte, nested bool) ([]byte, error) {
 		return nil, errors.New("发布包中没有找到 dae 可执行文件")
 	}
 	return readZipEntry(found, maxBinaryBytes)
+}
+
+// isBinaryEntry 判断 zip 条目是否是 dae 可执行文件。
+//
+// 官方发布包里它并不叫 dae，而是按平台命名，如 dae-linux-x86_64
+// （release.yml 用 install -D pkgdir/usr/bin/dae ./zip/dae-$ASSET_NAME 打包）。
+// 同一个包里还有 dae.service、example.dae、empty.dae 与两个 .dat，必须排除。
+func isBinaryEntry(name string) bool {
+	if name != BinaryName && !strings.HasPrefix(name, BinaryName+"-") {
+		return false
+	}
+	// 带扩展名的都是随包附带的其它物料，不是可执行文件。
+	return path.Ext(name) == ""
 }
 
 // extractInnerArchive 取出外层 zip 里唯一的那个 zip。
@@ -118,10 +138,13 @@ func extractInnerArchive(payload []byte) ([]byte, error) {
 		found = file
 	}
 	if found == nil {
-		return nil, errors.New("构建产物中没有找到发布包")
+		return nil, errNoInnerArchive
 	}
 	return readZipEntry(found, MaxAssetBytes)
 }
+
+// errNoInnerArchive 表示外层产物里没有再套一层 zip，内容就平铺在外层。
+var errNoInnerArchive = errors.New("构建产物中没有内层发布包")
 
 func readZipEntry(file *zip.File, limit int64) ([]byte, error) {
 	entry, err := file.Open()

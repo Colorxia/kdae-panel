@@ -26,13 +26,62 @@ func buildZip(t *testing.T, entries map[string][]byte) []byte {
 	return buffer.Bytes()
 }
 
-func TestExtractBinaryFromReleaseArchive(t *testing.T) {
+// 官方发布包里的可执行文件按平台命名，且与单元、示例配置、geo 数据同处一包。
+// 这正是真实 zip 的样子——早先按 "dae" 精确匹配会在这里失败。
+func TestExtractBinaryFromRealReleaseLayout(t *testing.T) {
+	archive := buildZip(t, map[string][]byte{
+		"dae-linux-x86_64": []byte("ELF-binary"),
+		"dae.service":      []byte("[Unit]"),
+		"example.dae":      []byte("global {}"),
+		"empty.dae":        []byte("global {} routing {}"),
+		"geoip.dat":        []byte("geo"),
+		"geosite.dat":      []byte("geo"),
+	})
+	binary, err := extractBinary(archive, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(binary) != "ELF-binary" {
+		t.Fatalf("取出的内容 = %q", binary)
+	}
+}
+
+func TestExtractBinaryAcceptsPlainName(t *testing.T) {
 	archive := buildZip(t, map[string][]byte{
 		"dae":         []byte("ELF-binary"),
 		"geoip.dat":   []byte("geo"),
 		"example.dae": []byte("config"),
 	})
 	binary, err := extractBinary(archive, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(binary) != "ELF-binary" {
+		t.Fatalf("取出的内容 = %q", binary)
+	}
+}
+
+func TestIsBinaryEntry(t *testing.T) {
+	for _, name := range []string{"dae", "dae-linux-x86_64", "dae-linux-arm64", "dae-linux-x86_64_v3_avx2"} {
+		if !isBinaryEntry(name) {
+			t.Fatalf("%q 应被识别为可执行文件", name)
+		}
+	}
+	// 同一个包里的其它物料都不能被误认
+	for _, name := range []string{"dae.service", "example.dae", "empty.dae", "geoip.dat", "geosite.dat", "README.md", "daemon", ""} {
+		if isBinaryEntry(name) {
+			t.Fatalf("%q 不应被识别为可执行文件", name)
+		}
+	}
+}
+
+// Actions 产物可能直接平铺文件，而不是再套一层发布包 zip。
+func TestExtractBinaryFromFlatArtifact(t *testing.T) {
+	outer := buildZip(t, map[string][]byte{
+		"dae-linux-x86_64": []byte("ELF-binary"),
+		"geoip.dat":        []byte("geo"),
+	})
+	binary, err := extractBinary(outer, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,10 +156,14 @@ func TestExtractBinaryRejectsBrokenArchive(t *testing.T) {
 	}
 }
 
-func TestExtractBinaryRejectsArtifactWithoutInnerArchive(t *testing.T) {
-	outer := buildZip(t, map[string][]byte{"dae": []byte("ELF-binary")})
-	if _, err := extractBinary(outer, true); err == nil || !strings.Contains(err.Error(), "没有找到发布包") {
-		t.Fatalf("外层缺少内层 zip 应报错，得到 %v", err)
+// 既没有内层发布包、外层也找不到可执行文件时才算真的失败。
+func TestExtractBinaryRejectsArtifactWithoutBinary(t *testing.T) {
+	outer := buildZip(t, map[string][]byte{
+		"README.md": []byte("nothing"),
+		"geoip.dat": []byte("geo"),
+	})
+	if _, err := extractBinary(outer, true); err == nil || !strings.Contains(err.Error(), "没有找到 dae") {
+		t.Fatalf("产物里没有可执行文件时应报错，得到 %v", err)
 	}
 }
 
