@@ -82,6 +82,13 @@ func newTestManager(t *testing.T) (*Manager, *fakeFetcher, *fakeReloader, string
 			upstream.GeoSiteName: []byte("new-geosite"),
 		},
 	}
+	// 固定系统目录必须与本机隔离：/usr/local/share/dae 在开发者机器上可能
+	// 真有 dae 的 geo 文件（Windows 还会解析到当前盘符），一旦被当成
+	// "实际生效的那一份"，更新测试会写到沙盒之外。
+	previousDirs := systemDirs
+	systemDirs = nil
+	t.Cleanup(func() { systemDirs = previousDirs })
+
 	reloader := &fakeReloader{}
 	manager, err := New(Options{
 		ConfigPath: filepath.Join(directory, "config.dae"),

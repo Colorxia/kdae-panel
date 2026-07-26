@@ -22,6 +22,18 @@ var Names = []string{upstream.GeoIPName, upstream.GeoSiteName}
 // 为一个少见的 geo 目录把整个 /root 敞开给这个 root 服务不划算。
 const SandboxHiddenDir = "/root/.local/share/dae"
 
+// systemDirs 是 dae 搜索顺序里排在配置目录之后的固定系统目录。
+//
+// 独立成变量是给测试留的缝：这些绝对路径在跑测试的机器上可能真的存在
+// （开发者装过 dae 的 /usr/local/share/dae；Windows 上还会按当前盘符解析），
+// 测试必须能把它们清空——否则"就地更新实际生效的那一份"会把开发者机器上
+// 真实的 geo 文件当成更新目标，go test 一跑就把它们覆写掉。
+var systemDirs = []string{
+	SandboxHiddenDir,
+	"/usr/local/share/dae",
+	"/usr/share/dae",
+}
+
 // SearchPath 复刻 dae 查找 geo 数据文件的顺序。
 //
 // 最高优先级是 DAE_LOCATION_ASSET 指定的目录，其次是配置文件所在目录
@@ -37,11 +49,7 @@ func SearchPath(configPath string, environment map[string]string) []string {
 	if configPath != "" {
 		paths = append(paths, filepath.Dir(configPath))
 	}
-	return append(paths,
-		SandboxHiddenDir,
-		"/usr/local/share/dae",
-		"/usr/share/dae",
-	)
+	return append(paths, systemDirs...)
 }
 
 // MissingWarning 在面板可见的目录里都找不到 geo 数据时提醒，找得到就返回空。
