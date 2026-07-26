@@ -184,7 +184,8 @@ export interface GeoStatus {
   warnings?: string[]
 }
 
-export interface ReloadSchedule {
+/** 定时任务（订阅自动刷新 / geo 自动更新）的设置与执行状态，两个端点同构。 */
+export interface ScheduleStatus {
   enabled: boolean
   intervalMinutes: number
   lastRunAt?: string

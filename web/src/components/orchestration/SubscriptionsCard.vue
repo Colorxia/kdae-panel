@@ -21,7 +21,7 @@ import {
 } from 'naive-ui'
 import { AddOutline, CreateOutline, RefreshOutline, TimerOutline, TrashOutline } from '@vicons/ionicons5'
 import { getJSON, postJSON, putJSON } from '../../api/client'
-import type { ReloadSchedule } from '../../types/api'
+import type { ScheduleStatus } from '../../types/api'
 import { appendToSection, isQuotable, isValidTag, quote, readSection, removeLine, type Entry } from '../../utils/daeconf'
 import { parseScheme, supportsPersistence, togglePersistence } from '../../utils/subscription'
 import { formatDateTime } from '../../utils/format'
@@ -158,7 +158,7 @@ const subscriptionColumns: DataTableColumns<Entry> = [
 const refreshing = ref(false)
 const scheduleVisible = ref(false)
 const scheduleSaving = ref(false)
-const reloadSchedule = ref<ReloadSchedule | null>(null)
+const reloadSchedule = ref<ScheduleStatus | null>(null)
 const scheduleEnabled = ref(false)
 const scheduleInterval = ref(1440)
 
@@ -175,7 +175,7 @@ const scheduleError = ref('')
 
 async function loadSchedule() {
   try {
-    const status = await getJSON<ReloadSchedule>('/api/v1/schedule/reload')
+    const status = await getJSON<ScheduleStatus>('/api/v1/schedule/reload')
     reloadSchedule.value = status
     scheduleEnabled.value = status.enabled
     scheduleInterval.value = status.intervalMinutes
@@ -196,7 +196,7 @@ async function openSchedule() {
 async function saveSchedule() {
   scheduleSaving.value = true
   try {
-    reloadSchedule.value = await putJSON<ReloadSchedule>('/api/v1/schedule/reload', {
+    reloadSchedule.value = await putJSON<ScheduleStatus>('/api/v1/schedule/reload', {
       enabled: scheduleEnabled.value,
       intervalMinutes: scheduleInterval.value,
     })
