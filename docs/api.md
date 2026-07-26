@@ -115,12 +115,17 @@ X-CSRF-Token: <csrfToken>
 
 更新只触发 `dae reload`，不重启服务。若 dae 不接受新数据，面板会自动还原旧文件并再 reload 一次，任务标记为 `failed`。
 
-## 订阅自动刷新
+## 定时任务（订阅自动刷新 / geo 自动更新）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/schedule/reload` | 读取自动重载的设置与执行状态 |
-| `PUT` | `/schedule/reload` | 更新自动重载设置 |
+| `GET` | `/schedule/reload` | 读取订阅自动刷新的设置与执行状态 |
+| `PUT` | `/schedule/reload` | 更新订阅自动刷新设置 |
+| `GET` | `/schedule/geo` | 读取 geo 自动更新的设置与执行状态 |
+| `PUT` | `/schedule/geo` | 更新 geo 自动更新设置 |
+
+两组端点的请求与响应完全同构。geo 自动更新随 `KDAE_PANEL_ENABLE_GEO_UPDATE` 一起出现，
+到点后重新下载校验并只 reload 不重启；来源沿用面板记录的上一个，绝不自动切换规则集。
 
 ```json
 {
@@ -133,11 +138,21 @@ X-CSRF-Token: <csrfToken>
 
 dae 只在重载时重新拉取 `subscription` 链接，因此"订阅定时刷新"的实现就是按间隔执行一次 `dae reload`。每轮开始前尝试获取全局控制锁，锁被占用时跳过当轮并把原因记入 `lastError`，不会与用户发起的操作交叉。
 
-间隔取值范围为 5 分钟到 7 天。设置与上次执行时间一起持久化在 `KDAE_PANEL_SCHEDULE_FILE` 指向的文件中，下一轮按"上次执行 + 间隔"排期，因此面板重启或提交无变化的设置都不会把倒计时重新拉满；停机期间错过的轮次会在启动一分钟后补做。
+间隔取值范围为 5 分钟到 30 天。设置与上次执行时间一起持久化（订阅刷新在 `KDAE_PANEL_SCHEDULE_FILE`，geo 在 `KDAE_PANEL_GEO_SCHEDULE_FILE`），下一轮按"上次执行 + 间隔"排期，因此面板重启或提交无变化的设置都不会把倒计时重新拉满；停机期间错过的轮次会在启动一分钟后补做。
 
 重载应用的是磁盘上的当前配置，所以之前用 `apply: false` 保存但未应用的改动会随这次刷新一并生效。
 
 订阅内容本身的缓存由 dae 负责：把链接的 scheme 写成带 `-file` 后缀的形式（如 `https-file://`），dae 会将拉取成功的内容保存到 `config_dir/persist.d/<tag>.sub`，并在后续拉取失败时回退使用。面板只负责在配置里维护这一行，不自行下载或缓存订阅内容。
+
+## 面板自身更新
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/panel/update` | 面板自身的新版本检查结果 |
+
+响应含 `current`、`latest`、`updateAvailable`、`checkedAt`，检查失败时带 `error`。
+结果按 TTL 缓存（成功 6 小时、失败 15 分钟）；dev 构建不发起检查。
+`KDAE_PANEL_DISABLE_UPDATE_CHECK=true` 时端点仍在，但不再联网、恒不提示。
 
 ## 网络探测
 
