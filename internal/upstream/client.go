@@ -148,18 +148,33 @@ func (p *proxyAddresses) contains(address string) bool {
 // reservedRanges 是 netip 的内建判断没覆盖、但同样不该出现在上游下载链路上的网段。
 // 100.64/10 是运营商级 NAT，也是 Tailscale 的地址段；198.18/15 常被用作 fake-ip；
 // 240/4 与 0/8 是保留段。
+//
+// IPv6 侧还得挡住几类"把 IPv4 地址嵌进 v6 地址"的写法。主机上跑着 NAT64/CLAT 或
+// 6to4 隧道时（纯 IPv6 云环境的常态，而面板恰恰常装在这种机器上），内核会把
+// 64:ff9b::a9fe:a9fe、2002:a9fe:a9fe::1 还原成 169.254.169.254 再发出去，
+// 而 netip 只把它们当普通全球单播，publicAddress 会直接放行。
+// 这一层不能省：client.go 刻意不对重定向终点做域名白名单，全靠"不得落到内网地址"
+// 这条不变量兜底，v6 侧漏一个口子等于整条防线在这类主机上失效。
 var reservedRanges = []netip.Prefix{
 	netip.MustParsePrefix("100.64.0.0/10"),
 	netip.MustParsePrefix("198.18.0.0/15"),
 	netip.MustParsePrefix("192.0.0.0/24"),
 	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"), // 6to4 中继任播
 	netip.MustParsePrefix("198.51.100.0/24"),
 	netip.MustParsePrefix("203.0.113.0/24"),
 	netip.MustParsePrefix("240.0.0.0/4"),
 	netip.MustParsePrefix("0.0.0.0/8"),
-	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("::/96"),          // 已废弃的 IPv4-compatible，如 ::7f00:1
+	netip.MustParsePrefix("64:ff9b::/96"),   // NAT64 众所周知前缀，RFC 6052
+	netip.MustParsePrefix("64:ff9b:1::/48"), // NAT64 本地专用前缀，RFC 8215
 	netip.MustParsePrefix("100::/64"),
+	// 2001::/23 是 IETF 协议分配段，一条覆盖 Teredo(2001::/32)、
+	// 基准测试段(2001:2::/48，即 198.18/15 的 v6 对等段)等；
+	// 2001:db8::/32 在它之外，仍需单列。
+	netip.MustParsePrefix("2001::/23"),
 	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"), // 6to4
 }
 
 // publicAddress 排除回环、私网、链路本地与组播等不该出现在上游下载链路上的地址。
@@ -188,7 +203,7 @@ func (c *httpClient) getJSON(ctx context.Context, url string, destination any) e
 	requestCtx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 
-	body, _, err := c.get(requestCtx, url, maxAPIBytes, "application/vnd.github+json", false)
+	body, err := c.get(requestCtx, url, maxAPIBytes, "application/vnd.github+json", false)
 	if err != nil {
 		return err
 	}
@@ -202,7 +217,7 @@ func (c *httpClient) getText(ctx context.Context, url string) (string, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 
-	body, _, err := c.get(requestCtx, url, maxAPIBytes, "", false)
+	body, err := c.get(requestCtx, url, maxAPIBytes, "", false)
 	return string(body), err
 }
 
@@ -211,19 +226,18 @@ func (c *httpClient) download(ctx context.Context, url string, limit int64) ([]b
 	requestCtx, cancel := context.WithTimeout(ctx, downloadTimeout)
 	defer cancel()
 
-	body, _, err := c.get(requestCtx, url, limit, "", true)
-	return body, err
+	return c.get(requestCtx, url, limit, "", true)
 }
 
 // get 取回 target 的响应体，长度上限为 limit。
 // identity 为真时禁用传输层压缩，用于必须逐字节比对校验和的资产下载。
-func (c *httpClient) get(ctx context.Context, target string, limit int64, accept string, identity bool) ([]byte, http.Header, error) {
+func (c *httpClient) get(ctx context.Context, target string, limit int64, accept string, identity bool) ([]byte, error) {
 	if err := checkFirstHop(target); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("构造上游请求: %w", err)
+		return nil, fmt.Errorf("构造上游请求: %w", err)
 	}
 	request.Header.Set("User-Agent", userAgent)
 	if identity {
@@ -240,25 +254,25 @@ func (c *httpClient) get(ctx context.Context, target string, limit int64, accept
 	if err != nil {
 		// 不能直接 %w 包裹 *url.Error：它带着完整 URL，
 		// 而签名下载地址的查询串里含有临时凭据，会随错误进日志和 API 响应。
-		return nil, nil, fmt.Errorf("请求上游 %s 失败: %s", redact(target), redactError(err))
+		return nil, fmt.Errorf("请求上游 %s 失败: %s", redact(target), redactError(err))
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		return nil, nil, describeHTTPError(response, target)
+		return nil, describeHTTPError(response, target)
 	}
 	// 先信任 Content-Length 做早期拒绝，真正的上限仍由 LimitReader 保证。
 	if response.ContentLength > limit {
-		return nil, nil, fmt.Errorf("上游响应 %d 字节，超过 %d 上限", response.ContentLength, limit)
+		return nil, fmt.Errorf("上游响应 %d 字节，超过 %d 上限", response.ContentLength, limit)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return nil, nil, fmt.Errorf("读取上游响应: %w", err)
+		return nil, fmt.Errorf("读取上游响应: %w", err)
 	}
 	if int64(len(body)) > limit {
-		return nil, nil, fmt.Errorf("上游响应超过 %d 字节上限", limit)
+		return nil, fmt.Errorf("上游响应超过 %d 字节上限", limit)
 	}
-	return body, response.Header, nil
+	return body, nil
 }
 
 func describeHTTPError(response *http.Response, target string) error {

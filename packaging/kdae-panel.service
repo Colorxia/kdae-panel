@@ -21,6 +21,9 @@ NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
+# 代价：dae 搜索 geo 的顺序里有 /root/.local/share/dae，ProtectHome 把 /root 换成
+# 空目录后面板永远看不到那里。为一个少见的 geo 目录敞开整个 /root 不划算，
+# 改为让界面如实说"面板看不到"而非断言"文件不存在"（见 internal/geodata/locate.go）。
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
@@ -39,6 +42,10 @@ RestrictNamespaces=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 CapabilityBoundingSet=CAP_KILL CAP_NET_ADMIN
 AmbientCapabilities=CAP_KILL CAP_NET_ADMIN
+# 这两个目录必须在服务启动前就存在：没有 "-" 前缀时，systemd 对不存在的路径
+# 会直接放弃搭建挂载命名空间（226/NAMESPACE）。install.sh 负责建好它们，
+# 手工部署本单元时也要先建。不加 "-" 前缀是有意的：加了虽能启动，
+# 但 ProtectSystem=strict 下写入照样 EROFS，故障会推迟到运行时才暴露。
 ReadWritePaths=/etc/dae /var/lib/kdae-panel
 # 启用 KDAE_PANEL_ENABLE_DAE_INSTALL 时，还需要让面板能写入 dae 可执行文件
 # 所在目录，请按 systemctl show dae --property=ExecStart 的实际路径追加，例如：

@@ -76,7 +76,6 @@ func registerAuthenticationRoutes(router *http.ServeMux, service AuthenticationS
 			response.CSRFToken = session.CSRFToken
 			response.ExpiresAt = session.ExpiresAt
 		}
-		writer.Header().Set("Cache-Control", "no-store")
 		writeJSON(writer, http.StatusOK, response)
 	})
 
@@ -113,7 +112,6 @@ func registerAuthenticationRoutes(router *http.ServeMux, service AuthenticationS
 		if bootstrapToken != "" {
 			setSetupAuthorizationCookie(writer, bootstrapToken, secureCookie || proxyTrust.requestScheme(request) == "https")
 		}
-		writer.Header().Set("Cache-Control", "no-store")
 		writer.WriteHeader(http.StatusNoContent)
 	})
 
@@ -158,7 +156,6 @@ func registerAuthenticationRoutes(router *http.ServeMux, service AuthenticationS
 		setRequestUser(writer, session.User.Username)
 		clearSetupAuthorizationCookie(writer, secureCookie || proxyTrust.requestScheme(request) == "https")
 		setSessionCookie(writer, session, secureCookie || proxyTrust.requestScheme(request) == "https")
-		writer.Header().Set("Cache-Control", "no-store")
 		writeJSON(writer, http.StatusCreated, sessionResponse(session))
 	})
 
@@ -188,7 +185,6 @@ func registerAuthenticationRoutes(router *http.ServeMux, service AuthenticationS
 		limiter.Success(keys...)
 		setRequestUser(writer, session.User.Username)
 		setSessionCookie(writer, session, secureCookie || proxyTrust.requestScheme(request) == "https")
-		writer.Header().Set("Cache-Control", "no-store")
 		writeJSON(writer, http.StatusOK, sessionResponse(session))
 	})
 

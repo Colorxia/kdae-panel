@@ -1,4 +1,4 @@
-.PHONY: dev build test vuln fmt web-install web-build clean
+.PHONY: dev build build-go test vuln fmt web-install web-build clean release
 
 BINARY := bin/kdae-panel
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -7,9 +7,10 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 dev:
 	go run ./cmd/kdae-panel
 
-build: web-build
-	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/kdae-panel
+build: web-build build-go
 
+# build-go 跳过前端构建，供只改了 Go 代码时的快速循环使用；
+# 嵌入的仍是 internal/webui/dist 里已有的那份产物。
 build-go:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/kdae-panel
 

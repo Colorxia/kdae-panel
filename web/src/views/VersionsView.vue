@@ -6,7 +6,6 @@ import {
   NCard,
   NDataTable,
   NIcon,
-  NPopconfirm,
   NRadioButton,
   NRadioGroup,
   NSpace,

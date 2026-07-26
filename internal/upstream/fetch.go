@@ -55,7 +55,7 @@ func (r *Registry) FetchBundle(ctx context.Context, asset Asset) (Bundle, error)
 		// 已知大小时收紧上限,留一点余量容忍元数据差异。
 		limit = asset.Size + (1 << 20)
 	}
-	payload, err := newHTTPClient().download(ctx, asset.URL, limit)
+	payload, err := r.client.download(ctx, asset.URL, limit)
 	if err != nil {
 		return Bundle{}, err
 	}

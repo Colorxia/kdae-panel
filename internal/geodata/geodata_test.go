@@ -179,6 +179,80 @@ func TestUpdateRestoresPreviousDataWhenReloadFails(t *testing.T) {
 	}
 }
 
+// commit 中途失败：备份已改名、新文件还没就位。此前 rollback 按 replaced 判断，
+// 恰好跳过这个中间态，随后 cleanup 又把回滚点删了——旧数据彻底消失，
+// 而 dae 下次重启会因为读不到 geo 直接起不来。
+func TestCommitFailureKeepsOldDataInPlace(t *testing.T) {
+	manager, _, reloader, directory := newTestManager(t)
+	for _, name := range Names {
+		seedGeo(t, directory, name, "old-"+name)
+	}
+
+	transaction := &geoTransaction{directory: directory}
+	defer transaction.cleanup()
+	for _, name := range Names {
+		if err := transaction.stage(name, []byte("new-"+name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 抽掉第二个暂存文件，迫使它的 Replace 失败——此时第一个已经换完，
+	// 第二个的旧文件刚被改名走。
+	if err := os.Remove(transaction.staged[1].temp); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := transaction.commit(); err == nil {
+		t.Fatal("暂存文件消失时 commit 应当失败")
+	}
+	for _, name := range Names {
+		content, err := os.ReadFile(filepath.Join(directory, name))
+		if err != nil {
+			t.Fatalf("%s 应当仍在原位: %v", name, err)
+		}
+		if string(content) != "old-"+name {
+			t.Fatalf("%s = %q，应当仍是旧数据", name, content)
+		}
+	}
+	transaction.cleanup()
+	leftovers, _ := filepath.Glob(filepath.Join(directory, "*.kdae-panel-previous"))
+	if len(leftovers) != 0 {
+		t.Fatalf("成功还原后不该留下回滚点: %v", leftovers)
+	}
+	if reloader.calls != 0 {
+		t.Fatal("commit 失败时不该 reload")
+	}
+	_ = manager
+}
+
+// 还原也失败时，回滚点是仅存的一份旧数据，绝不能被 cleanup 顺手删掉。
+func TestFailedRollbackKeepsBackup(t *testing.T) {
+	directory := t.TempDir()
+	seedGeo(t, directory, upstream.GeoIPName, "old-geoip")
+
+	transaction := &geoTransaction{directory: directory}
+	if err := transaction.stage(upstream.GeoIPName, []byte("new-geoip")); err != nil {
+		t.Fatal(err)
+	}
+	final := filepath.Join(directory, upstream.GeoIPName)
+	backup := final + ".kdae-panel-previous"
+	if err := os.Rename(final, backup); err != nil {
+		t.Fatal(err)
+	}
+	transaction.staged[0].backup = backup
+	// 把目标路径占成一个非空目录，让还原用的 rename 必定失败
+	if err := os.MkdirAll(filepath.Join(final, "blocker"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := transaction.rollback(); err == nil {
+		t.Fatal("还原不可能成功时 rollback 应当报错")
+	}
+	transaction.cleanup()
+	if _, err := os.Stat(backup); err != nil {
+		t.Fatalf("还原失败时回滚点必须留着，它是仅存的旧数据: %v", err)
+	}
+}
+
 func TestUpdateRemovesBackupAfterSuccess(t *testing.T) {
 	manager, _, _, directory := newTestManager(t)
 	seedGeo(t, directory, upstream.GeoIPName, "old-geoip")

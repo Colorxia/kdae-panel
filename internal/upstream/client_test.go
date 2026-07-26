@@ -25,6 +25,14 @@ func TestPublicAddressRejectsInternalTargets(t *testing.T) {
 		"198.18.0.1", "198.19.255.254", // 常被用作 fake-ip
 		"240.0.0.1", "255.255.255.255", "0.1.2.3",
 		"2001:db8::1",
+		// 把 IPv4 嵌进 v6 的几种写法：主机跑着 NAT64/6to4 时，
+		// 内核会把它们还原成内网 IPv4 再发出去
+		"64:ff9b::a9fe:a9fe", "64:ff9b::7f00:1", // NAT64 众所周知前缀 → 169.254.169.254 / 127.0.0.1
+		"64:ff9b:1::a9fe:a9fe",                // NAT64 本地专用前缀
+		"2002:a9fe:a9fe::1", "2002:7f00:1::1", // 6to4
+		"192.88.99.1",          // 6to4 中继任播
+		"::7f00:1",             // 已废弃的 IPv4-compatible
+		"2001::1", "2001:2::1", // Teredo / 基准测试段
 	}
 	for _, value := range internal {
 		ip, err := netip.ParseAddr(value)
@@ -36,7 +44,11 @@ func TestPublicAddressRejectsInternalTargets(t *testing.T) {
 		}
 	}
 
-	public := []string{"140.82.121.4", "1.1.1.1", "2606:4700::1111", "::ffff:8.8.8.8"}
+	// 2001:4860:4860::8888 钉住 2001::/23 没有把真实分配出去的 2001: 段一并封死
+	public := []string{
+		"140.82.121.4", "1.1.1.1", "2606:4700::1111", "::ffff:8.8.8.8",
+		"2001:4860:4860::8888", "2606:50c0:8000::153", "2a04:4e42::644",
+	}
 	for _, value := range public {
 		ip, err := netip.ParseAddr(value)
 		if err != nil {

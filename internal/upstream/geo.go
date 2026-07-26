@@ -113,8 +113,6 @@ type GeoProvider struct {
 	origins map[string]geoOrigin
 }
 
-func (p *GeoProvider) Source() GeoSource { return p.source }
-
 // Info 返回来源的展示信息，其中 Repositories 如实列出全部信任根。
 func (p *GeoProvider) Info() GeoSourceInfo {
 	repositories := make([]string, 0, len(p.origins))

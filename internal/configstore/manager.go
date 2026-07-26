@@ -189,7 +189,14 @@ func (m *Manager) saveUnlocked(ctx context.Context, content, expectedHash string
 	if err != nil {
 		return SaveResult{}, err
 	}
-	defer cleanup()
+	// 走 committed 标志而不是把 cleanup 置空：defer 在语句执行时就把函数值存下来了，
+	// 事后重新赋值那个变量对已排定的调用毫无影响。
+	committed := false
+	defer func() {
+		if !committed {
+			cleanup()
+		}
+	}()
 
 	if err := m.control.Validate(ctx, tempPath); err != nil {
 		return SaveResult{}, &ValidationError{Cause: err}
@@ -203,8 +210,15 @@ func (m *Manager) saveUnlocked(ctx context.Context, content, expectedHash string
 	}
 	if latestExisted {
 		oldContent = latestContent
-		oldInfo = latestInfo
-		mode = latestInfo.Mode().Perm()
+		// 候选文件在 validate 之前就按当时的权限位定型了，而 validate 是个可能跑几秒
+		// 的子进程，其间管理员改过权限的话内容哈希不变、乐观锁不报冲突，
+		// 换上去就会把这次调整静默还原。这里补一次 chmod。
+		if perm := latestInfo.Mode().Perm(); perm != mode {
+			mode = perm
+			if err := os.Chmod(tempPath, mode); err != nil {
+				return SaveResult{}, fmt.Errorf("同步候选配置权限: %w", err)
+			}
+		}
 	}
 
 	backupID := ""
@@ -217,7 +231,7 @@ func (m *Manager) saveUnlocked(ctx context.Context, content, expectedHash string
 	if err := replaceFile(tempPath, m.entryPath); err != nil {
 		return SaveResult{}, fmt.Errorf("替换 dae 配置: %w", err)
 	}
-	cleanup = func() {}
+	committed = true
 
 	result := SaveResult{
 		Hash:     hashBytes(newContent),
@@ -411,11 +425,16 @@ func (m *Manager) rollback(content []byte, mode os.FileMode, existed bool) error
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	committed := false
+	defer func() {
+		if !committed {
+			cleanup()
+		}
+	}()
 	if err := replaceFile(tempPath, m.entryPath); err != nil {
 		return fmt.Errorf("恢复原配置: %w", err)
 	}
-	cleanup = func() {}
+	committed = true
 	return nil
 }
 

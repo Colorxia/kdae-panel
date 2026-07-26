@@ -88,7 +88,7 @@ func (c *Client) Inspect(ctx context.Context) Report {
 
 	versionResult, err := c.run(ctx, "--version")
 	if err != nil {
-		report.Problem = describeCommandError(err, versionResult)
+		report.Problem = command.Describe(err, versionResult)
 		return report
 	}
 	report.Available = true
@@ -96,7 +96,7 @@ func (c *Client) Inspect(ctx context.Context) Report {
 
 	helpResult, err := c.run(ctx, "--help")
 	if err != nil {
-		report.Problem = describeCommandError(err, helpResult)
+		report.Problem = command.Describe(err, helpResult)
 		return report
 	}
 	for _, commandName := range []string{"run", "validate", "reload", "suspend", "sysdump", "export"} {
@@ -116,7 +116,7 @@ func (c *Client) Inspect(ctx context.Context) Report {
 func (c *Client) Outline(ctx context.Context) (Outline, error) {
 	result, err := c.run(ctx, "export", "outline")
 	if err != nil {
-		return Outline{}, fmt.Errorf("导出 dae 配置结构: %s", describeCommandError(err, result))
+		return Outline{}, fmt.Errorf("导出 dae 配置结构: %s", command.Describe(err, result))
 	}
 
 	var outline Outline
@@ -132,7 +132,7 @@ func (c *Client) Outline(ctx context.Context) (Outline, error) {
 func (c *Client) Validate(ctx context.Context, configPath string) error {
 	result, err := c.runFor(ctx, max(c.timeout, validateTimeout), "validate", "-c", configPath)
 	if err != nil {
-		return fmt.Errorf("dae 配置校验失败: %s", describeCommandError(err, result))
+		return fmt.Errorf("dae 配置校验失败: %s", command.Describe(err, result))
 	}
 	return nil
 }
@@ -140,7 +140,7 @@ func (c *Client) Validate(ctx context.Context, configPath string) error {
 func (c *Client) Reload(ctx context.Context) error {
 	result, err := c.runFor(ctx, max(c.timeout, reloadTimeout), "reload")
 	if err != nil {
-		return fmt.Errorf("dae 重载失败: %s", describeCommandError(err, result))
+		return fmt.Errorf("dae 重载失败: %s", command.Describe(err, result))
 	}
 	return nil
 }
@@ -152,7 +152,7 @@ func (c *Client) Suspend(ctx context.Context, abort bool) error {
 	}
 	result, err := c.runFor(ctx, max(c.timeout, validateTimeout), args...)
 	if err != nil {
-		return fmt.Errorf("dae 暂停失败: %s", describeCommandError(err, result))
+		return fmt.Errorf("dae 暂停失败: %s", command.Describe(err, result))
 	}
 	return nil
 }
@@ -169,7 +169,7 @@ func (c *Client) Sysdump(ctx context.Context) (Sysdump, error) {
 
 	result, err := c.runInDir(ctx, dir, max(c.timeout, validateTimeout), "sysdump")
 	if err != nil {
-		return Sysdump{}, fmt.Errorf("dae 系统诊断失败: %s", describeCommandError(err, result))
+		return Sysdump{}, fmt.Errorf("dae 系统诊断失败: %s", command.Describe(err, result))
 	}
 
 	archive, err := findSysdumpArchive(dir)
@@ -261,15 +261,4 @@ func helpContainsCommand(help, commandName string) bool {
 		}
 	}
 	return false
-}
-
-func describeCommandError(err error, result command.Result) string {
-	message := strings.TrimSpace(result.Stderr)
-	if message == "" {
-		message = strings.TrimSpace(result.Stdout)
-	}
-	if message == "" {
-		message = err.Error()
-	}
-	return message
 }

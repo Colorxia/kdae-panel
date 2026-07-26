@@ -49,6 +49,16 @@ install -Dm0755 "${binary}" /usr/bin/kdae-panel
 install -d -m0700 /var/lib/kdae-panel /var/lib/kdae-panel/backups
 install -d -m0750 /etc/kdae-panel
 
+# /etc/dae 必须先于服务单元存在：单元的 ReadWritePaths 里这条路径没有 "-" 前缀，
+# 缺失时 systemd 搭建挂载命名空间会直接失败（226/NAMESPACE），面板连启动都做不到，
+# 而"机器上还没有 dae"恰恰是首次安装要面对的常态。
+# 只加 "-" 前缀解决不了：单元虽能起来，但 ProtectSystem=strict 下 /etc 只读，
+# 写种子配置与 geo 数据照样 EROFS。
+# 已存在就一概不动——它可能是 dae 自己装出来的，重设权限等于改动 dae 的配置目录。
+if [[ ! -d /etc/dae ]]; then
+  install -d -m0755 /etc/dae
+fi
+
 if [[ ! -f /etc/kdae-panel/kdae-panel.env ]]; then
   install -Dm0600 "${environment_file}" /etc/kdae-panel/kdae-panel.env
 fi

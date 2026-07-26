@@ -127,7 +127,7 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	}, ",")
 	result, err := m.run(ctx, m.systemctl, "show", m.serviceName, "--no-page", "--property="+properties)
 	if err != nil {
-		return Status{}, fmt.Errorf("读取 systemd 服务状态: %s", commandError(err, result))
+		return Status{}, fmt.Errorf("读取 systemd 服务状态: %s", command.Describe(err, result))
 	}
 	values := parseProperties(result.Stdout)
 	status := Status{
@@ -194,7 +194,7 @@ func (m *Manager) Action(ctx context.Context, action Action) error {
 		// daemon-reload 是全局动作，不带服务名。
 		result, err := m.runFor(ctx, actionTimeout, m.systemctl, "daemon-reload")
 		if err != nil {
-			return fmt.Errorf("执行 systemd daemon-reload: %s", commandError(err, result))
+			return fmt.Errorf("执行 systemd daemon-reload: %s", command.Describe(err, result))
 		}
 		return nil
 	default:
@@ -202,7 +202,7 @@ func (m *Manager) Action(ctx context.Context, action Action) error {
 	}
 	result, err := m.runFor(ctx, actionTimeout, m.systemctl, string(action), m.serviceName)
 	if err != nil {
-		return fmt.Errorf("执行 systemd %s: %s", action, commandError(err, result))
+		return fmt.Errorf("执行 systemd %s: %s", action, command.Describe(err, result))
 	}
 	return nil
 }
@@ -223,7 +223,7 @@ func (m *Manager) Logs(ctx context.Context, limit int) ([]LogEntry, error) {
 		"--lines", strconv.Itoa(limit),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("读取 journald 日志: %s", commandError(err, result))
+		return nil, fmt.Errorf("读取 journald 日志: %s", command.Describe(err, result))
 	}
 	return parseJournal(result.Stdout)
 }
@@ -346,15 +346,4 @@ func parseInt(value string) int {
 func parseUint(value string) uint64 {
 	parsed, _ := strconv.ParseUint(value, 10, 64)
 	return parsed
-}
-
-func commandError(err error, result command.Result) string {
-	message := strings.TrimSpace(result.Stderr)
-	if message == "" {
-		message = strings.TrimSpace(result.Stdout)
-	}
-	if message == "" {
-		message = err.Error()
-	}
-	return message
 }

@@ -37,7 +37,9 @@ jobs:
       - name: 验证版本发现与 geo 数据契约
         env:
           KDAE_UPSTREAM_LIVE: '1'
-        run: go test -count=1 -run '^TestLive' -timeout=12m ./internal/upstream
+        # 两个包都要跑：upstream 验证上游的资产命名与校验和格式，
+        # geodata 验证取到之后的落盘与回滚。只列前者的话，后者等于没写。
+        run: go test -count=1 -run '^TestLive' -timeout=12m ./internal/upstream ./internal/geodata
 
   contract:
     runs-on: ubuntu-latest

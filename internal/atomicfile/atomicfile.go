@@ -11,16 +11,46 @@ import (
 	"path/filepath"
 )
 
+// Writable 通过实际建删一个临时文件判断目录可写。
+//
+// 只看权限位不够：ProtectSystem=strict 下 root 对未列入 ReadWritePaths 的目录
+// 同样写不进去，而那正是这个面板最常见的失败原因。
+//
+// 探测本身不创建目录：它会被界面轮询反复调用，一个用于展示的检查不该在文件系统上
+// 留下痕迹。目录尚不存在时改为探测最近的已存在祖先——那正是安装时真正要写入的地方。
+func Writable(directory string) error {
+	existing := directory
+	for {
+		info, err := os.Stat(existing)
+		if err == nil {
+			if !info.IsDir() {
+				return fmt.Errorf("%s 不是目录", existing)
+			}
+			break
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return fmt.Errorf("找不到 %s 的任何已存在上级目录", directory)
+		}
+		existing = parent
+	}
+	file, err := os.CreateTemp(existing, ".kdae-panel-probe-*")
+	if err != nil {
+		return err
+	}
+	name := file.Name()
+	_ = file.Close()
+	return os.Remove(name)
+}
+
 // Write 把内容原子地写入 path。
+// 目录由 Stage 建——临时文件必须与目标同目录，Stage 成功即意味着目录已就绪。
 func Write(path string, content []byte, mode os.FileMode) error {
 	staged, cleanup, err := Stage(filepath.Dir(path), content, mode)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
 	return Replace(staged, path)
 }
 

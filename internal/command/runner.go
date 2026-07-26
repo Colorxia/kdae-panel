@@ -12,12 +12,28 @@ import (
 	"time"
 )
 
-const defaultOutputLimit = 8 << 20
+// outputLimit 要兜住 dae sysdump、journalctl 这类最大宗的输出，
+// 同时挡住失控子进程刷屏把面板内存打爆。
+const outputLimit = 8 << 20
 
 type Result struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
+}
+
+// Describe 从失败的命令里挑出最有用的那句话给用户看。
+// 先 stderr 后 stdout，都空了才退回 Go 的错误文本——后者往往只是
+// "exit status 1"，对排障毫无帮助。
+func Describe(err error, result Result) string {
+	message := strings.TrimSpace(result.Stderr)
+	if message == "" {
+		message = strings.TrimSpace(result.Stdout)
+	}
+	if message == "" {
+		message = err.Error()
+	}
+	return message
 }
 
 type Runner interface {
@@ -30,9 +46,7 @@ type DirectoryRunner interface {
 	RunInDir(ctx context.Context, dir, name string, args ...string) (Result, error)
 }
 
-type ExecRunner struct {
-	OutputLimit int64
-}
+type ExecRunner struct{}
 
 func (r ExecRunner) Run(ctx context.Context, name string, args ...string) (Result, error) {
 	return r.run(ctx, "", name, args...)
@@ -43,13 +57,8 @@ func (r ExecRunner) RunInDir(ctx context.Context, dir, name string, args ...stri
 }
 
 func (r ExecRunner) run(ctx context.Context, dir, name string, args ...string) (Result, error) {
-	limit := r.OutputLimit
-	if limit <= 0 {
-		limit = defaultOutputLimit
-	}
-
-	stdout := newLimitedBuffer(limit)
-	stderr := newLimitedBuffer(limit)
+	stdout := newLimitedBuffer(outputLimit)
+	stderr := newLimitedBuffer(outputLimit)
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Stdout = stdout
@@ -66,7 +75,7 @@ func (r ExecRunner) run(ctx context.Context, dir, name string, args ...string) (
 		ExitCode: exitCode(err),
 	}
 	if errors.Is(stdout.Err(), errOutputLimit) || errors.Is(stderr.Err(), errOutputLimit) {
-		return result, fmt.Errorf("命令输出超过 %d 字节限制", limit)
+		return result, fmt.Errorf("命令输出超过 %d 字节限制", outputLimit)
 	}
 	if err != nil {
 		return result, err

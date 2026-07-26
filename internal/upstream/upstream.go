@@ -75,13 +75,22 @@ func ParseSource(value string) (Source, error) {
 	}
 }
 
-// Registry 按来源持有 provider。
+// Registry 按来源持有 provider，并与它们共用同一个 HTTP 客户端，
+// 使连接池与代理认知在列版本、解析资产、下载发布包之间保持一致。
 type Registry struct {
 	providers map[Source]Provider
+	client    *httpClient
 }
 
 func NewRegistry(providers ...Provider) *Registry {
-	registry := &Registry{providers: make(map[Source]Provider, len(providers))}
+	return newRegistry(newHTTPClient(), providers...)
+}
+
+func newRegistry(client *httpClient, providers ...Provider) *Registry {
+	registry := &Registry{
+		providers: make(map[Source]Provider, len(providers)),
+		client:    client,
+	}
 	for _, provider := range providers {
 		registry.providers[provider.Source()] = provider
 	}
@@ -91,7 +100,7 @@ func NewRegistry(providers ...Provider) *Registry {
 // NewDefaultRegistry 构造指向上游默认仓库的 provider 集合。
 func NewDefaultRegistry() *Registry {
 	client := newHTTPClient()
-	return NewRegistry(
+	return newRegistry(client,
 		NewOfficialProvider(client, "daeuniverse", "dae"),
 		NewKdaeProvider(client, "olicesx", "dae", "kdae", "build.yml"),
 	)

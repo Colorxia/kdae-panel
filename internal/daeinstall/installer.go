@@ -22,7 +22,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/tuoro/kdae-panel/internal/atomicfile"
@@ -116,9 +115,6 @@ type Installer struct {
 	// health/interval 是重启后的健康观察窗口与采样间隔，测试会调短它们。
 	health   time.Duration
 	interval time.Duration
-
-	digestMu    sync.Mutex
-	digestCache map[string]string
 }
 
 type Options struct {
@@ -231,7 +227,7 @@ func (i *Installer) Status(ctx context.Context) Status {
 	status.BinaryPath = target
 	status.ServiceActive = active
 
-	digest, err := i.cachedDigest(target)
+	digest, err := i.fileDigest(target)
 	if err != nil {
 		if os.IsNotExist(err) {
 			status.Problem = fmt.Sprintf("服务指向的 %s 不存在", target)
@@ -244,7 +240,7 @@ func (i *Installer) Status(ctx context.Context) Status {
 	status.Ready = true
 	// 备份与磁盘上完全相同时，回滚是个空操作，不该在界面上亮出按钮。
 	if status.RollbackAvailable {
-		if backup, err := i.cachedDigest(i.backupPath); err == nil && backup == digest {
+		if backup, err := i.fileDigest(i.backupPath); err == nil && backup == digest {
 			status.RollbackAvailable = false
 		}
 	}
@@ -649,15 +645,11 @@ func (i *Installer) previousStatePath() string {
 	return i.statePath + ".previous"
 }
 
-// pendingBackupPath / pendingPreviousStatePath 是回滚点的暂存位，
-// 事务结算时才决定提升还是丢弃。进程中途退出留下的暂存文件无害：
-// 下一次 backupCurrent 会直接覆盖它们。
+// pendingBackupPath 是回滚点二进制的暂存位，事务结算时才决定提升还是丢弃。
+// 进程中途退出留下的暂存文件无害：下一次 backupCurrent 会直接覆盖它。
+// 账本不落暂存文件，它在事务期间只存在于内存里的 pendingBackup.state。
 func (i *Installer) pendingBackupPath() string {
 	return i.backupPath + ".pending"
-}
-
-func (i *Installer) pendingPreviousStatePath() string {
-	return i.previousStatePath() + ".pending"
 }
 
 func (i *Installer) readState() (*State, error) {
@@ -728,40 +720,19 @@ func assertExecutable(path string) error {
 	return nil
 }
 
-// cachedDigest 按 (路径, 大小, 修改时间) 缓存二进制摘要。
-// 状态查询会被前端每两秒轮询一次，而 dae 有几十兆，
-// 每次都整份读进内存做 sha256 是不必要的开销。
-func (i *Installer) cachedDigest(path string) (string, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", err
-	}
-	key := fmt.Sprintf("%s|%d|%d", path, info.Size(), info.ModTime().UnixNano())
-
-	i.digestMu.Lock()
-	cached, ok := i.digestCache[key]
-	i.digestMu.Unlock()
-	if ok {
-		return cached, nil
-	}
-
+// fileDigest 每次都实打实地读文件算 sha256。
+//
+// 刻意不按 (路径, 大小, 修改时间) 缓存：那个键对它唯一的用途——发现二进制被
+// 外部替换过——并不成立。tar 解包、cp -p、rsync -t 都会原样保留 mtime，
+// 同尺寸的替换因此拿到同一个键，摘要会永久停在旧值，漂移检测直接失效。
+// 而这点开销本来也不显眼：状态查询每轮已经要起两个子进程（systemctl show 与
+// dae --version），它们比对一个已在页缓存里的文件做 sha256 贵得多。
+func (i *Installer) fileDigest(path string) (string, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	digest := digestBytes(content)
-
-	i.digestMu.Lock()
-	if i.digestCache == nil {
-		i.digestCache = make(map[string]string, 2)
-	}
-	// 只保留最近的少量条目，路径与内容都不常变。
-	if len(i.digestCache) > 4 {
-		i.digestCache = make(map[string]string, 2)
-	}
-	i.digestCache[key] = digest
-	i.digestMu.Unlock()
-	return digest, nil
+	return digestBytes(content), nil
 }
 
 func digestBytes(content []byte) string {

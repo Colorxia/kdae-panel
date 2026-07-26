@@ -7,11 +7,20 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/tuoro/kdae-panel/internal/atomicfile"
 	"github.com/tuoro/kdae-panel/internal/upstream"
 )
 
 // Names 是 dae 会查找的两个 geo 数据文件。
 var Names = []string{upstream.GeoIPName, upstream.GeoSiteName}
+
+// SandboxHiddenDir 是搜索顺序里面板永远看不到的那一位。
+//
+// dae 以 root 运行时会读 $HOME/.local/share/dae，而面板单元设了 ProtectHome=true，
+// systemd 把 /root 换成一个空且不可访问的目录，面板也没有 CAP_DAC_OVERRIDE 可以绕。
+// 仍然把它列进搜索顺序，是因为 dae 确实读这里；但"面板看不到"不等于"文件不存在"，
+// 为一个少见的 geo 目录把整个 /root 敞开给这个 root 服务不划算。
+const SandboxHiddenDir = "/root/.local/share/dae"
 
 // SearchPath 复刻 dae 查找 geo 数据文件的顺序。
 //
@@ -29,20 +38,25 @@ func SearchPath(configPath string, environment map[string]string) []string {
 		paths = append(paths, filepath.Dir(configPath))
 	}
 	return append(paths,
-		"/root/.local/share/dae",
+		SandboxHiddenDir,
 		"/usr/local/share/dae",
 		"/usr/share/dae",
 	)
 }
 
-// MissingWarning 在 geo 数据缺失时给出提醒，缺失才返回非空。
+// MissingWarning 在面板可见的目录里都找不到 geo 数据时提醒，找得到就返回空。
 //
 // 必须提醒：dae 只在路由规则用到 geosite/geoip 时才读它们，但一旦用到而文件
 // 不在，dae 会直接启动失败，且 dae validate 完全察觉不到——它只读配置文件。
+//
+// 措辞留有余地：SandboxHiddenDir 对面板不可见，文件可能就在那里而 dae 读得好好的，
+// 说死"未找到"会把一个正常运行的系统报成故障。
 func MissingWarning(searchPath []string) string {
 	for _, file := range locate(searchPath, Names) {
 		if !file.Present {
-			return "未找到 geoip.dat / geosite.dat，若路由规则用到 geosite/geoip，dae 将无法启动"
+			return fmt.Sprintf("在面板可见的目录里未找到 geoip.dat / geosite.dat；"+
+				"%s 受面板单元 ProtectHome=true 限制读不到，文件若在那里 dae 仍能读到。"+
+				"确实缺失且路由规则用到 geosite/geoip 时，dae 将无法启动", SandboxHiddenDir)
 		}
 	}
 	return ""
@@ -124,7 +138,7 @@ func (m *Manager) Status(ctx context.Context) Status {
 		}
 	}
 
-	if err := writable(target); err != nil {
+	if err := atomicfile.Writable(target); err != nil {
 		status.Problem = fmt.Sprintf(
 			"面板无法写入 %s：%v；请在 kdae-panel.service 的 ReadWritePaths 中加入该目录", target, err)
 		return status
@@ -158,34 +172,6 @@ func warnings(files []File, target, configDir string) []string {
 		}
 	}
 	return result
-}
-
-// writable 通过实际建删一个临时文件判断目录可写。
-// 只看权限位不够：ProtectSystem=strict 下 root 对未列入 ReadWritePaths 的
-// 目录同样写不进去，而那正是最常见的失败原因。
-func writable(directory string) error {
-	existing := directory
-	for {
-		info, err := os.Stat(existing)
-		if err == nil {
-			if !info.IsDir() {
-				return fmt.Errorf("%s 不是目录", existing)
-			}
-			break
-		}
-		parent := filepath.Dir(existing)
-		if parent == existing {
-			return fmt.Errorf("找不到 %s 的任何已存在上级目录", directory)
-		}
-		existing = parent
-	}
-	file, err := os.CreateTemp(existing, ".kdae-panel-probe-*")
-	if err != nil {
-		return err
-	}
-	name := file.Name()
-	_ = file.Close()
-	return os.Remove(name)
 }
 
 func nowUTC() time.Time {

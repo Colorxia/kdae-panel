@@ -97,7 +97,7 @@ func (i *Installer) Provision(ctx context.Context) Provision {
 	}
 
 	for _, directory := range []string{filepath.Dir(i.binaryPath), filepath.Dir(i.configPath), i.unitDirectory()} {
-		if err := writable(directory); err != nil {
+		if err := atomicfile.Writable(directory); err != nil {
 			result.Blockers = append(result.Blockers, fmt.Sprintf(
 				"面板无法写入 %s：%v；请在 kdae-panel.service 的 ReadWritePaths 中加入该目录",
 				directory, err))
@@ -117,36 +117,6 @@ func (i *Installer) Provision(ctx context.Context) Provision {
 	result.Notes = append(result.Notes, "安装完成后不会自动启动 dae：透明代理配置不当会切断你当前的连接")
 	result.Possible = len(result.Blockers) == 0
 	return result
-}
-
-// writable 通过实际创建并删除一个临时文件来判断目录可写。
-// 只看权限位不够：ProtectSystem=strict 下 root 对只读挂载同样写不进去。
-//
-// 探测本身不创建目录。Provision 会被界面轮询反复调用，一个用于展示的检查
-// 不该在文件系统上留下痕迹；目录尚不存在时改为探测最近的已存在祖先——
-// 那正是安装时真正要写入的地方。
-func writable(directory string) error {
-	existing := directory
-	for {
-		if info, err := os.Stat(existing); err == nil {
-			if !info.IsDir() {
-				return fmt.Errorf("%s 不是目录", existing)
-			}
-			break
-		}
-		parent := filepath.Dir(existing)
-		if parent == existing {
-			return fmt.Errorf("找不到 %s 的任何已存在上级目录", directory)
-		}
-		existing = parent
-	}
-	file, err := os.CreateTemp(existing, ".kdae-panel-probe-*")
-	if err != nil {
-		return err
-	}
-	name := file.Name()
-	_ = file.Close()
-	return os.Remove(name)
 }
 
 func (i *Installer) serviceUnit() string {

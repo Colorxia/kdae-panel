@@ -105,11 +105,32 @@ func registerConfigurationRoutes(router *http.ServeMux, service ConfigurationSer
 	})
 }
 
+// decodeJSONBody 解码必需的请求体，上限按配置大小放宽——保存配置走的正是这条。
 func decodeJSONBody(writer http.ResponseWriter, request *http.Request, destination any) bool {
-	request.Body = http.MaxBytesReader(writer, request.Body, configstore.MaxConfigBytes+1<<20)
+	return decodeBody(writer, request, destination, configstore.MaxConfigBytes+1<<20, false)
+}
+
+// decodeBody 是三个解码入口的共同实现。
+//
+// optional 为真时允许请求体整个缺省（此时 destination 保持零值），
+// 用于那些"参数可以不给、给了才生效"的端点。
+func decodeBody(
+	writer http.ResponseWriter,
+	request *http.Request,
+	destination any,
+	limit int64,
+	optional bool,
+) bool {
+	if optional && (request.Body == nil || request.ContentLength == 0) {
+		return true
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, limit)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
+		if optional && errors.Is(err, io.EOF) {
+			return true
+		}
 		writeAPIError(writer, http.StatusBadRequest, "invalid_request", "请求 JSON 无效: "+err.Error())
 		return false
 	}

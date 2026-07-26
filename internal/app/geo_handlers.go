@@ -53,7 +53,7 @@ func registerGeoRoutes(router *http.ServeMux, service GeoService, operations *sy
 	router.HandleFunc("POST /api/v1/dae/geo", func(writer http.ResponseWriter, request *http.Request) {
 		// 来源可省略，此时沿用状态里给出的默认值（上次用过的那个）。
 		payload := geoRequest{}
-		if request.ContentLength > 0 && !decodeSmallJSONBody(writer, request, &payload) {
+		if !decodeOptionalJSONBody(writer, request, &payload) {
 			return
 		}
 		source := service.Status(request.Context()).DefaultSource

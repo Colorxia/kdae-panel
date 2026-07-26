@@ -1,9 +1,6 @@
 package app
 
 import (
-	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"strconv"
 	"sync"
@@ -99,23 +96,7 @@ func registerServiceRoutes(router *http.ServeMux, daeService DaeService, hostSer
 	})
 }
 
+// decodeOptionalJSONBody 解码可以整个省略的小请求体。
 func decodeOptionalJSONBody(writer http.ResponseWriter, request *http.Request, destination any) bool {
-	if request.Body == nil || request.ContentLength == 0 {
-		return true
-	}
-	request.Body = http.MaxBytesReader(writer, request.Body, 64<<10)
-	decoder := json.NewDecoder(request.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(destination); err != nil {
-		if errors.Is(err, io.EOF) {
-			return true
-		}
-		writeAPIError(writer, http.StatusBadRequest, "invalid_request", "请求 JSON 无效: "+err.Error())
-		return false
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		writeAPIError(writer, http.StatusBadRequest, "invalid_request", "请求体只能包含一个 JSON 对象")
-		return false
-	}
-	return true
+	return decodeBody(writer, request, destination, 64<<10, true)
 }

@@ -11,9 +11,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/tuoro/kdae-panel/internal/atomicfile"
 )
 
 const (
@@ -154,44 +155,8 @@ func (r *Runner) save() error {
 	if err != nil {
 		return err
 	}
-	directory := filepath.Dir(r.path)
-	if err := os.MkdirAll(directory, 0700); err != nil {
-		return fmt.Errorf("创建设置目录: %w", err)
-	}
-	// 与配置事务同样的写法:先落盘 fsync,再原子替换,最后同步目录项。
-	// 少了 fsync 时掉电会把已开启的自动刷新静默还原成关闭。
-	temp := r.path + ".tmp"
-	if err := writeFileSynced(temp, content); err != nil {
-		_ = os.Remove(temp)
-		return err
-	}
-	if err := os.Rename(temp, r.path); err != nil {
-		_ = os.Remove(temp)
-		return fmt.Errorf("替换设置: %w", err)
-	}
-	if err := syncDirectory(directory); err != nil {
-		return fmt.Errorf("同步设置目录: %w", err)
-	}
-	return nil
-}
-
-func writeFileSynced(path string, content []byte) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
-	if err != nil {
-		return fmt.Errorf("创建设置文件: %w", err)
-	}
-	if _, err := file.Write(content); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("写入设置: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("同步设置: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("关闭设置文件: %w", err)
-	}
-	return nil
+	// 必须走原子写入：少了 fsync，掉电会把已开启的自动刷新静默还原成关闭。
+	return atomicfile.Write(r.path, content, 0600)
 }
 
 func (r *Runner) statusLocked() Status {
@@ -209,7 +174,11 @@ func (r *Runner) Status() Status {
 	return r.statusLocked()
 }
 
-// Update 校验并持久化新设置,然后重置定时器:下一轮在 now+interval 执行。
+// Update 校验并持久化新设置,再按 scheduleNextLocked 的规则重排下一轮并唤醒循环。
+//
+// 刻意不重置成 now+interval:那样频繁改设置就能让订阅永远刷新不到。
+// 排期以"上次执行时间 + 间隔"为准,长期停用后重新开启时,
+// 错过的轮次会在 startupGrace 之后补做一次。
 func (r *Runner) Update(settings Settings) (Status, error) {
 	if err := settings.validate(); err != nil {
 		return Status{}, &InvalidSettingsError{Cause: err}

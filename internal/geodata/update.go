@@ -120,7 +120,6 @@ type geoTransaction struct {
 	directory string
 	staged    []stagedFile
 	cleanups  []func()
-	committed bool
 }
 
 type stagedFile struct {
@@ -142,7 +141,7 @@ func (t *geoTransaction) stage(name string, content []byte) error {
 	return nil
 }
 
-// commit 依次把每个文件换成新的；中途失败就把已经换掉的都退回去。
+// commit 依次把每个文件换成新的；中途失败就把已经动过的都退回去。
 func (t *geoTransaction) commit() error {
 	for index := range t.staged {
 		file := &t.staged[index]
@@ -153,49 +152,61 @@ func (t *geoTransaction) commit() error {
 		if _, err := os.Stat(final); err == nil {
 			backup := final + ".kdae-panel-previous"
 			if err := os.Rename(final, backup); err != nil {
-				_ = t.rollback()
-				return fmt.Errorf("备份 %s: %w", file.name, err)
+				return t.abort(fmt.Errorf("备份 %s: %w", file.name, err))
 			}
 			file.backup = backup
 		} else if !os.IsNotExist(err) {
-			_ = t.rollback()
-			return err
+			return t.abort(err)
 		}
 
 		if err := atomicfile.Replace(file.temp, final); err != nil {
-			_ = t.rollback()
-			return fmt.Errorf("写入 %s: %w", file.name, err)
+			return t.abort(fmt.Errorf("写入 %s: %w", file.name, err))
 		}
 		file.replaced = true
 	}
-	t.committed = true
 	return nil
 }
 
-// rollback 把所有已替换的文件退回旧版本。
+// abort 在 commit 中途失败时退回原样，并把"没能退回去"这件事带进错误里。
+// 还原失败意味着某个文件此刻不在原位、旧数据只剩那个回滚点，
+// 这是必须让用户看见的信息，不能像原先那样吞掉。
+func (t *geoTransaction) abort(cause error) error {
+	if err := t.rollback(); err != nil {
+		return fmt.Errorf("%w；且旧数据未能还原（回滚点保留在 %s 下的 *.kdae-panel-previous）：%v",
+			cause, t.directory, err)
+	}
+	return cause
+}
+
+// rollback 把动过的文件退回原样。
+//
+// 判据是 backup 而不是 replaced：commit 先把旧文件改名、再换上新文件，
+// 两步之间旧文件已经不在原位而 replaced 还是假。若按 replaced 跳过，
+// 这个中间态就永远不会被还原，原位置成了空缺。
 func (t *geoTransaction) rollback() error {
 	var failures []error
 	for index := range t.staged {
 		file := &t.staged[index]
-		if !file.replaced {
-			continue
-		}
 		final := filepath.Join(t.directory, file.name)
+
 		if file.backup == "" {
 			// 本来就没有这个文件，退回原样就是删掉新写的那份。
-			if err := os.Remove(final); err != nil && !os.IsNotExist(err) {
-				failures = append(failures, err)
+			if file.replaced {
+				if err := os.Remove(final); err != nil && !os.IsNotExist(err) {
+					failures = append(failures, err)
+					continue
+				}
+				file.replaced = false
 			}
-			file.replaced = false
 			continue
 		}
 		if err := atomicfile.Replace(file.backup, final); err != nil {
+			// 还原失败就保留回滚点：它是仅存的一份旧数据，绝不能顺手删掉。
 			failures = append(failures, fmt.Errorf("还原 %s: %w", file.name, err))
 			continue
 		}
 		file.backup, file.replaced = "", false
 	}
-	t.committed = false
 	return errors.Join(failures...)
 }
 
@@ -214,15 +225,13 @@ func (t *geoTransaction) done() {
 }
 
 // cleanup 删掉还没启用的暂存文件。已经启用的不动——那是 commit 的成果。
+//
+// 刻意不碰回滚点：走到这里还剩下的回滚点意味着还原失败，那是仅存的一份旧数据。
+// 回滚点由成功路径上的 done() 负责清理，失败路径宁可留着让人工处理。
 func (t *geoTransaction) cleanup() {
 	for _, cleanup := range t.cleanups {
 		cleanup()
 	}
-	if t.committed {
-		return
-	}
-	// commit 没走完就退出（如提前 return），把遗留的回滚点收掉。
-	t.done()
 }
 
 func (m *Manager) readState() (*State, error) {

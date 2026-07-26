@@ -29,7 +29,7 @@ for arch in "${targets[@]}"; do
     -o "${stage}/kdae-panel" \
     ./cmd/kdae-panel
   # 显式设权限，不依赖 go build 的产物恰好带可执行位：在非 Linux 宿主上
-  # 交叉打包时它不带，包内 install.sh 的 -x 探测会因此静默落空。
+  # 交叉打包时它不带，解包出来的文件装上去也不可执行。
   chmod 0755 "${stage}/kdae-panel"
 
   install -m0644 "${repo_root}/packaging/kdae-panel.service" "${stage}/kdae-panel.service"
