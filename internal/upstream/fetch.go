@@ -20,17 +20,44 @@ const BinaryName = "dae"
 const (
 	// maxBinaryBytes 限制解压后的可执行文件大小,防御 zip 炸弹。
 	maxBinaryBytes = 200 << 20
+	// maxExtraBytes 限制随包物料的大小。geoip.dat 约 17MB、geosite.dat 约 10MB。
+	maxExtraBytes = 64 << 20
 	// maxZipEntries 限制条目数。归档内容完全由上游构建产物决定,
 	// 声明的 UncompressedSize64 也是攻击者可控的,因此实际读入量另由
 	// LimitReader 兜底,这里只挡住"条目多到离谱"的归档。
 	maxZipEntries = 256
 )
 
+// Bundle 是发布包里首次安装用得上的全部物料。
+//
+// 官方发布包不只有可执行文件,还平铺着 systemd 单元、最小配置与两个 geo 数据
+// 文件。它们全都被同一个 sha256 覆盖,因此首次安装不需要引入任何新的下载源
+// 或信任根——这比另外去取 geo 数据安全得多。
+type Bundle struct {
+	Binary []byte
+	// Unit 是发布包自带的 dae.service,可能不存在。
+	Unit []byte
+	// EmptyConfig 是 empty.dae:`global {} routing {}`。
+	// 它不配置任何网卡,因此 dae 起来后不劫持任何流量,适合做首次安装的种子配置。
+	EmptyConfig []byte
+	GeoIP       []byte
+	GeoSite     []byte
+}
+
 // Fetch 下载资产、比对 sha256 并取出其中的 dae 可执行文件。
 // 校验不通过时返回错误且不产出任何内容——调用方据此保证只有可信字节进入后续流程。
 func (r *Registry) Fetch(ctx context.Context, asset Asset) ([]byte, error) {
+	bundle, err := r.FetchBundle(ctx, asset)
+	if err != nil {
+		return nil, err
+	}
+	return bundle.Binary, nil
+}
+
+// FetchBundle 下载并校验资产,取出其中全部可用物料。
+func (r *Registry) FetchBundle(ctx context.Context, asset Asset) (Bundle, error) {
 	if asset.SHA256 == "" {
-		return nil, errors.New("资产缺少校验和，拒绝下载")
+		return Bundle{}, errors.New("资产缺少校验和，拒绝下载")
 	}
 	limit := int64(MaxAssetBytes)
 	if asset.Size > 0 && asset.Size < limit {
@@ -39,12 +66,12 @@ func (r *Registry) Fetch(ctx context.Context, asset Asset) ([]byte, error) {
 	}
 	payload, err := newHTTPClient().download(ctx, asset.URL, limit)
 	if err != nil {
-		return nil, err
+		return Bundle{}, err
 	}
 	if err := verifyDigest(payload, asset.SHA256); err != nil {
-		return nil, err
+		return Bundle{}, err
 	}
-	return extractBinary(payload, asset.Nested)
+	return extractBundle(payload, asset.Nested)
 }
 
 func verifyDigest(payload []byte, expected string) error {
@@ -54,6 +81,65 @@ func verifyDigest(payload []byte, expected string) error {
 		return fmt.Errorf("校验和不匹配：期望 %s，实际 %s", expected, actual)
 	}
 	return nil
+}
+
+// extractBundle 从发布包中取出全部可用物料。
+// 只有可执行文件是必需的，其余缺失时留空由调用方决定如何应对。
+func extractBundle(payload []byte, nested bool) (Bundle, error) {
+	if nested {
+		inner, err := extractInnerArchive(payload)
+		switch {
+		case err == nil:
+			payload = inner
+		case errors.Is(err, errNoInnerArchive):
+		default:
+			return Bundle{}, err
+		}
+	}
+	reader, err := zip.NewReader(bytes.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		return Bundle{}, fmt.Errorf("解析发布包: %w", err)
+	}
+	if len(reader.File) > maxZipEntries {
+		return Bundle{}, fmt.Errorf("发布包条目数超过 %d 限制", maxZipEntries)
+	}
+
+	var bundle Bundle
+	var binaryEntry *zip.File
+	extras := map[string]*[]byte{
+		"dae.service": &bundle.Unit,
+		"empty.dae":   &bundle.EmptyConfig,
+		"geoip.dat":   &bundle.GeoIP,
+		"geosite.dat": &bundle.GeoSite,
+	}
+	for _, file := range reader.File {
+		if file.FileInfo().IsDir() || !file.Mode().IsRegular() {
+			continue
+		}
+		// 只按基名匹配，条目路径从不参与落盘，天然免疫 zip 路径穿越。
+		name := path.Base(file.Name)
+		if isBinaryEntry(name) {
+			if binaryEntry != nil {
+				return Bundle{}, errors.New("发布包中有多个 dae 条目，无法判断该用哪个")
+			}
+			binaryEntry = file
+			continue
+		}
+		if target, ok := extras[name]; ok && *target == nil {
+			content, err := readZipEntry(file, maxExtraBytes)
+			if err != nil {
+				return Bundle{}, err
+			}
+			*target = content
+		}
+	}
+	if binaryEntry == nil {
+		return Bundle{}, errors.New("发布包中没有找到 dae 可执行文件")
+	}
+	if bundle.Binary, err = readZipEntry(binaryEntry, maxBinaryBytes); err != nil {
+		return Bundle{}, err
+	}
+	return bundle, nil
 }
 
 // extractBinary 从 zip 中取出 dae 可执行文件。

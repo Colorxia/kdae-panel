@@ -72,9 +72,20 @@ systemctl edit kdae-panel    # 追加 ReadWritePaths=/usr/local/bin
 systemctl restart kdae-panel
 ```
 
-第二步的目录通常在 root 的 `PATH` 上，开放它意味着面板的任何缺陷都可能升级为命令劫持。只在确实需要通过面板切换 dae 版本时才开启；只读部署或用包管理器维护 dae 的场景应保持关闭。
+第二步的目录通常在 root 的 `PATH` 上，开放它意味着面板的任何缺陷都可能升级为命令劫持。只在确实需要通过面板管理 dae 版本时才开启；只读部署或用包管理器维护 dae 的场景应保持关闭。
 
-面板只升级或切换已有的 dae，不做首次安装、也不安装 geo 数据文件，这些仍由 [dae-installer](https://github.com/daeuniverse/dae-installer) 负责。
+**若还想用面板完成 dae 的首次安装**，再加一个目录，让面板能写入服务单元：
+
+```bash
+systemctl edit kdae-panel    # 追加 ReadWritePaths=/etc/systemd/system
+systemctl restart kdae-panel
+```
+
+这一条的代价更大：能写 `/etc/systemd/system` 就等于能定义以 root 运行的服务。面板在动手前会逐个探测这些目录是否真的可写，缺哪个会在界面上直接说明，不会在中途失败。
+
+首次安装会写入可执行文件、geo 数据、服务单元，以及一份不劫持任何流量的种子配置（仅在配置不存在时）。**它不会自动启动 dae**——请先在配置管理页写好规则再手动启动，否则透明代理可能切断你当前的连接。已存在的服务单元与配置一律不覆盖。
+
+只想升级已有的 dae 时不需要这一步。若你更习惯官方工具，[dae-installer](https://github.com/daeuniverse/dae-installer) 依然可用，两者互不冲突。
 
 `setup_url` 默认使用面板的直接监听地址。通过 HTTPS 反向代理访问时，保留 `/setup#bootstrap=...` 部分，并将其协议和主机替换为实际面板地址；URL 片段不会发送给反向代理或写入访问日志。
 

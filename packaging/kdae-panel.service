@@ -42,9 +42,12 @@ AmbientCapabilities=CAP_KILL CAP_NET_ADMIN
 ReadWritePaths=/etc/dae /var/lib/kdae-panel
 # 启用 KDAE_PANEL_ENABLE_DAE_INSTALL 时，还需要让面板能写入 dae 可执行文件
 # 所在目录，请按 systemctl show dae --property=ExecStart 的实际路径追加，例如：
-#   ReadWritePaths=/usr/local/bin
-# 该路径在 root 的 PATH 上，开放它意味着面板的任何缺陷都可能升级为命令劫持，
-# 因此默认不开；不使用版本管理功能时保持现状即可。
+#   ReadWritePaths=/usr/bin
+# 若还要用面板完成 dae 的首次安装，再加上服务单元目录：
+#   ReadWritePaths=/etc/systemd/system
+# 前者在 root 的 PATH 上，后者能定义以 root 运行的服务；开放任一个都意味着
+# 面板的缺陷可能升级为任意代码执行，因此默认都不开。
+# geo 数据写在配置目录（/etc/dae），已被上面覆盖，无需额外放宽。
 
 [Install]
 WantedBy=multi-user.target

@@ -15,9 +15,11 @@ import (
 // InstallService 是 dae 版本管理能力的消费者侧接口。
 type InstallService interface {
 	Status(ctx context.Context) daeinstall.Status
+	Provision(ctx context.Context) daeinstall.Provision
 	Versions(ctx context.Context, source upstream.Source, limit int) ([]upstream.Version, error)
-	Download(ctx context.Context, source upstream.Source, ref string) ([]byte, error)
+	Download(ctx context.Context, source upstream.Source, ref string) (upstream.Bundle, error)
 	Install(ctx context.Context, binary []byte, source upstream.Source, ref, label string) (daeinstall.Status, error)
+	FirstInstall(ctx context.Context, bundle upstream.Bundle, source upstream.Source, ref, label string) (daeinstall.Status, error)
 	Rollback(ctx context.Context) (daeinstall.Status, error)
 }
 
@@ -115,10 +117,13 @@ func registerUpstreamRoutes(router *http.ServeMux, service InstallService, opera
 	jobs := &installJobs{job: Job{Phase: PhaseIdle}}
 
 	router.HandleFunc("GET /api/v1/dae/install", func(writer http.ResponseWriter, request *http.Request) {
-		writeJSON(writer, http.StatusOK, map[string]any{
-			"status": service.Status(request.Context()),
-			"job":    jobs.snapshot(),
-		})
+		status := service.Status(request.Context())
+		payload := map[string]any{"status": status, "job": jobs.snapshot()}
+		// 还没有 dae 时附上首次安装的可行性，让界面能直接说清缺什么。
+		if !status.Ready {
+			payload["provision"] = service.Provision(request.Context())
+		}
+		writeJSON(writer, http.StatusOK, payload)
 	})
 
 	router.HandleFunc("GET /api/v1/dae/versions", func(writer http.ResponseWriter, request *http.Request) {
@@ -187,7 +192,7 @@ func runInstall(jobs *installJobs, service InstallService, operations *sync.Mute
 	logger.Info("开始安装 dae 版本", "source", source, "ref", ref)
 	// 下载与校验不触碰任何共享状态，因此不占控制锁：
 	// 几十兆的下载不该把配置保存和订阅定时刷新一起堵住。
-	binary, err := service.Download(ctx, source, ref)
+	bundle, err := service.Download(ctx, source, ref)
 	if err != nil {
 		logger.Warn("下载 dae 版本失败", "source", source, "ref", ref, "error", err)
 		jobs.finish(err)
@@ -197,7 +202,14 @@ func runInstall(jobs *installJobs, service InstallService, operations *sync.Mute
 	jobs.advance(PhaseApplying)
 	operations.Lock()
 	defer operations.Unlock()
-	if _, err := service.Install(ctx, binary, source, ref, label); err != nil {
+	// 已有 dae 就替换二进制；还没有就连同单元、种子配置与 geo 数据一起装。
+	install := service.Install
+	if !service.Status(ctx).Ready {
+		install = func(ctx context.Context, _ []byte, source upstream.Source, ref, label string) (daeinstall.Status, error) {
+			return service.FirstInstall(ctx, bundle, source, ref, label)
+		}
+	}
+	if _, err := install(ctx, bundle.Binary, source, ref, label); err != nil {
 		logger.Warn("安装 dae 版本失败", "source", source, "ref", ref, "error", err)
 		jobs.finish(err)
 		return

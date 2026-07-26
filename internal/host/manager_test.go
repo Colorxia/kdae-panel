@@ -71,10 +71,28 @@ func TestActionAllowlist(t *testing.T) {
 	if err := manager.Action(context.Background(), ActionRestart); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Action(context.Background(), Action("daemon-reload")); err == nil {
-		t.Fatal("未允许的动作应该被拒绝")
+	for _, forbidden := range []Action{"mask", "disable", "isolate", "poweroff"} {
+		if err := manager.Action(context.Background(), forbidden); err == nil {
+			t.Fatalf("未允许的动作 %q 应该被拒绝", forbidden)
+		}
 	}
 	want := []string{"systemctl restart dae"}
+	if !reflect.DeepEqual(runner.calls, want) {
+		t.Fatalf("命令调用 = %v，期望 %v", runner.calls, want)
+	}
+}
+
+// daemon-reload 是全局动作，不带服务名——带上服务名会让 systemctl 报错。
+func TestDaemonReloadTakesNoServiceName(t *testing.T) {
+	runner := &fakeRunner{results: map[string]command.Result{
+		"systemctl daemon-reload": {},
+	}, errors: map[string]error{}}
+	manager, _ := NewManagerWithRunner("dae", "systemctl", "journalctl", runner, time.Second)
+
+	if err := manager.Action(context.Background(), ActionDaemonReload); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"systemctl daemon-reload"}
 	if !reflect.DeepEqual(runner.calls, want) {
 		t.Fatalf("命令调用 = %v，期望 %v", runner.calls, want)
 	}

@@ -458,6 +458,14 @@ pre,
   font-weight: 600;
 }
 
+.provision-notes {
+  margin: 0;
+  padding-left: 20px;
+  color: #8d98a6;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
 .orchestration-stats {
   margin-bottom: 16px;
   display: grid;

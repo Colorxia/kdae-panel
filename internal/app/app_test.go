@@ -488,6 +488,7 @@ func TestScheduleRunnerWiredWithOperationsLock(t *testing.T) {
 
 type stubInstallService struct {
 	status   daeinstall.Status
+	plan     daeinstall.Provision
 	versions []upstream.Version
 	binary   []byte
 	err      error
@@ -517,11 +518,20 @@ func (s *stubInstallService) Versions(_ context.Context, source upstream.Source,
 	return s.versions, s.err
 }
 
-func (s *stubInstallService) Download(context.Context, upstream.Source, string) ([]byte, error) {
+func (s *stubInstallService) Provision(context.Context) daeinstall.Provision {
+	return s.plan
+}
+
+func (s *stubInstallService) Download(context.Context, upstream.Source, string) (upstream.Bundle, error) {
 	if s.release != nil {
 		<-s.release
 	}
-	return s.binary, s.err
+	return upstream.Bundle{Binary: s.binary}, s.err
+}
+
+func (s *stubInstallService) FirstInstall(_ context.Context, _ upstream.Bundle, source upstream.Source, ref, _ string) (daeinstall.Status, error) {
+	s.record("first:" + string(source) + ":" + ref)
+	return s.status, s.err
 }
 
 func (s *stubInstallService) Install(_ context.Context, _ []byte, source upstream.Source, ref, _ string) (daeinstall.Status, error) {
@@ -579,7 +589,8 @@ func TestDaeVersionsRejectsUnknownSource(t *testing.T) {
 }
 
 func TestDaeInstallRunsAsynchronously(t *testing.T) {
-	service := &stubInstallService{binary: []byte("v2")}
+	// Ready 表示机器上已有 dae，因此走替换而不是首次安装
+	service := &stubInstallService{binary: []byte("v2"), status: daeinstall.Status{Ready: true}}
 	application := newInstallApp(t, service)
 
 	recorder := httptest.NewRecorder()
@@ -599,6 +610,52 @@ func TestDaeInstallRunsAsynchronously(t *testing.T) {
 	}
 	if installed := service.records(); len(installed) != 1 || installed[0] != "kdae:30187784287" {
 		t.Fatalf("安装调用 = %v", installed)
+	}
+}
+
+// 还没有 dae 时必须走首次安装，而不是去替换一个不存在的文件。
+func TestDaeInstallUsesFirstInstallWhenNotReady(t *testing.T) {
+	service := &stubInstallService{
+		binary: []byte("v1"),
+		status: daeinstall.Status{Ready: false},
+		plan:   daeinstall.Provision{Possible: true},
+	}
+	application := newInstallApp(t, service)
+
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/dae/install",
+		strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("状态码 = %d", recorder.Code)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(service.records()) == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if installed := service.records(); len(installed) != 1 || installed[0] != "first:official:v2.0.0" {
+		t.Fatalf("应走首次安装，实际调用 = %v", installed)
+	}
+}
+
+// 还没有 dae 时，状态响应要带上首次安装的可行性说明。
+func TestDaeInstallStatusIncludesProvision(t *testing.T) {
+	service := &stubInstallService{
+		status: daeinstall.Status{Ready: false},
+		plan:   daeinstall.Provision{Possible: true, BinaryPath: "/usr/bin/dae", UnitPath: "/etc/systemd/system/dae.service"},
+	}
+	application := newInstallApp(t, service)
+
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/dae/install", nil))
+	var payload struct {
+		Provision *daeinstall.Provision `json:"provision"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Provision == nil || !payload.Provision.Possible {
+		t.Fatalf("未就绪时应附带首次安装可行性: %+v", payload.Provision)
 	}
 }
 

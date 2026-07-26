@@ -54,11 +54,11 @@ type ServiceController interface {
 	Status(ctx context.Context) (host.Status, error)
 }
 
-// Fetcher 取回并校验指定资产，返回其中的 dae 可执行文件内容。
+// Fetcher 取回并校验指定资产，返回发布包内的全部可用物料。
 type Fetcher interface {
 	List(ctx context.Context, source upstream.Source, limit int) ([]upstream.Version, error)
 	Resolve(ctx context.Context, source upstream.Source, ref string, platform upstream.Platform) (upstream.Asset, error)
-	Fetch(ctx context.Context, asset upstream.Asset) ([]byte, error)
+	FetchBundle(ctx context.Context, asset upstream.Asset) (upstream.Bundle, error)
 }
 
 // State 记录当前装的是哪个版本。
@@ -99,14 +99,17 @@ type Status struct {
 }
 
 type Installer struct {
-	binaryPath string
-	configPath string
-	statePath  string
-	backupPath string
-	fetcher    Fetcher
-	newProbe   ProbeFactory
-	service    ServiceController
-	logger     *slog.Logger
+	binaryPath  string
+	configPath  string
+	statePath   string
+	backupPath  string
+	serviceName string
+	// unitDir 是 systemd 单元的落地目录，留空即用系统默认，测试会覆盖它。
+	unitDir  string
+	fetcher  Fetcher
+	newProbe ProbeFactory
+	service  ServiceController
+	logger   *slog.Logger
 	// health/interval 是重启后的健康观察窗口与采样间隔，测试会调短它们。
 	health   time.Duration
 	interval time.Duration
@@ -116,13 +119,14 @@ type Installer struct {
 }
 
 type Options struct {
-	BinaryPath string
-	ConfigPath string
-	StatePath  string
-	Fetcher    Fetcher
-	NewProbe   ProbeFactory
-	Service    ServiceController
-	Logger     *slog.Logger
+	BinaryPath  string
+	ConfigPath  string
+	StatePath   string
+	ServiceName string
+	Fetcher     Fetcher
+	NewProbe    ProbeFactory
+	Service     ServiceController
+	Logger      *slog.Logger
 }
 
 func New(options Options) (*Installer, error) {
@@ -151,16 +155,17 @@ func New(options Options) (*Installer, error) {
 		logger = slog.Default()
 	}
 	return &Installer{
-		binaryPath: binaryPath,
-		configPath: options.ConfigPath,
-		statePath:  options.StatePath,
-		backupPath: options.StatePath + ".previous-dae",
-		fetcher:    options.Fetcher,
-		newProbe:   newProbe,
-		service:    options.Service,
-		logger:     logger,
-		health:     healthWindow,
-		interval:   healthInterval,
+		binaryPath:  binaryPath,
+		configPath:  options.ConfigPath,
+		statePath:   options.StatePath,
+		backupPath:  options.StatePath + ".previous-dae",
+		serviceName: options.ServiceName,
+		fetcher:     options.Fetcher,
+		newProbe:    newProbe,
+		service:     options.Service,
+		logger:      logger,
+		health:      healthWindow,
+		interval:    healthInterval,
 	}, nil
 }
 
@@ -232,52 +237,60 @@ func (i *Installer) Status(ctx context.Context) Status {
 		status.Warnings = append(status.Warnings, fmt.Sprintf(
 			"面板配置的 dae 路径是 %s，而服务实际启动的是 %s；安装会替换后者", i.binaryPath, target))
 	}
-	status.Warnings = append(status.Warnings, i.geoWarnings(target)...)
+	status.Warnings = append(status.Warnings, i.geoWarnings()...)
 	return status
 }
 
-// geoWarnings 检查 dae 运行所需的 geo 数据文件。
-// 面板不代为下载它们（那是 dae-installer 的职责），但缺失时必须提醒，
-// 否则换完版本 dae 可能因为找不到数据文件而起不来。
-func (i *Installer) geoWarnings(target string) []string {
-	directories := []string{
-		"/usr/local/share/dae",
-		"/usr/share/dae",
-		filepath.Join(filepath.Dir(filepath.Dir(target)), "share", "dae"),
+// geoSearchPath 复刻 dae 查找 geo 数据文件的顺序。
+//
+// 最高优先级是配置文件所在目录（dae 用 filepath.Dir(cfgFile) 作为 externDirs），
+// 之后才轮到 XDG 的那几个系统目录。首次安装正是往配置目录写，因此这一条必须在
+// 列表里——早先漏掉它会把装好的文件报成缺失。
+func (i *Installer) geoSearchPath() []string {
+	paths := []string{}
+	if i.configPath != "" {
+		paths = append(paths, filepath.Dir(i.configPath))
 	}
+	return append(paths, "/root/.local/share/dae", "/usr/local/share/dae", "/usr/share/dae")
+}
+
+// geoWarnings 检查 dae 运行所需的 geo 数据文件。
+// 缺失时必须提醒：dae 只在路由规则用到 geosite/geoip 时才读它们，
+// 但一旦用到而文件不在，dae 会直接启动失败，且 dae validate 察觉不到。
+func (i *Installer) geoWarnings() []string {
 	for _, name := range []string{"geoip.dat", "geosite.dat"} {
 		found := false
-		for _, directory := range directories {
+		for _, directory := range i.geoSearchPath() {
 			if _, err := os.Stat(filepath.Join(directory, name)); err == nil {
 				found = true
 				break
 			}
 		}
 		if !found {
-			return []string{"未找到 geoip.dat / geosite.dat，若路由规则用到 geosite/geoip，dae 可能无法启动"}
+			return []string{"未找到 geoip.dat / geosite.dat，若路由规则用到 geosite/geoip，dae 将无法启动"}
 		}
 	}
 	return nil
 }
 
-// Download 取回并校验指定版本，返回可执行文件内容。
+// Download 取回并校验指定版本，返回发布包内的全部物料。
 // 这一步耗时最长且不触碰任何共享状态，因此调用方可以在不持有控制锁的情况下先做完。
-func (i *Installer) Download(ctx context.Context, source upstream.Source, ref string) ([]byte, error) {
+func (i *Installer) Download(ctx context.Context, source upstream.Source, ref string) (upstream.Bundle, error) {
 	platform, err := upstream.DetectPlatform()
 	if err != nil {
-		return nil, err
+		return upstream.Bundle{}, err
 	}
 	asset, err := i.fetcher.Resolve(ctx, source, ref, platform)
 	if err != nil {
-		return nil, err
+		return upstream.Bundle{}, err
 	}
-	binary, err := i.fetcher.Fetch(ctx, asset)
+	bundle, err := i.fetcher.FetchBundle(ctx, asset)
 	if err != nil {
-		return nil, err
+		return upstream.Bundle{}, err
 	}
-	i.logger.Info("已取得并校验 dae 可执行文件",
-		"source", source, "ref", ref, "asset", asset.Filename, "bytes", len(binary))
-	return binary, nil
+	i.logger.Info("已取得并校验 dae 发布包",
+		"source", source, "ref", ref, "asset", asset.Filename, "bytes", len(bundle.Binary))
+	return bundle, nil
 }
 
 // Install 把已下载的内容装上去。调用方应在持有全局控制锁时调用它。
@@ -286,9 +299,13 @@ func (i *Installer) Install(ctx context.Context, binary []byte, source upstream.
 		Source:      source,
 		Ref:         ref,
 		Label:       label,
-		InstalledAt: time.Now().UTC(),
+		InstalledAt: nowUTC(),
 		SHA256:      digestBytes(binary),
 	})
+}
+
+func nowUTC() time.Time {
+	return time.Now().UTC()
 }
 
 // Rollback 恢复上一次安装前备份的二进制。

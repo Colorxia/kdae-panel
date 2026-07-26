@@ -29,8 +29,8 @@ func (f *fakeFetcher) Resolve(context.Context, upstream.Source, string, upstream
 	return upstream.Asset{}, nil
 }
 
-func (f *fakeFetcher) Fetch(context.Context, upstream.Asset) ([]byte, error) {
-	return f.binary, nil
+func (f *fakeFetcher) FetchBundle(context.Context, upstream.Asset) (upstream.Bundle, error) {
+	return upstream.Bundle{Binary: f.binary}, nil
 }
 
 // fakeProbe 按二进制内容决定行为，从而模拟"新版本跑不起来/不认配置"。
@@ -363,11 +363,11 @@ func TestInstallRejectsEmptyBinary(t *testing.T) {
 func TestDownloadReturnsVerifiedBinary(t *testing.T) {
 	fetcher := &fakeFetcher{binary: elf("v2")}
 	installer, _ := newTestInstaller(t, fetcher, &fakeService{})
-	binary, err := installer.Download(context.Background(), upstream.SourceOfficial, "v2.0.0")
+	bundle, err := installer.Download(context.Background(), upstream.SourceOfficial, "v2.0.0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(binary) != string(elf("v2")) {
-		t.Fatalf("下载内容 = %q", binary)
+	if string(bundle.Binary) != string(elf("v2")) {
+		t.Fatalf("下载内容 = %q", bundle.Binary)
 	}
 }

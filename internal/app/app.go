@@ -113,12 +113,13 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 	}
 	if cfg.EnableDaeInstall {
 		installer, err := daeinstall.New(daeinstall.Options{
-			BinaryPath: cfg.DaeBinary,
-			ConfigPath: cfg.DaeConfigPath,
-			StatePath:  cfg.InstallStatePath,
-			Fetcher:    upstream.NewDefaultRegistry(),
-			Service:    hostManager,
-			Logger:     logger,
+			BinaryPath:  cfg.DaeBinary,
+			ConfigPath:  cfg.DaeConfigPath,
+			StatePath:   cfg.InstallStatePath,
+			ServiceName: cfg.ServiceName,
+			Fetcher:     upstream.NewDefaultRegistry(),
+			Service:     hostManager,
+			Logger:      logger,
 		})
 		if err != nil {
 			_ = authStore.Close()

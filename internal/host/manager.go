@@ -63,6 +63,10 @@ const (
 	ActionStart   Action = "start"
 	ActionStop    Action = "stop"
 	ActionRestart Action = "restart"
+	// ActionDaemonReload 让 systemd 重新读取单元文件。首次安装写入 dae.service
+	// 之后必须执行它，否则 systemd 看不到新单元。它不作用于具体服务，
+	// 因此不接受服务名参数。
+	ActionDaemonReload Action = "daemon-reload"
 )
 
 func NewManager(serviceName, systemctl, journalctl string) (*Manager, error) {
@@ -156,6 +160,13 @@ func parseExecStartPath(value string) string {
 func (m *Manager) Action(ctx context.Context, action Action) error {
 	switch action {
 	case ActionStart, ActionStop, ActionRestart:
+	case ActionDaemonReload:
+		// daemon-reload 是全局动作，不带服务名。
+		result, err := m.runFor(ctx, actionTimeout, m.systemctl, "daemon-reload")
+		if err != nil {
+			return fmt.Errorf("执行 systemd daemon-reload: %s", commandError(err, result))
+		}
+		return nil
 	default:
 		return fmt.Errorf("不支持的服务动作 %q", action)
 	}

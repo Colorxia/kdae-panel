@@ -122,6 +122,16 @@ export interface InstallStatus {
   problem?: string
 }
 
+export interface InstallProvision {
+  possible: boolean
+  installed: boolean
+  binaryPath: string
+  configPath: string
+  unitPath: string
+  blockers?: string[]
+  notes?: string[]
+}
+
 export type InstallPhase = 'idle' | 'downloading' | 'applying' | 'done' | 'failed'
 
 export interface InstallJob {

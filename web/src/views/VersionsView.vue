@@ -23,7 +23,13 @@ import {
   ReturnUpBackOutline,
 } from '@vicons/ionicons5'
 import { APIError, getJSON, postJSON } from '../api/client'
-import type { InstallJob, InstallStatus, UpstreamSource, UpstreamVersion } from '../types/api'
+import type {
+  InstallJob,
+  InstallProvision,
+  InstallStatus,
+  UpstreamSource,
+  UpstreamVersion,
+} from '../types/api'
 import { formatDateTime } from '../utils/format'
 
 const message = useMessage()
@@ -32,6 +38,7 @@ const loading = ref(true)
 const listing = ref(false)
 const disabled = ref(false)
 const status = ref<InstallStatus | null>(null)
+const provision = ref<InstallProvision | null>(null)
 const job = ref<InstallJob | null>(null)
 const versions = ref<UpstreamVersion[]>([])
 const source = ref<UpstreamSource>('official')
@@ -67,9 +74,12 @@ const installedRef = computed(() => status.value?.managed?.ref || '')
 
 async function loadStatus() {
   try {
-    const payload = await getJSON<{ status: InstallStatus; job: InstallJob }>('/api/v1/dae/install')
+    const payload = await getJSON<{ status: InstallStatus; job: InstallJob; provision?: InstallProvision }>(
+      '/api/v1/dae/install',
+    )
     status.value = payload.status
     job.value = payload.job
+    provision.value = payload.provision ?? null
     loadError.value = ''
     disabled.value = false
   } catch (error) {
@@ -117,7 +127,23 @@ async function refreshAll() {
   await loadVersions()
 }
 
+// 首次安装与升级是两件不同的事，确认框必须分别说清楚会发生什么。
+const firstInstall = computed(() => provision.value?.possible === true)
+
 function confirmInstall(version: UpstreamVersion) {
+  if (firstInstall.value) {
+    dialog.warning({
+      title: `安装 ${version.label}`,
+      content: `面板会下载并校验该版本，然后安装可执行文件到 ${provision.value?.binaryPath}、`
+        + `写入 geo 数据与服务单元 ${provision.value?.unitPath}。`
+        + '装完不会自动启动 dae——请先在配置管理页写好规则，再手动启动，'
+        + '否则透明代理可能切断你当前的连接。',
+      positiveText: '下载并安装',
+      negativeText: '取消',
+      onPositiveClick: () => install(version),
+    })
+    return
+  }
   dialog.warning({
     title: `安装 ${version.label}`,
     content: '面板会下载并校验该版本，用它验证当前配置，然后替换二进制并重启 dae。'
@@ -273,11 +299,11 @@ const columns = computed<DataTableColumns<UpstreamVersion>>(() => [
         size: 'small',
         secondary: true,
         type: 'primary',
-        disabled: busy.value || !status.value?.ready,
+        disabled: busy.value || !(status.value?.ready || firstInstall.value),
         onClick: () => confirmInstall(row),
       }, {
         icon: () => h(NIcon, null, { default: () => h(CloudDownloadOutline) }),
-        default: () => '安装',
+        default: () => firstInstall.value ? '安装' : '切换',
       })
     },
   },
@@ -333,8 +359,21 @@ onBeforeUnmount(() => {
         上次操作失败：{{ job.error }}
       </NAlert>
 
-      <NCard title="当前安装" class="panel-card">
-        <NAlert v-if="status?.problem" type="warning" :bordered="false" class="card-alert">
+      <NCard :title="firstInstall ? '尚未安装 dae' : '当前安装'" class="panel-card">
+        <template v-if="provision && !status?.ready">
+          <NAlert v-if="provision.possible" type="info" :bordered="false" class="card-alert">
+            这台机器上还没有 dae。在下面选一个版本即可完成首次安装：面板会安装
+            <code class="mono">{{ provision.binaryPath }}</code>、写入 geo 数据与服务单元
+            <code class="mono">{{ provision.unitPath }}</code>。
+          </NAlert>
+          <NAlert v-else type="error" :bordered="false" class="card-alert">
+            <div v-for="blocker in provision.blockers || []" :key="blocker">{{ blocker }}</div>
+          </NAlert>
+          <ul v-if="provision.possible" class="provision-notes">
+            <li v-for="note in provision.notes || []" :key="note">{{ note }}</li>
+          </ul>
+        </template>
+        <NAlert v-else-if="status?.problem" type="warning" :bordered="false" class="card-alert">
           {{ status.problem }}
         </NAlert>
         <NAlert
@@ -346,7 +385,7 @@ onBeforeUnmount(() => {
         >
           {{ warning }}
         </NAlert>
-        <dl class="details-list">
+        <dl v-if="!firstInstall" class="details-list">
           <div>
             <dt>运行版本</dt>
             <dd>

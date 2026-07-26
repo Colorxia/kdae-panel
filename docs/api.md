@@ -82,6 +82,8 @@ X-CSRF-Token: <csrfToken>
 
 `source` 只接受 `official` 与 `kdae` 两个枚举值，仓库地址在代码中写死，不接受外部指定。`ref` 对官方来源是发布 tag，对 kdae 是构建编号。
 
+机器上还没有 dae 时，`GET /dae/install` 的响应会附带 `provision` 字段，说明首次安装是否可行、将要写入哪些路径、以及缺少哪些可写目录。此时提交安装会走首次安装：除可执行文件外还写入 geo 数据、种子配置与 systemd 单元，然后 `daemon-reload`，但**不会启动服务**。
+
 安装与回滚耗时以分钟计，远超 HTTP 写超时，因此立即返回 `202` 与任务快照，由客户端轮询 `GET /dae/install` 获取进度。任务阶段依次为 `downloading`、`applying`，终态为 `done` 或 `failed`。同一时刻只允许一个任务，重复提交返回 `409 install_in_progress`。
 
 下载与校验不占用全局控制门，只有替换与重启阶段才进入串行区，避免几十兆的下载把配置保存一并堵住。
