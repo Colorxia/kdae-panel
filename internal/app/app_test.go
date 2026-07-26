@@ -19,6 +19,7 @@ import (
 	"github.com/tuoro/kdae-panel/internal/dae"
 	"github.com/tuoro/kdae-panel/internal/host"
 	"github.com/tuoro/kdae-panel/internal/netprobe"
+	"github.com/tuoro/kdae-panel/internal/schedule"
 )
 
 type stubDaeService struct {
@@ -377,6 +378,108 @@ func TestLatencyProbeLogsTargets(t *testing.T) {
 	application.Handler().ServeHTTP(httptest.NewRecorder(), request)
 	if !strings.Contains(logs.String(), "hk.example.com:443") {
 		t.Fatalf("探测目标应记入审计日志，实际日志 = %s", logs.String())
+	}
+}
+
+type stubScheduleService struct {
+	status  schedule.Status
+	err     error
+	updates []schedule.Settings
+}
+
+func (s *stubScheduleService) Status() schedule.Status {
+	return s.status
+}
+
+func (s *stubScheduleService) Update(settings schedule.Settings) (schedule.Status, error) {
+	s.updates = append(s.updates, settings)
+	if s.err != nil {
+		return schedule.Status{}, s.err
+	}
+	return schedule.Status{Settings: settings}, nil
+}
+
+func TestScheduleEndpoints(t *testing.T) {
+	service := &stubScheduleService{status: schedule.Status{Settings: schedule.Settings{Enabled: true, IntervalMinutes: 720}}}
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{Dae: stubDaeService{}, Schedule: service},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	read := httptest.NewRecorder()
+	application.Handler().ServeHTTP(read, httptest.NewRequest(http.MethodGet, "/api/v1/schedule/reload", nil))
+	if read.Code != http.StatusOK {
+		t.Fatalf("读取状态码 = %d，响应 = %s", read.Code, read.Body.String())
+	}
+	var status schedule.Status
+	if err := json.NewDecoder(read.Body).Decode(&status); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if !status.Enabled || status.IntervalMinutes != 720 {
+		t.Fatalf("状态内容异常: %+v", status)
+	}
+
+	write := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/schedule/reload", strings.NewReader(`{"enabled":false,"intervalMinutes":60}`))
+	request.Header.Set("Content-Type", "application/json")
+	application.Handler().ServeHTTP(write, request)
+	if write.Code != http.StatusOK {
+		t.Fatalf("更新状态码 = %d，响应 = %s", write.Code, write.Body.String())
+	}
+	if len(service.updates) != 1 || service.updates[0].IntervalMinutes != 60 || service.updates[0].Enabled {
+		t.Fatalf("更新参数异常: %+v", service.updates)
+	}
+
+	service.err = &schedule.InvalidSettingsError{Cause: errors.New("刷新间隔必须在 5 到 10080 分钟之间")}
+	invalid := httptest.NewRecorder()
+	invalidRequest := httptest.NewRequest(http.MethodPut, "/api/v1/schedule/reload", strings.NewReader(`{"enabled":true,"intervalMinutes":1}`))
+	application.Handler().ServeHTTP(invalid, invalidRequest)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("非法设置状态码 = %d，响应 = %s", invalid.Code, invalid.Body.String())
+	}
+
+	// 写盘失败不是用户输入问题，必须区分为 500
+	service.err = errors.New("写入设置: 权限不足")
+	failed := httptest.NewRecorder()
+	failedRequest := httptest.NewRequest(http.MethodPut, "/api/v1/schedule/reload", strings.NewReader(`{"enabled":true,"intervalMinutes":60}`))
+	application.Handler().ServeHTTP(failed, failedRequest)
+	if failed.Code != http.StatusInternalServerError {
+		t.Fatalf("写盘失败状态码 = %d，响应 = %s", failed.Code, failed.Body.String())
+	}
+}
+
+func TestScheduleRunnerWiredWithOperationsLock(t *testing.T) {
+	schedulePath := t.TempDir() + "/schedule.json"
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel", SchedulePath: schedulePath},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{Dae: stubDaeService{}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+
+	read := httptest.NewRecorder()
+	application.Handler().ServeHTTP(read, httptest.NewRequest(http.MethodGet, "/api/v1/schedule/reload", nil))
+	if read.Code != http.StatusOK {
+		t.Fatalf("真实调度器状态码 = %d，响应 = %s", read.Code, read.Body.String())
+	}
+	update := httptest.NewRecorder()
+	application.Handler().ServeHTTP(update, httptest.NewRequest(http.MethodPut, "/api/v1/schedule/reload", strings.NewReader(`{"enabled":true,"intervalMinutes":30}`)))
+	if update.Code != http.StatusOK {
+		t.Fatalf("真实调度器更新状态码 = %d，响应 = %s", update.Code, update.Body.String())
+	}
+	var status schedule.Status
+	if err := json.NewDecoder(update.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.Enabled || status.NextRunAt.IsZero() {
+		t.Fatalf("更新后应排期下一轮: %+v", status)
 	}
 }
 

@@ -45,6 +45,7 @@ func run() error {
 	systemctl := flag.String("systemctl", envOr("KDAE_PANEL_SYSTEMCTL", cfg.Systemctl), "systemctl 可执行文件路径")
 	journalctl := flag.String("journalctl", envOr("KDAE_PANEL_JOURNALCTL", cfg.Journalctl), "journalctl 可执行文件路径")
 	databasePath := flag.String("database", envOr("KDAE_PANEL_DATABASE", cfg.DatabasePath), "面板 SQLite 数据库路径")
+	schedulePath := flag.String("schedule-file", envOr("KDAE_PANEL_SCHEDULE_FILE", cfg.SchedulePath), "订阅自动刷新设置文件路径")
 	sessionTTL := flag.Duration("session-ttl", sessionTTLDefault, "登录会话有效期")
 	secureCookie := flag.Bool("secure-cookie", secureCookieDefault, "仅通过 HTTPS 发送登录 Cookie")
 	showVersion := flag.Bool("version", false, "显示版本")
@@ -64,6 +65,7 @@ func run() error {
 	cfg.Systemctl = *systemctl
 	cfg.Journalctl = *journalctl
 	cfg.DatabasePath = *databasePath
+	cfg.SchedulePath = *schedulePath
 	cfg.SessionTTL = *sessionTTL
 	cfg.SecureCookie = *secureCookie
 	cfg.Version = version

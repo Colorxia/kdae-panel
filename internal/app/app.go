@@ -21,6 +21,7 @@ import (
 	"github.com/tuoro/kdae-panel/internal/dae"
 	"github.com/tuoro/kdae-panel/internal/host"
 	"github.com/tuoro/kdae-panel/internal/netprobe"
+	"github.com/tuoro/kdae-panel/internal/schedule"
 	"github.com/tuoro/kdae-panel/internal/webui"
 )
 
@@ -52,6 +53,7 @@ type Dependencies struct {
 	Host           HostService
 	Authentication AuthenticationService
 	Probe          ProbeService
+	Schedule       ScheduleService
 }
 
 type AuthenticationService interface {
@@ -128,6 +130,23 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 	}
 	router := http.NewServeMux()
 	operations := &sync.Mutex{}
+	application := &App{operations: operations}
+
+	scheduleService := dependencies.Schedule
+	if scheduleService == nil && cfg.SchedulePath != "" {
+		runner, err := schedule.New(cfg.SchedulePath, func(ctx context.Context) error {
+			if !operations.TryLock() {
+				return errors.New("另一个控制操作正在执行，本轮已跳过")
+			}
+			defer operations.Unlock()
+			return dependencies.Dae.Reload(ctx)
+		}, logger)
+		if err != nil {
+			return nil, fmt.Errorf("初始化订阅自动刷新: %w", err)
+		}
+		application.closers = append(application.closers, runner)
+		scheduleService = runner
+	}
 	router.HandleFunc("GET /api/v1/health", func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, http.StatusOK, map[string]any{
 			"status":  "ok",
@@ -148,6 +167,7 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 	registerConfigurationRoutes(router, dependencies.Configuration, operations)
 	registerServiceRoutes(router, dependencies.Dae, dependencies.Host, operations)
 	registerProbeRoutes(router, dependencies.Probe, logger)
+	registerScheduleRoutes(router, scheduleService)
 	registerAuthenticationRoutes(router, dependencies.Authentication, cfg.SecureCookie, cfg.BootstrapToken, proxyTrust)
 	apiNotFound := func(writer http.ResponseWriter, _ *http.Request) {
 		writeAPIError(writer, http.StatusNotFound, "api_not_found", "API 路径不存在")
@@ -163,7 +183,8 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 	handler = securityHeaders(handler, proxyTrust)
 	handler = recoverer(handler, logger)
 	handler = requestLogger(logger, proxyTrust)(handler)
-	return &App{handler: handler, operations: operations}, nil
+	application.handler = handler
+	return application, nil
 }
 
 func acquireOperation(writer http.ResponseWriter, operations *sync.Mutex) bool {

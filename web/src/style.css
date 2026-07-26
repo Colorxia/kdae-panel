@@ -488,6 +488,37 @@ pre,
   max-width: 130px;
 }
 
+.orchestrate-add-hint {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.schedule-summary {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.schedule-alert {
+  margin-top: 14px;
+  margin-bottom: 0;
+}
+
+.schedule-row {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.schedule-details {
+  margin: 18px 0 0;
+}
+
 .group-policy-select {
   max-width: 240px;
 }
@@ -604,7 +635,8 @@ pre,
   width: min(560px, 92vw);
 }
 
-.orchestrate-modal .n-input {
+.orchestrate-modal .n-input,
+.orchestrate-modal .n-select {
   margin-top: 14px;
 }
 

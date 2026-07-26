@@ -85,6 +85,14 @@ export interface ConfigBackup {
   sourcePath: string
 }
 
+export interface ReloadSchedule {
+  enabled: boolean
+  intervalMinutes: number
+  lastRunAt?: string
+  lastError?: string
+  nextRunAt?: string
+}
+
 export interface LatencyTarget {
   host: string
   port: number

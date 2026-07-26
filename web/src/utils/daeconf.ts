@@ -437,10 +437,22 @@ export function removeLine(text: string, lineStart: number, lineEnd: number): st
   return splice(text, lineStart, end, '')
 }
 
-/** 用新内容整行替换(保持缩进与该行原有的行尾)。 */
+/**
+ * 用新内容整行替换,保持缩进、该行原有的行尾,以及行尾注释。
+ * 注释属于"未被编辑的内容",按模块约定必须原样保留。
+ */
 export function replaceLine(text: string, lineStart: number, lineEnd: number, line: string, indent = INDENT): string {
   const carriageReturn = text[lineEnd - 1] === '\r' ? '\r' : ''
-  return splice(text, lineStart, lineEnd, indent + line + carriageReturn)
+  const masked = maskWithSpans(text).text
+  let comment = ''
+  for (let index = lineStart; index < lineEnd; index += 1) {
+    // 掩码把注释替换成空格,首个"原文非空白但掩码为空格"的位置就是注释起点
+    if (masked[index] === ' ' && text[index] !== ' ' && text[index] !== '\t') {
+      comment = ' ' + text.slice(index, lineEnd).replace(/\r$/, '').trimEnd()
+      break
+    }
+  }
+  return splice(text, lineStart, lineEnd, indent + line + comment + carriageReturn)
 }
 
 /** 声明的键在 dae 词法中必须是裸 ID;这里进一步收窄到无歧义的安全子集。 */

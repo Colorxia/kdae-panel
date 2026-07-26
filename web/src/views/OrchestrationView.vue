@@ -17,6 +17,7 @@ import {
   NSelect,
   NSpace,
   NSpin,
+  NSwitch,
   NTag,
   NText,
   NTooltip,
@@ -35,10 +36,17 @@ import {
   PricetagOutline,
   RefreshOutline,
   SaveOutline,
+  TimerOutline,
   TrashOutline,
 } from '@vicons/ionicons5'
 import { APIError, getJSON, postJSON, putJSON } from '../api/client'
-import type { ConfigDocument, ConfigSaveResult, LatencyResult, LatencyTarget } from '../types/api'
+import type {
+  ConfigDocument,
+  ConfigSaveResult,
+  LatencyResult,
+  LatencyTarget,
+  ReloadSchedule,
+} from '../types/api'
 import {
   addGroup,
   appendToSection,
@@ -59,6 +67,8 @@ import {
   type SectionContents,
 } from '../utils/daeconf'
 import { parseNodeLink, type NodeLinkInfo } from '../utils/nodelink'
+import { parseScheme, supportsPersistence, togglePersistence } from '../utils/subscription'
+import { formatDateTime } from '../utils/format'
 
 interface NodeRow {
   entry: Entry
@@ -239,29 +249,51 @@ function removeNode(row: NodeRow) {
   content.value = removeLine(content.value, row.entry.lineStart, row.entry.lineEnd)
 }
 
-const tagTarget = ref<Entry | null>(null)
+// 弹窗会跨越用户的思考时间，其间配置可能被重新读取（例如保存失败后的 load()）。
+// 行偏移一旦失效，按旧行号改写会切开无关的行，因此打开时记下原文快照，
+// 应用前逐字节比对，不一致就拒绝并提示重来。
+interface EntryTarget {
+  entry: Entry
+  snapshot: string
+}
+
+function captureEntry(entry: Entry): EntryTarget {
+  return { entry, snapshot: content.value.slice(entry.lineStart, entry.lineEnd) }
+}
+
+function rewriteEntry(target: EntryTarget, line: string): boolean {
+  const { entry, snapshot } = target
+  if (!entry.editable) return false
+  if (content.value.slice(entry.lineStart, entry.lineEnd) !== snapshot) {
+    message.error('配置在编辑期间发生了变化，请关闭后重新打开')
+    return false
+  }
+  content.value = replaceLine(content.value, entry.lineStart, entry.lineEnd, line)
+  return true
+}
+
+const tagTarget = ref<EntryTarget | null>(null)
 const tagValue = ref('')
 
 function openTagEditor(entry: Entry) {
-  tagTarget.value = entry
+  tagTarget.value = captureEntry(entry)
   tagValue.value = entry.tag || ''
 }
 
 function applyTag() {
-  const entry = tagTarget.value
-  if (!entry || !entry.editable) return
+  const target = tagTarget.value
+  if (!target) return
   const tag = tagValue.value.trim()
   if (tag !== '' && !isValidTag(tag)) {
     message.error('标签只能使用字母、数字、下划线、点或横线，且以字母或下划线开头')
     return
   }
-  if (!isQuotable(entry.value)) {
+  if (!isQuotable(target.entry.value)) {
     message.error('该链接同时包含单引号和双引号，无法安全改写，请在配置管理页编辑原文')
     return
   }
-  const line = tag === '' ? quote(entry.value) : `${tag}: ${quote(entry.value)}`
-  content.value = replaceLine(content.value, entry.lineStart, entry.lineEnd, line)
-  tagTarget.value = null
+  const line = tag === '' ? quote(target.entry.value) : `${tag}: ${quote(target.entry.value)}`
+  if (rewriteEntry(target, line)) tagTarget.value = null
 }
 
 // ---- 节点延迟(面板主机 TCP 直连握手,非 dae 内部健康检查) ----
@@ -405,31 +437,73 @@ function entryActions(entry: Entry, actions: EntryAction[]) {
 }
 
 // ---- 订阅 ----
+// 订阅内容始终由 dae 在 reload 时拉取，面板只负责维护配置里的那一行。
 const subscriptionTag = ref('')
 const subscriptionURL = ref('')
+const subscriptionPersist = ref(true)
 
-function addSubscription() {
-  const tag = subscriptionTag.value.trim()
-  const url = subscriptionURL.value.trim()
+function subscriptionLine(tag: string, url: string): string {
+  return tag === '' ? quote(url) : `${tag}: ${quote(url)}`
+}
+
+function validSubscription(tag: string, url: string): boolean {
   if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url) || !isQuotable(url)) {
     message.error('请输入完整的订阅链接，且不能同时包含单引号和双引号')
-    return
+    return false
   }
   if (tag !== '' && !isValidTag(tag)) {
     message.error('订阅标签只能使用字母、数字、下划线、点或横线，且以字母或下划线开头')
-    return
+    return false
   }
-  const line = tag === '' ? quote(url) : `${tag}: ${quote(url)}`
-  content.value = appendToSection(content.value, 'subscription', [line])
+  return true
+}
+
+function addSubscription() {
+  const tag = subscriptionTag.value.trim()
+  let url = subscriptionURL.value.trim()
+  if (!validSubscription(tag, url)) return
+  // 开关是双向的：粘贴的链接已带 -file 而开关关闭时，同样要剥掉后缀
+  if (supportsPersistence(url) && parseScheme(url)?.persistent !== subscriptionPersist.value) {
+    url = togglePersistence(url)
+  }
+  content.value = appendToSection(content.value, 'subscription', [subscriptionLine(tag, url)])
   subscriptionTag.value = ''
   subscriptionURL.value = ''
+}
+
+function setPersistence(entry: Entry, persistent: boolean) {
+  const next = togglePersistence(entry.value)
+  // 开关状态与目标不符时说明重复触发或链接形态不支持，直接忽略
+  if (next === entry.value || parseScheme(next)?.persistent !== persistent) return
+  // 值与标签来自配置本身，仍需确认它们能被无损写回
+  if (!validSubscription(entry.tag || '', next)) return
+  rewriteEntry(captureEntry(entry), subscriptionLine(entry.tag || '', next))
+}
+
+const editTarget = ref<EntryTarget | null>(null)
+const editTag = ref('')
+const editURL = ref('')
+
+function openSubscriptionEditor(entry: Entry) {
+  editTarget.value = captureEntry(entry)
+  editTag.value = entry.tag || ''
+  editURL.value = entry.value
+}
+
+function applySubscriptionEdit() {
+  const target = editTarget.value
+  if (!target) return
+  const tag = editTag.value.trim()
+  const url = editURL.value.trim()
+  if (!validSubscription(tag, url)) return
+  if (rewriteEntry(target, subscriptionLine(tag, url))) editTarget.value = null
 }
 
 const subscriptionColumns: DataTableColumns<Entry> = [
   {
     title: '标签',
     key: 'tag',
-    width: 120,
+    width: 110,
     ellipsis: { tooltip: true },
     render: (row) => row.tag
       ? h(NTag, { size: 'small', bordered: false }, { default: () => row.tag })
@@ -438,15 +512,34 @@ const subscriptionColumns: DataTableColumns<Entry> = [
   {
     title: '订阅链接',
     key: 'value',
-    minWidth: 220,
+    minWidth: 200,
     ellipsis: { tooltip: true },
     render: (row) => h('span', { class: 'mono' }, row.value),
   },
   {
+    title: () => h(NTooltip, null, {
+      trigger: () => h('span', { class: 'column-hint' }, '离线缓存'),
+      default: () => '开启后 dae 会把拉取成功的订阅内容保存到 persist.d 目录，'
+        + '下次拉取失败时回退使用该缓存，成功后自动更新。对 file:// 本地订阅不适用。',
+    }),
+    key: 'persist',
+    width: 100,
+    render: (row) => {
+      if (!supportsPersistence(row.value)) return h(NText, { depth: 3 }, { default: () => '—' })
+      return h(NSwitch, {
+        size: 'small',
+        value: parseScheme(row.value)?.persistent === true,
+        disabled: !row.editable,
+        'onUpdate:value': (value: boolean) => setPersistence(row, value),
+      })
+    },
+  },
+  {
     title: '操作',
     key: 'actions',
-    width: 70,
+    width: 100,
     render: (row) => entryActions(row, [
+      { title: '编辑', icon: CreateOutline, onClick: () => openSubscriptionEditor(row) },
       {
         title: '移除',
         icon: TrashOutline,
@@ -456,6 +549,96 @@ const subscriptionColumns: DataTableColumns<Entry> = [
     ]),
   },
 ]
+
+// ---- 订阅刷新:dae 只在 reload 时重新拉取订阅 ----
+const refreshing = ref(false)
+const scheduleVisible = ref(false)
+const scheduleSaving = ref(false)
+const reloadSchedule = ref<ReloadSchedule | null>(null)
+const scheduleEnabled = ref(false)
+const scheduleInterval = ref(1440)
+
+const INTERVAL_OPTIONS = [
+  { label: '每 30 分钟', value: 30 },
+  { label: '每小时', value: 60 },
+  { label: '每 6 小时', value: 360 },
+  { label: '每 12 小时', value: 720 },
+  { label: '每天', value: 1440 },
+  { label: '每周', value: 10080 },
+]
+
+const scheduleError = ref('')
+
+async function loadSchedule() {
+  try {
+    const status = await getJSON<ReloadSchedule>('/api/v1/schedule/reload')
+    reloadSchedule.value = status
+    scheduleEnabled.value = status.enabled
+    scheduleInterval.value = status.intervalMinutes
+    scheduleError.value = ''
+  } catch (error) {
+    // 读不到就不允许保存，否则会用表单默认值覆盖服务端的真实设置
+    reloadSchedule.value = null
+    scheduleError.value = error instanceof Error ? error.message : '读取自动刷新设置失败'
+  }
+}
+
+// 每次打开都以服务端状态为准，避免上次取消时留下的编辑残留
+async function openSchedule() {
+  scheduleVisible.value = true
+  await loadSchedule()
+}
+
+async function saveSchedule() {
+  scheduleSaving.value = true
+  try {
+    reloadSchedule.value = await putJSON<ReloadSchedule>('/api/v1/schedule/reload', {
+      enabled: scheduleEnabled.value,
+      intervalMinutes: scheduleInterval.value,
+    })
+    scheduleVisible.value = false
+    message.success(scheduleEnabled.value ? '已开启订阅自动刷新' : '已关闭订阅自动刷新')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '保存自动刷新设置失败')
+  } finally {
+    scheduleSaving.value = false
+  }
+}
+
+function confirmRefreshNow() {
+  if (dirty.value) {
+    message.warning('有未保存的编排修改，请先保存并重载')
+    return
+  }
+  dialog.info({
+    title: '立即刷新订阅',
+    content: 'dae 会在无损重载时重新拉取全部订阅链接，现有连接不会中断。'
+      + '重载应用的是磁盘上的当前配置，因此之前"仅保存"而未应用的改动也会一并生效。',
+    positiveText: '刷新并重载',
+    negativeText: '取消',
+    onPositiveClick: refreshNow,
+  })
+}
+
+async function refreshNow() {
+  refreshing.value = true
+  try {
+    await postJSON('/api/v1/service/actions/reload')
+    message.success('已触发无损重载，订阅内容将在重载后生效')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '刷新订阅失败')
+  } finally {
+    refreshing.value = false
+  }
+}
+
+const scheduleSummary = computed(() => {
+  const status = reloadSchedule.value
+  if (!status) return ''
+  if (!status.enabled) return '自动刷新已关闭'
+  const option = INTERVAL_OPTIONS.find((item) => item.value === status.intervalMinutes)
+  return option ? option.label : `每 ${status.intervalMinutes} 分钟`
+})
 
 // ---- 分组 ----
 const newGroupName = ref('')
@@ -508,7 +691,10 @@ onBeforeRouteLeave(() => {
   return window.confirm('当前编排尚未保存，确认离开？')
 })
 
-onMounted(() => void load())
+onMounted(() => {
+  void load()
+  void loadSchedule()
+})
 </script>
 
 <template>
@@ -581,13 +767,22 @@ onMounted(() => void load())
           <NGridItem>
             <NCard title="订阅" class="panel-card" content-style="padding: 0;">
               <template #header-extra>
-                <NTag size="small" :bordered="false">{{ subscriptions.length }} 个</NTag>
+                <NSpace size="small" align="center">
+                  <NTag size="small" :bordered="false">{{ subscriptions.length }} 个</NTag>
+                  <NButton size="small" quaternary :loading="refreshing" :disabled="subscriptions.length === 0" @click="confirmRefreshNow">
+                    <template #icon><NIcon><RefreshOutline /></NIcon></template>立即刷新
+                  </NButton>
+                  <NButton size="small" quaternary @click="openSchedule">
+                    <template #icon><NIcon><TimerOutline /></NIcon></template>自动刷新
+                  </NButton>
+                </NSpace>
               </template>
               <NDataTable
                 :columns="subscriptionColumns"
                 :data="subscriptions"
                 :row-key="(row: Entry) => row.lineStart"
                 :bordered="false"
+                :scroll-x="620"
                 size="small"
               >
                 <template #empty>
@@ -599,11 +794,18 @@ onMounted(() => void load())
               <div class="orchestrate-add">
                 <NInputGroup>
                   <NInput v-model:value="subscriptionTag" placeholder="标签(可选)" class="orchestrate-tag-input" />
-                  <NInput v-model:value="subscriptionURL" placeholder="https://example.com/subscription" />
+                  <NInput v-model:value="subscriptionURL" placeholder="https://example.com/subscription" @keyup.enter="addSubscription" />
                   <NButton type="primary" ghost @click="addSubscription">
                     <template #icon><NIcon><AddOutline /></NIcon></template>添加
                   </NButton>
                 </NInputGroup>
+                <div class="orchestrate-add-hint">
+                  <NSwitch v-model:value="subscriptionPersist" size="small" />
+                  <NText depth="3">启用离线缓存（写作 https-file://，拉取失败时回退到上次成功的内容）</NText>
+                </div>
+                <NText v-if="scheduleSummary" depth="3" class="schedule-summary">
+                  订阅刷新：{{ scheduleSummary }}<template v-if="reloadSchedule?.nextRunAt">，下次 {{ formatDateTime(reloadSchedule.nextRunAt) }}</template>
+                </NText>
               </div>
             </NCard>
           </NGridItem>
@@ -744,6 +946,53 @@ onMounted(() => void load())
         <NSpace justify="end">
           <NButton @click="tagTarget = null">取消</NButton>
           <NButton type="primary" @click="applyTag">确定</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <NModal :show="editTarget !== null" preset="card" title="编辑订阅" class="orchestrate-modal" @update:show="editTarget = null">
+      <NText depth="3">修改标签或链接地址。订阅内容始终由 dae 在下次重载时重新拉取。</NText>
+      <NInput v-model:value="editTag" placeholder="标签(可选)" spellcheck="false" />
+      <NInput v-model:value="editURL" class="mono" placeholder="https://example.com/subscription" spellcheck="false" @keyup.enter="applySubscriptionEdit" />
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="editTarget = null">取消</NButton>
+          <NButton type="primary" @click="applySubscriptionEdit">确定</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <NModal v-model:show="scheduleVisible" preset="card" title="订阅自动刷新" class="orchestrate-modal">
+      <NText depth="3">
+        dae 只在无损重载时重新拉取订阅，因此自动刷新的实现就是按间隔执行一次 dae reload。
+        面板有其他控制操作正在执行时会跳过当轮，不会与之交叉。
+      </NText>
+      <NAlert v-if="scheduleError" type="error" :bordered="false" class="card-alert schedule-alert">
+        {{ scheduleError }}
+      </NAlert>
+      <div class="schedule-row">
+        <NSwitch v-model:value="scheduleEnabled" :disabled="scheduleError !== ''" />
+        <NText>{{ scheduleEnabled ? '已开启' : '已关闭' }}</NText>
+      </div>
+      <NSelect v-model:value="scheduleInterval" :options="INTERVAL_OPTIONS" :disabled="!scheduleEnabled || scheduleError !== ''" />
+      <dl v-if="reloadSchedule" class="details-list schedule-details">
+        <div>
+          <dt>上次执行</dt>
+          <dd>{{ reloadSchedule.lastRunAt ? formatDateTime(reloadSchedule.lastRunAt) : '尚未执行' }}</dd>
+        </div>
+        <div v-if="reloadSchedule.nextRunAt">
+          <dt>下次执行</dt>
+          <dd>{{ formatDateTime(reloadSchedule.nextRunAt) }}</dd>
+        </div>
+        <div v-if="reloadSchedule.lastError">
+          <dt>上次结果</dt>
+          <dd>{{ reloadSchedule.lastError }}</dd>
+        </div>
+      </dl>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="scheduleVisible = false">取消</NButton>
+          <NButton type="primary" :loading="scheduleSaving" :disabled="scheduleError !== ''" @click="saveSchedule">保存</NButton>
         </NSpace>
       </template>
     </NModal>

@@ -14,6 +14,7 @@ type Config struct {
 	Systemctl      string
 	Journalctl     string
 	DatabasePath   string
+	SchedulePath   string
 	SessionTTL     time.Duration
 	SecureCookie   bool
 }
@@ -30,6 +31,7 @@ func DefaultConfig() Config {
 		Systemctl:      "systemctl",
 		Journalctl:     "journalctl",
 		DatabasePath:   "/var/lib/kdae-panel/panel.db",
+		SchedulePath:   "/var/lib/kdae-panel/schedule.json",
 		SessionTTL:     12 * time.Hour,
 	}
 }
@@ -65,6 +67,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.DatabasePath == "" {
 		c.DatabasePath = defaults.DatabasePath
+	}
+	if c.SchedulePath == "" {
+		c.SchedulePath = defaults.SchedulePath
 	}
 	if c.SessionTTL <= 0 {
 		c.SessionTTL = defaults.SessionTTL

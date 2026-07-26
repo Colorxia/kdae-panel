@@ -10,6 +10,7 @@
 - systemd 服务状态、启动、停止和重启；
 - dae 无损重载、暂停和 sysdump 诊断；
 - 节点、订阅与分组的可视化编排：分享链接批量导入、打标签、策略与过滤条件编辑，注释与未涉及的配置节逐字节保留；
+- 订阅离线缓存开关（dae 的 `-file` 持久化）、立即刷新与按间隔自动刷新；
 - 路由规则可视化预览与面板主机侧的节点 TCP 直连延迟探测；
 - 原始配置编辑、独立校验、并发冲突检测和事务保存；
 - 保存前备份、原子替换及重载失败后的磁盘回滚；
@@ -50,6 +51,7 @@ npm run build --prefix web
 go run ./cmd/kdae-panel \
   --database ./data/panel.db \
   --backup-dir ./data/backups \
+  --schedule-file ./data/schedule.json \
   --dae-config ./data/config.dae
 ```
 
@@ -57,7 +59,7 @@ go run ./cmd/kdae-panel \
 
 ```bash
 # 终端一
-go run ./cmd/kdae-panel --database ./data/panel.db
+go run ./cmd/kdae-panel --database ./data/panel.db --schedule-file ./data/schedule.json
 
 # 终端二，Vite 会代理 /api 到 127.0.0.1:2023
 npm run dev --prefix web

@@ -302,6 +302,20 @@ describe('改写操作', () => {
     expect(entries[1]).toMatchObject({ tag: 'plain', value: 'https://example.com/plain' })
   })
 
+  it('replaceLine 保留行尾注释', () => {
+    const text = "node {\n  a: 'ss://x@h:1' # 备用节点\n}\n"
+    const entry = parseEntries(text, findSection(text, 'node')!)[0]
+    const next = replaceLine(text, entry.lineStart, entry.lineEnd, "b: 'ss://x@h:1'")
+    expect(next).toBe("node {\n  b: 'ss://x@h:1' # 备用节点\n}\n")
+  })
+
+  it('replaceLine 在无注释时不引入多余空白', () => {
+    const text = "node {\n  a: 'ss://x@h:1'\n}\n"
+    const entry = parseEntries(text, findSection(text, 'node')!)[0]
+    expect(replaceLine(text, entry.lineStart, entry.lineEnd, "b: 'ss://x@h:1'"))
+      .toBe("node {\n  b: 'ss://x@h:1'\n}\n")
+  })
+
   it('removeLine 精确移除条目行', () => {
     const section = findSection(SAMPLE, 'node')!
     const entry = parseEntries(SAMPLE, section)[0]

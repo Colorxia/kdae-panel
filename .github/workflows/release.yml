@@ -32,11 +32,12 @@ jobs:
       - name: 完整发布前验证
         run: |
           npm run typecheck --prefix web
+          npm test --prefix web
           npm run build --prefix web
           git diff --exit-code -- internal/webui/dist
           go test ./...
           go vet ./...
-          go test -race ./internal/app ./internal/auth ./internal/configstore ./internal/dae ./internal/host ./internal/netprobe
+          go test -race ./internal/app ./internal/auth ./internal/configstore ./internal/dae ./internal/host ./internal/netprobe ./internal/schedule
           go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - run: bash scripts/build-release.sh "${GITHUB_REF_NAME}"
 
