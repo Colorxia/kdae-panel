@@ -99,7 +99,7 @@ func (s *fakeService) Status(context.Context) (host.Status, error) {
 
 func newTestInstaller(t *testing.T, fetcher *fakeFetcher, service *fakeService) (*Installer, string) {
 	t.Helper()
-	directory := t.TempDir()
+	directory := testDir(t)
 	binaryPath := filepath.Join(directory, "bin", "dae")
 	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o755); err != nil {
 		t.Fatal(err)

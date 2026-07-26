@@ -50,7 +50,7 @@ func newFreshInstaller(t *testing.T) (*Installer, *fakeService, string) {
 	}
 	service.execStart = "" // 尚未作为 systemd 服务安装
 	// 单元目录默认是 /etc/systemd/system，测试必须改到临时目录
-	installer.unitDir = t.TempDir()
+	installer.unitDir = testDir(t)
 	return installer, service, binaryPath
 }
 
@@ -103,7 +103,7 @@ func TestProvisionAllowsRepairWhenUnitExistsButBinaryMissing(t *testing.T) {
 // 单元指向别处而那个文件也不在时，补齐会装到错误的位置，必须拒绝并说明怎么改。
 func TestProvisionRefusesRepairWhenUnitPointsElsewhere(t *testing.T) {
 	installer, service, _ := newFreshInstaller(t)
-	service.execStart = filepath.Join(t.TempDir(), "elsewhere", "dae")
+	service.execStart = filepath.Join(testDir(t), "elsewhere", "dae")
 
 	provision := installer.Provision(context.Background())
 	if provision.Possible {
@@ -133,7 +133,7 @@ func TestProvisionReportsUnwritableDirectories(t *testing.T) {
 	installer, _, _ := newFreshInstaller(t)
 	// 祖先是普通文件而非目录：这条路径永远建不出来，
 	// 对应现实中把路径配错、或挂载点缺失的情形
-	blocker := filepath.Join(t.TempDir(), "a-file")
+	blocker := filepath.Join(testDir(t), "a-file")
 	if err := os.WriteFile(blocker, []byte("not a directory"), 0o644); err != nil {
 		t.Fatal(err)
 	}
