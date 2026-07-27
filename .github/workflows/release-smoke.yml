@@ -1,0 +1,124 @@
+name: 发布装机验证
+
+# 发布之后，真装一遍。
+#
+# 面板的所有其他检查都作用于源码；用户拿到的却是发布包，以及 get.sh /
+# install.sh / uninstall.sh 这三个从不被测试的脚本。v0.1.0 就是带着
+# 单元 ReadWritePaths 缺陷发出去的——CI 全绿，装上去起不来，最后靠人肉
+# 端到端才发现。这个作业把那次的发现方式固化下来：每次发布后自动跑一遍
+# 用户实际执行的命令，几分钟内知道结果，而不是等用户的服务器告诉我们。
+#
+# GitHub 的 ubuntu runner 里 systemd 是 PID 1，因此单元能真的启动，
+# ProtectSystem=strict / ProtectHome=true 那套沙箱也会真的生效。
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要验证的发布 tag，留空则取 releases/latest'
+        required: false
+  # 改动本文件时自我验证：冒烟脚本本身没跑过，等于没有。
+  push:
+    branches: [main]
+    paths: ['.github/workflows/release-smoke.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: 确定待验证版本
+        id: target
+        env:
+          # release 事件给出本次发布的 tag；手动触发用输入；push 自检取 latest。
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.version }}
+        run: |
+          version="${INPUT_TAG:-$EVENT_TAG}"
+          if [[ -z ${version} ]]; then
+            url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+              https://github.com/${{ github.repository }}/releases/latest)
+            version="${url##*/}"
+          fi
+          if [[ ! ${version} =~ ^v[0-9A-Za-z._-]+$ ]]; then
+            echo "无法确定要验证的版本（得到 '${version}'）" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "将验证 ${version}"
+
+      # 走用户真正会执行的那条路径：仓库里的 get.sh 下载并校验发布包，
+      # 再由包内的 install.sh 完成安装。预发布不会成为 latest，
+      # 因此这里显式传版本，rc 同样能被验证。
+      - name: 一键部署
+        env:
+          KDAE_PANEL_VERSION: ${{ steps.target.outputs.version }}
+        run: sudo -E bash scripts/get.sh
+
+      - name: 服务应处于运行状态
+        run: |
+          # 单元是 Type=notify 还是 simple 都可能有启动延迟，给几秒重试窗口
+          for _ in $(seq 1 15); do
+            if systemctl is-active --quiet kdae-panel.service; then break; fi
+            sleep 1
+          done
+          systemctl is-active kdae-panel.service
+          # 失败时单元状态与近期日志是唯一线索，成功时也留档便于比对
+          systemctl status kdae-panel.service --no-pager --full || true
+          sudo journalctl -u kdae-panel.service --no-pager -n 50
+
+      - name: 健康接口应返回本次发布的版本
+        env:
+          EXPECTED: ${{ steps.target.outputs.version }}
+        run: |
+          for _ in $(seq 1 15); do
+            if curl -fsS http://127.0.0.1:2023/api/v1/health >/tmp/health.json 2>/dev/null; then break; fi
+            sleep 1
+          done
+          cat /tmp/health.json
+          # 版本必须与 tag 一致：装上的若是旧包或 dev 构建，这里当场暴露
+          got=$(jq -r '.version' /tmp/health.json)
+          if [[ ${got} != "${EXPECTED}" ]]; then
+            echo "健康接口版本 = ${got}，期望 ${EXPECTED}" >&2
+            exit 1
+          fi
+          test "$(jq -r '.status' /tmp/health.json)" = ok
+
+      - name: 首次初始化链接应出现在服务日志中
+        run: |
+          # 这是新装机器唯一的进入方式，日志里没有它就等于装完进不去
+          sudo journalctl -u kdae-panel.service --no-pager | grep -q 'setup_url'
+
+      - name: 前端资源应可访问
+        run: |
+          curl -fsS http://127.0.0.1:2023/ | grep -q '<div id="app">'
+          # 入口页必须不可缓存，否则升级后用户仍停在旧界面（v0.1.2 修复的问题）
+          curl -fsSI http://127.0.0.1:2023/ | grep -qi 'cache-control: no-cache'
+
+      - name: 卸载并清除数据
+        run: sudo KDAE_PANEL_PURGE=true bash /usr/share/kdae-panel/uninstall.sh
+
+      - name: 卸载应清理干净
+        run: |
+          for leftover in /usr/bin/kdae-panel /etc/systemd/system/kdae-panel.service \
+            /usr/share/kdae-panel /etc/kdae-panel /var/lib/kdae-panel; do
+            if [[ -e ${leftover} ]]; then
+              echo "卸载后仍残留 ${leftover}" >&2
+              exit 1
+            fi
+          done
+          # 单元不该再被 systemd 认识
+          if systemctl list-unit-files kdae-panel.service 2>/dev/null | grep -q kdae-panel; then
+            echo "systemd 中仍存在 kdae-panel 单元" >&2
+            exit 1
+          fi
