@@ -161,7 +161,8 @@ dae 只在重载时重新拉取 `subscription` 链接，因此"订阅定时刷�
 
 `POST` 可选 `{"version":"v0.2.0"}`，省略则取最新正式发布；立即返回 `202` 并在后台执行：
 下载 → 比对 `SHA256SUMS` → 新二进制 `-version` 自证 → 备份上一版 → 原子替换 →
-`systemctl restart --no-block` 重启自身。任一步失败都在替换之前中止，原文件不动。
+`systemctl restart --no-block` 重启自身。下载、校验、自证或备份失败时原文件不动；
+原子改名后的目录同步或重启请求失败则可能已经留下新二进制，任务会明确报错并要求人工确认或重启。
 
 **没有自动回滚**：被替换、被重启的是当前进程自己，systemd 停掉它之后无从补救。
 上一版副本保留在 `KDAE_PANEL_BACKUP_FILE`，还原步骤见 [deployment.md](deployment.md)。

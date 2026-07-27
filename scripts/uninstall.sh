@@ -2,6 +2,7 @@
 # kdae-panel 卸载。一键执行：
 #
 #   bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)"
+#   （须在 root shell 中执行）
 #
 # 默认保留配置、账户数据库与全部配置备份；要连数据一并清除：
 #
@@ -60,6 +61,9 @@ fi
 
 systemctl disable --now kdae-panel.service 2>/dev/null || true
 rm -f /etc/systemd/system/kdae-panel.service /usr/bin/kdae-panel
+# unit 已不存在时继续保留 drop-in 没有意义，而且自升级的 ReadWritePaths=/usr/bin
+# 会在日后重装时悄悄恢复高权限。卸载程序时一并清掉全部 unit override。
+rm -rf /etc/systemd/system/kdae-panel.service.d
 # 安装时落盘的卸载脚本副本一并清掉：卸载不该留下程序痕迹。
 # 删除正在执行的脚本是安全的——rm 只是解除目录项，bash 持有的文件描述符
 # 仍指向原 inode；注意 bash 是边读边执行的，原地改写运行中的脚本并不安全，
@@ -97,7 +101,7 @@ if [[ ${purge} == true ]]; then
       echo "备份目录取值可疑（'$1'），已跳过删除，请自行确认后手工处理" >&2
       backup_dir_skipped=$1
       ;;
-    /var/lib/kdae-panel/*)
+    /var/lib/kdae-panel | /var/lib/kdae-panel/*)
       rm -rf "${dir}"
       ;;
     *)
@@ -131,9 +135,9 @@ if [[ ${purge} == true ]]; then
   fi
   echo "dae 的配置目录 /etc/dae 与 geo 数据未被触碰。"
 else
-  echo "配置和账户数据仍保留在 /etc/kdae-panel 与 /var/lib/kdae-panel。"
+  echo "配置和账户数据未删除；默认位于 /etc/kdae-panel 与 /var/lib/kdae-panel，自定义路径按 env 配置保留。"
   echo "要连数据一并清除，用清除模式重跑（本地脚本副本已随程序移除）："
-  echo "  KDAE_PANEL_PURGE=true bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)\""
+  echo "  （在 root shell 中）KDAE_PANEL_PURGE=true bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)\""
   echo "  （源码检出仍在时等效：sudo KDAE_PANEL_PURGE=true ./scripts/uninstall.sh）"
 
   for leftover in "${state_file}.previous-dae" "${state_file}.previous-dae.pending"; do

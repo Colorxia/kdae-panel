@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/tuoro/kdae-panel/internal/atomicfile"
@@ -75,6 +76,9 @@ type Manager struct {
 	logger     *slog.Logger
 	// probe 运行新二进制自证；测试替换它以免真的执行文件。
 	probe func(ctx context.Context, path string) (string, error)
+	// replacementPendingRestart 一旦替换开始就阻止旧进程再次升级。
+	// 即便 rename 后的目录同步或 systemctl 失败，重试也不能覆盖唯一的旧版副本。
+	replacementPendingRestart atomic.Bool
 }
 
 func New(options Options) (*Manager, error) {
@@ -101,6 +105,13 @@ func New(options Options) (*Manager, error) {
 	if backupPath == "" {
 		backupPath = "/var/lib/kdae-panel/kdae-panel.previous"
 	}
+	same, err := sameDestination(binaryPath, backupPath)
+	if err != nil {
+		return nil, fmt.Errorf("核对面板二进制与回滚副本路径: %w", err)
+	}
+	if same {
+		return nil, errors.New("面板二进制与回滚副本不能使用同一个路径")
+	}
 	logger := options.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -122,8 +133,21 @@ func (m *Manager) Status(context.Context) Status {
 		BinaryPath: m.binaryPath,
 		Platform:   runtime.GOOS + "/" + runtime.GOARCH,
 	}
-	if _, err := os.Stat(m.backupPath); err == nil {
+	if m.replacementPendingRestart.Load() {
+		status.Problem = "面板二进制已经进入替换阶段，当前进程必须先手动重启，才能再次升级"
+		return status
+	}
+	backupInfo, backupErr := os.Lstat(m.backupPath)
+	switch {
+	case backupErr == nil:
+		if !backupInfo.Mode().IsRegular() {
+			status.Problem = fmt.Sprintf("回滚副本路径 %s 已存在且不是普通文件", m.backupPath)
+			return status
+		}
 		status.PreviousPath = m.backupPath
+	case !os.IsNotExist(backupErr):
+		status.Problem = fmt.Sprintf("检查回滚副本路径 %s：%v", m.backupPath, backupErr)
+		return status
 	}
 	// 发布包只有这三个架构；架构对不上时升级必然装出一个跑不起来的二进制
 	if _, err := upstream.PanelAssetName(runtime.GOARCH); err != nil {
@@ -202,22 +226,77 @@ func (m *Manager) Apply(ctx context.Context, binary upstream.PanelBinary) error 
 		return fmt.Errorf("备份当前版本: %w", err)
 	}
 
+	// 从这里开始，即使 Replace 报的是 rename 之后的目录同步失败，也不能再让旧进程
+	// 重试升级：磁盘状态可能已经改变，重试会把唯一的旧版副本覆盖成新版本。
+	m.replacementPendingRestart.Store(true)
 	if err := atomicfile.Replace(staged, m.binaryPath); err != nil {
 		return fmt.Errorf("替换可执行文件: %w", err)
 	}
 	m.logger.Info("面板已替换为新版本，即将重启自身",
 		"from", m.version, "to", binary.Version, "binary", m.binaryPath, "backup", m.backupPath)
 
-	// 重启请求延后发出，给 HTTP 响应留出送达时间；这里不再持有任何锁。
-	go func() {
-		time.Sleep(restartDelay)
-		// 用后台上下文：请求的 ctx 会随响应结束而取消，正好赶在重启之前。
-		if err := m.service.RestartSelf(context.Background()); err != nil {
-			m.logger.Error("请求重启面板自身失败，新版本要到下次重启才会生效",
-				"error", err, "binary", m.binaryPath)
-		}
-	}()
+	// 等待期间仍停留在同步 Apply 路径，调用方因此继续持有全局控制锁：
+	// 否则第二次升级会在重启前覆盖回滚副本，配置保存也可能被随后的重启打断。
+	// POST 已经返回 202；这里只给响应留出实际送达客户端的时间。
+	time.Sleep(restartDelay)
+	// 用后台上下文：下载阶段的超时不该在二进制已经替换后阻止重启。
+	if err := m.service.RestartSelf(context.Background()); err != nil {
+		return fmt.Errorf("新版本已写入 %s，但请求重启面板失败；请手动重启服务：%w",
+			m.binaryPath, err)
+	}
 	return nil
+}
+
+func sameDestination(left, right string) (bool, error) {
+	leftResolved, err := resolvedDestination(left)
+	if err != nil {
+		return false, err
+	}
+	rightResolved, err := resolvedDestination(right)
+	if err != nil {
+		return false, err
+	}
+	return leftResolved == rightResolved, nil
+}
+
+// resolvedDestination 解析已存在祖先里的符号链接，再把尚不存在的尾部接回去。
+// 只对完整路径做 EvalSymlinks 会在回滚文件尚未创建时失败，直接退回字符串比较
+// 又会漏掉 /alias -> /usr/bin 这种最终仍覆盖主二进制的配置。
+func resolvedDestination(value string) (string, error) {
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return "", err
+	}
+	current := filepath.Clean(absolute)
+	var missing []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		// EvalSymlinks 对“普通的未创建尾部”和“指向不存在目标的符号链接”都报
+		// ENOENT。逐级回退时用 Lstat 区分后者，否则 Status 会误报可升级，直到
+		// backupCurrent 的 MkdirAll 才暴露配置错误。
+		if info, lstatErr := os.Lstat(current); lstatErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", fmt.Errorf("路径包含悬空符号链接 %s", current)
+			}
+		} else if !os.IsNotExist(lstatErr) {
+			return "", lstatErr
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
 }
 
 // backupCurrent 复制当前二进制而不是改名它。

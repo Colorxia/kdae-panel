@@ -37,6 +37,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
 concurrency:
   group: release-smoke
   cancel-in-progress: false
@@ -77,19 +81,84 @@ jobs:
             exit 1
           fi
 
-          # 上一版取最新的正式发布（排除预发布与本次目标）：自升级要从旧版升到新版，
-          # 而预发布不进 releases/latest，不该作为"用户现有版本"的代表。
-          previous=$(api "https://api.github.com/repos/${{ github.repository }}/releases?per_page=30" \
-            | jq -r --arg target "${version}" \
-              '[.[] | select(.prerelease == false and .draft == false) | .tag_name]
-               | map(select(. != $target)) | .[0] // ""')
+          # 先锚定目标 release 的发布时间，再分页向前找版本号也严格更小的正式版。
+          # 不能简单取“最新且不等于目标”：手工回测旧 tag 时那会选到一个更新版本，
+          # 把所谓的自升级验证实际跑成降级。
+          target_release=$(api \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${version}")
+          target_published=$(jq -r '.published_at // empty' <<<"${target_release}")
+          if [[ -z ${target_published} ]]; then
+            echo "目标 release ${version} 缺少 published_at" >&2
+            exit 1
+          fi
+
+          version_before() {
+            local older=${1} newer=${2}
+            local older_major older_minor older_patch newer_major newer_minor newer_patch
+            if [[ ${older} =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              older_major=$((10#${BASH_REMATCH[1]}))
+              older_minor=$((10#${BASH_REMATCH[2]}))
+              older_patch=$((10#${BASH_REMATCH[3]}))
+            else
+              return 1
+            fi
+            if [[ ${newer} =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z._-]+)?$ ]]; then
+              newer_major=$((10#${BASH_REMATCH[1]}))
+              newer_minor=$((10#${BASH_REMATCH[2]}))
+              newer_patch=$((10#${BASH_REMATCH[3]}))
+            else
+              return 1
+            fi
+            if (( older_major != newer_major )); then
+              (( older_major < newer_major ))
+              return
+            fi
+            if (( older_minor != newer_minor )); then
+              (( older_minor < newer_minor ))
+              return
+            fi
+            (( older_patch < newer_patch ))
+          }
+
+          previous=""
+          previous_published=""
+          page=1
+          while (( page <= 100 )); do
+            releases=$(api \
+              "https://api.github.com/repos/${{ github.repository }}/releases?per_page=100&page=${page}")
+            count=$(jq 'length' <<<"${releases}")
+            if (( count == 0 )); then
+              break
+            fi
+            while IFS=$'\t' read -r candidate_published candidate; do
+              if version_before "${candidate}" "${version}" &&
+                 [[ -z ${previous_published} || ${candidate_published} > ${previous_published} ]]; then
+                previous=${candidate}
+                previous_published=${candidate_published}
+              fi
+            done < <(jq -r --arg before "${target_published}" '
+              .[] |
+              select(.draft == false and .prerelease == false and
+                     .published_at != null and .published_at < $before and
+                     (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))) |
+              [.published_at, .tag_name] | @tsv
+            ' <<<"${releases}")
+            page=$((page + 1))
+          done
+          if (( page > 100 )); then
+            echo "扫描 100 页 release 后仍无法确定 ${version} 的前驱版本" >&2
+            exit 1
+          fi
 
           # 自升级是 v0.3.0 才有的能力，更早的版本没有那个端点，
           # 拿它做起点只会得到一个与被测代码无关的失败。
           testable=false
-          if [[ -n ${previous} ]] &&
-             [[ $(printf '%s\n' v0.3.0 "${previous}" | sort -V | head -n1) == v0.3.0 ]]; then
+          if [[ -n ${previous} ]] && ! version_before "${previous}" v0.3.0; then
             testable=true
+          fi
+          if version_before v0.3.0 "${version}" && [[ ${testable} != true ]]; then
+            echo "${version} 应从支持自升级的历史版本开始验证，但没有找到 v0.3.0 及以上的正式前驱" >&2
+            exit 1
           fi
 
           {
@@ -99,12 +168,98 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "目标 ${version}；上一版 ${previous:-（无）}；自升级可验证：${testable}"
 
+  # amd64 真机冒烟覆盖不到另外两个发布资产；逐包核对摘要和完整布局，
+  # 再用 QEMU 真执行 arm64 / riscv64 二进制，不能只看一个仍可能来自旧包的 ELF 头。
+  assets:
+    needs: target
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.target.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: 安装跨架构执行器
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y qemu-user-static
+
+      - name: 三架构发布包应完整、可执行且版本正确
+        run: |
+          workdir=$(mktemp -d)
+          trap 'rm -rf "${workdir}"' EXIT
+          cd "${workdir}"
+          base="https://github.com/${{ github.repository }}/releases/download/${VERSION}"
+          curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -o SHA256SUMS "${base}/SHA256SUMS"
+
+          declare -A machines=(
+            [amd64]='Advanced Micro Devices X86-64'
+            [arm64]='AArch64'
+            [riscv64]='RISC-V'
+          )
+          for arch in amd64 arm64 riscv64; do
+            package="kdae-panel_linux_${arch}"
+            archive="${package}.tar.gz"
+            curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -o "${archive}" "${base}/${archive}"
+            expected=$(awk -v name="./${archive}" '$2 == name { print $1 }' SHA256SUMS)
+            if [[ ! ${expected} =~ ^[0-9a-fA-F]{64}$ ]]; then
+              echo "SHA256SUMS 里没有 ${archive} 的有效摘要" >&2
+              exit 1
+            fi
+            printf '%s  %s\n' "${expected}" "${archive}" | sha256sum -c -
+
+            extracted="${workdir}/extracted-${arch}"
+            mkdir -p "${extracted}"
+            tar -xzf "${archive}" -C "${extracted}"
+            root="${extracted}/${package}"
+            for required in kdae-panel kdae-panel.service kdae-panel.env install.sh uninstall.sh LICENSE README.md; do
+              if [[ ! -f ${root}/${required} || -L ${root}/${required} ]]; then
+                echo "${archive} 缺少普通文件 ${package}/${required}" >&2
+                exit 1
+              fi
+            done
+            for executable in kdae-panel install.sh uninstall.sh; do
+              if [[ ! -x ${root}/${executable} ]]; then
+                echo "${archive} 内 ${executable} 没有可执行权限" >&2
+                exit 1
+              fi
+            done
+
+            binary="${root}/kdae-panel"
+            machine=$(LC_ALL=C readelf -h "${binary}" |
+              awk -F: '$1 ~ /^[[:space:]]*Machine$/ { sub(/^[[:space:]]+/, "", $2); print $2 }')
+            if [[ ${machine} != "${machines[${arch}]}" ]]; then
+              echo "${archive} 内 ELF 架构 = '${machine}'，期望 '${machines[${arch}]}'" >&2
+              exit 1
+            fi
+            case ${arch} in
+              amd64) reported=$("${binary}" -version) ;;
+              arm64) reported=$(qemu-aarch64-static "${binary}" -version) ;;
+              riscv64) reported=$(qemu-riscv64-static "${binary}" -version) ;;
+            esac
+            if [[ ${reported} != "${VERSION}" ]]; then
+              echo "${archive} 自报版本 = '${reported}'，期望 '${VERSION}'" >&2
+              exit 1
+            fi
+          done
+
   smoke:
     needs: target
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.x'
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: 安装真实浏览器冒烟依赖
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
 
       # 走用户真正会执行的那条路径：仓库里的 get.sh 下载并校验发布包，
       # 再由包内的 install.sh 完成安装。预发布不会成为 latest，
@@ -146,20 +301,43 @@ jobs:
       - name: 首次初始化链接应出现在服务日志中
         run: |
           # 这是新装机器唯一的进入方式，日志里没有它就等于装完进不去
-          sudo journalctl -u kdae-panel.service --no-pager | grep -q 'setup_url'
+          sudo journalctl -u kdae-panel.service --no-pager > /tmp/kdae-panel-journal
+          grep -q 'setup_url' /tmp/kdae-panel-journal
 
       - name: 前端资源应可访问
         run: |
-          curl -fsS http://127.0.0.1:2023/ | grep -q '<div id="app">'
+          curl -fsS http://127.0.0.1:2023/ -o /tmp/kdae-panel-index.html
+          grep -q '<div id="app">' /tmp/kdae-panel-index.html
           # 入口页必须不可缓存，否则升级后用户仍停在旧界面（v0.1.2 修复的问题）
-          curl -fsSI http://127.0.0.1:2023/ | grep -qi 'cache-control: no-cache'
+          curl -fsSI http://127.0.0.1:2023/ -o /tmp/kdae-panel-headers
+          grep -qi '^cache-control: no-cache' /tmp/kdae-panel-headers
+
+      - name: 发布包内的前端应在真实浏览器中启动
+        working-directory: e2e
+        env:
+          BASE: http://127.0.0.1:2023/
+        run: node release-smoke.mjs
 
       - name: 卸载并清除数据
-        run: sudo KDAE_PANEL_PURGE=true bash /usr/share/kdae-panel/uninstall.sh
+        env:
+          # 工作流文件刚推到 main 时 latest 还是旧包，新断言只能由当前检出脚本自证；
+          # release 调用会显式传版本，仍然必须验证发布包内的实际副本。
+          USE_CHECKOUT_UNINSTALL: ${{ github.event_name == 'push' && inputs.version == '' }}
+        run: |
+          # 模拟用户通过 systemctl edit 留下的高权限 override，卸载必须一并清掉。
+          sudo mkdir -p /etc/systemd/system/kdae-panel.service.d
+          printf '[Service]\nReadWritePaths=/usr/bin\n' |
+            sudo tee /etc/systemd/system/kdae-panel.service.d/override.conf >/dev/null
+          uninstall=/usr/share/kdae-panel/uninstall.sh
+          if [[ ${USE_CHECKOUT_UNINSTALL} == true ]]; then
+            uninstall=scripts/uninstall.sh
+          fi
+          sudo KDAE_PANEL_PURGE=true bash "${uninstall}"
 
       - name: 卸载应清理干净
         run: |
           for leftover in /usr/bin/kdae-panel /etc/systemd/system/kdae-panel.service \
+            /etc/systemd/system/kdae-panel.service.d \
             /usr/share/kdae-panel /etc/kdae-panel /var/lib/kdae-panel; do
             if [[ -e ${leftover} ]]; then
               echo "卸载后仍残留 ${leftover}" >&2
@@ -167,7 +345,8 @@ jobs:
             fi
           done
           # 单元不该再被 systemd 认识
-          if systemctl list-unit-files kdae-panel.service 2>/dev/null | grep -q kdae-panel; then
+          systemctl list-unit-files kdae-panel.service > /tmp/kdae-panel-units
+          if grep -q kdae-panel /tmp/kdae-panel-units; then
             echo "systemd 中仍存在 kdae-panel 单元" >&2
             exit 1
           fi
@@ -214,11 +393,12 @@ jobs:
           # 与 docs/deployment.md 里给用户的步骤一致：改 env、加 ReadWritePaths。
           # 这里顺带验证那份文档是对的——写错了这一步会当场失败。
           env_file=/etc/kdae-panel/kdae-panel.env
-          if grep -q '^KDAE_PANEL_ENABLE_SELF_UPDATE=' "${env_file}"; then
+          if sudo grep -q '^KDAE_PANEL_ENABLE_SELF_UPDATE=' "${env_file}"; then
             sudo sed -i 's/^KDAE_PANEL_ENABLE_SELF_UPDATE=.*/KDAE_PANEL_ENABLE_SELF_UPDATE=true/' "${env_file}"
           else
             echo 'KDAE_PANEL_ENABLE_SELF_UPDATE=true' | sudo tee -a "${env_file}"
           fi
+          test "$(sudo grep -c '^KDAE_PANEL_ENABLE_SELF_UPDATE=' "${env_file}")" -eq 1
           sudo mkdir -p /etc/systemd/system/kdae-panel.service.d
           printf '[Service]\nReadWritePaths=/usr/bin\n' \
             | sudo tee /etc/systemd/system/kdae-panel.service.d/self-update.conf
@@ -233,8 +413,9 @@ jobs:
       - name: 建立管理员会话
         run: |
           # 一次性初始化链接只出现在服务日志里，这也顺带验证了它可用
-          token=$(sudo journalctl -u kdae-panel.service --no-pager \
-            | grep -o 'bootstrap=[A-Za-z0-9_-]*' | tail -n1 | cut -d= -f2)
+          sudo journalctl -u kdae-panel.service --no-pager > /tmp/kdae-panel-journal
+          token=$(grep -o 'bootstrap=[A-Za-z0-9_-]*' /tmp/kdae-panel-journal |
+            tail -n1 | cut -d= -f2)
           test -n "${token}"
           curl -fsS -c /tmp/jar -X POST -H 'Content-Type: application/json' \
             -d "{\"token\":\"${token}\"}" "${BASE}/api/v1/auth/bootstrap"
@@ -265,8 +446,14 @@ jobs:
         run: |
           # 替换、重启、新进程接管都要时间，且期间请求必然失败；
           # 只认"健康接口报出目标版本"这一个成功信号。
+          got=""
           for _ in $(seq 1 60); do
-            got=$(curl -fsS "${BASE}/api/v1/health" 2>/dev/null | jq -r '.version' 2>/dev/null || true)
+            if curl -fsS "${BASE}/api/v1/health" -o /tmp/updated-health.json 2>/dev/null &&
+               candidate=$(jq -er '.version' /tmp/updated-health.json 2>/dev/null); then
+              got=${candidate}
+            else
+              got=""
+            fi
             if [[ ${got} == "${TARGET}" ]]; then
               echo "已升级到 ${got}"
               exit 0
@@ -292,11 +479,78 @@ jobs:
           # 文档给出的还原命令依赖它可执行
           sudo test -x "${backup}"
 
+      - name: 按文档命令回滚后应恢复上一版
+        run: |
+          rollback=$(sudo mktemp /usr/bin/.kdae-panel-rollback.XXXXXX)
+          main_pid=""
+          resume_needed=false
+          cleanup_rollback() {
+            if [[ ${resume_needed} == true && -n ${main_pid} ]]; then
+              sudo kill -CONT "${main_pid}" 2>/dev/null || true
+            fi
+            sudo rm -f "${rollback}"
+          }
+          trap cleanup_rollback EXIT
+          sudo install -m0755 /var/lib/kdae-panel/kdae-panel.previous "${rollback}"
+          main_pid=$(systemctl show kdae-panel.service --property=MainPID --value)
+          if [[ ! ${main_pid} =~ ^[1-9][0-9]*$ ]]; then
+            echo "回滚前没有运行中的面板 MainPID（得到 '${main_pid}'）" >&2
+            exit 1
+          fi
+          running_exe=$(sudo readlink -f "/proc/${main_pid}/exe")
+          if [[ ${running_exe} != /usr/bin/kdae-panel ]]; then
+            echo "MainPID ${main_pid} 执行的是 ${running_exe}，不是待覆盖的面板二进制" >&2
+            exit 1
+          fi
+
+          # 固定住正在执行目标文件的进程，证明随后的 mv 确实覆盖了 ETXTBSY 场景，
+          # 而不是碰巧在进程已经退出后才成功。
+          sudo kill -STOP "${main_pid}"
+          resume_needed=true
+          state=""
+          for _ in $(seq 1 20); do
+            state=$(awk '/^State:/ { print $2 }' "/proc/${main_pid}/status")
+            if [[ ${state} == T || ${state} == t ]]; then
+              break
+            fi
+            sleep 0.1
+          done
+          if [[ ${state} != T && ${state} != t ]]; then
+            echo "MainPID ${main_pid} 未进入停止态（state=${state}）" >&2
+            exit 1
+          fi
+          sudo mv -f "${rollback}" /usr/bin/kdae-panel
+          sudo kill -CONT "${main_pid}"
+          resume_needed=false
+          trap - EXIT
+          sudo systemctl restart kdae-panel.service
+
+          got=""
+          for _ in $(seq 1 30); do
+            if curl -fsS "${BASE}/api/v1/health" -o /tmp/rollback-health.json 2>/dev/null &&
+               candidate=$(jq -er '.version' /tmp/rollback-health.json 2>/dev/null); then
+              got=${candidate}
+            else
+              got=""
+            fi
+            if [[ ${got} == "${PREVIOUS}" ]]; then
+              break
+            fi
+            sleep 2
+          done
+          if [[ ${got} != "${PREVIOUS}" ]]; then
+            echo "回滚后版本 = '${got:-（无响应）}'，期望 ${PREVIOUS}" >&2
+            exit 1
+          fi
+          test "$(sudo /usr/bin/kdae-panel -version)" = "${PREVIOUS}"
+
       - name: 升级后仍可正常卸载
         run: |
-          sudo KDAE_PANEL_PURGE=true bash /usr/share/kdae-panel/uninstall.sh
+          # 自升级刻意只替换二进制，/usr/share 下的离线脚本仍属于起点版本；
+          # 这里用目标提交里的脚本验证本次发布的卸载逻辑，目标包内副本由 smoke 作业验证。
+          sudo KDAE_PANEL_PURGE=true bash scripts/uninstall.sh
           for leftover in /usr/bin/kdae-panel /var/lib/kdae-panel/kdae-panel.previous \
-            /etc/kdae-panel /var/lib/kdae-panel; do
+            /etc/systemd/system/kdae-panel.service.d /etc/kdae-panel /var/lib/kdae-panel; do
             if [[ -e ${leftover} ]]; then
               echo "卸载后仍残留 ${leftover}" >&2
               exit 1

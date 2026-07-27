@@ -10,6 +10,8 @@
 
 ## 一键部署
 
+以下命令须在 root shell 中执行（OpenWrt 默认登录即 root；普通发行版可先运行 `sudo -i`）：
+
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/get.sh)"
 ```
@@ -147,15 +149,16 @@ systemctl restart kdae-panel
 
 ```bash
 env_file=/etc/kdae-panel/kdae-panel.env
-if grep -q '^KDAE_PANEL_ENABLE_SELF_UPDATE=' "$env_file"; then
-  sed -i 's/^KDAE_PANEL_ENABLE_SELF_UPDATE=.*/KDAE_PANEL_ENABLE_SELF_UPDATE=true/' "$env_file"
+if sudo grep -q '^KDAE_PANEL_ENABLE_SELF_UPDATE=' "$env_file"; then
+  sudo sed -i 's/^KDAE_PANEL_ENABLE_SELF_UPDATE=.*/KDAE_PANEL_ENABLE_SELF_UPDATE=true/' "$env_file"
 else
-  echo 'KDAE_PANEL_ENABLE_SELF_UPDATE=true' >> "$env_file"
+  echo 'KDAE_PANEL_ENABLE_SELF_UPDATE=true' | sudo tee -a "$env_file" >/dev/null
 fi
+test "$(sudo grep -c '^KDAE_PANEL_ENABLE_SELF_UPDATE=' "$env_file")" -eq 1
 
 # 让面板能写入自己所在的目录
-systemctl edit kdae-panel    # 追加 ReadWritePaths=/usr/bin
-systemctl restart kdae-panel
+sudo systemctl edit kdae-panel    # 追加 ReadWritePaths=/usr/bin
+sudo systemctl restart kdae-panel
 ```
 
 **这个开关的代价要说透**：它让面板能改写自己的可执行文件，因此面板本身的任何可利用缺陷都能被写成持久化的任意代码——严重程度不低于 dae 版本管理。不开也完全够用：新版本提醒始终可用，在服务器上重跑一次一键部署命令即可升级，配置与账号数据同样保留。
@@ -163,11 +166,19 @@ systemctl restart kdae-panel
 **没有自动回滚。** 被替换、被重启的是当前进程自己，一旦 systemd 把它停掉就无从执行补救。风险因此前移：替换之前先运行新二进制的 `-version` 让它自证能在这台机器上跑起来，版本对不上或跑不起来就中止，原文件一个字节都不动。替换时把上一版复制到 `KDAE_PANEL_BACKUP_FILE`，万一新版本起不来：
 
 ```bash
-install -m0755 /var/lib/kdae-panel/kdae-panel.previous /usr/bin/kdae-panel
-systemctl restart kdae-panel
+rollback=$(sudo mktemp /usr/bin/.kdae-panel-rollback.XXXXXX)
+trap 'sudo rm -f "$rollback"' EXIT
+sudo install -m0755 /var/lib/kdae-panel/kdae-panel.previous "$rollback"
+sudo mv -f "$rollback" /usr/bin/kdae-panel
+trap - EXIT
+sudo systemctl restart kdae-panel
 ```
 
 升级期间面板会短暂无法访问（通常几秒）。**dae 与代理流量完全不受影响**——面板只是管理界面，它的重启不碰 dae 的任何东西。
+
+一键自升级只替换面板二进制（前端已嵌入其中），不会扩大权限去改写 `/usr/share`、
+systemd 单元或 env 模板；这些配套文件仍属于最近一次完整安装的版本。Release notes 若注明单元或
+脚本有变更，请重跑一键部署完成整包升级。卸载时优先使用上面的联网命令获取最新脚本。
 
 ### 启用 geo 数据更新
 
@@ -273,6 +284,8 @@ sudo systemctl restart dae
 
 一键卸载（信任边界是一键部署的子集：只有 `raw.githubusercontent.com` 上 main 分支的脚本本身，不涉及 Release 资产，因此也没有校验和环节）：
 
+以下命令同样须在 root shell 中执行：
+
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)"
 ```
@@ -285,7 +298,7 @@ sudo bash /usr/share/kdae-panel/uninstall.sh
 
 源码检出还在的话，`sudo ./scripts/uninstall.sh` 同样等效。
 
-默认保留 `/etc/kdae-panel` 与 `/var/lib/kdae-panel`（配置、账户数据库、配置备份、dae 回滚副本），确认不再需要后可用清除模式重跑。本地副本会随普通卸载一起移除，因此重跑要用一键命令（或源码检出）：
+默认保留 `/etc/kdae-panel` 与 `/var/lib/kdae-panel`（配置、账户数据库、配置备份、dae 回滚副本），但主服务单元及其 `kdae-panel.service.d` override 会一并移除，避免重装后意外恢复高权限。确认数据不再需要后可用清除模式重跑。本地副本会随普通卸载一起移除，因此重跑要用一键命令（或源码检出）：
 
 ```bash
 sudo KDAE_PANEL_PURGE=true bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)"

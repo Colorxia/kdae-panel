@@ -81,11 +81,13 @@ ssh -L 2023:127.0.0.1:2023 root@router.example
 
 ## 卸载
 
+以下命令须在 root shell 中执行：
+
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)"
 ```
 
-默认只移除程序与服务单元，配置、账户数据库与配置备份全部保留；要连数据一并清除，在命令前加 `KDAE_PANEL_PURGE=true`。两种模式都不触碰 dae——它的服务、二进制、配置与 geo 数据原样保留。安装时会在本地落一份等效脚本，离线也可卸载：`sudo bash /usr/share/kdae-panel/uninstall.sh`；这份文件不存在的话（早期安装脚本不落盘），用上面的一键命令即可。
+默认移除程序、服务单元及其 systemd override，配置、账户数据库与配置备份全部保留；清理 override 是为了避免重装后意外恢复 `/usr/bin` 等高权限写路径。要连数据一并清除，在命令前加 `KDAE_PANEL_PURGE=true`。两种模式都不触碰 dae——它的服务、二进制、配置与 geo 数据原样保留。安装时会在本地落一份等效脚本，离线也可卸载：`sudo bash /usr/share/kdae-panel/uninstall.sh`；一键自升级只替换二进制，这份离线脚本仍属于最近一次完整安装的版本，联网时优先使用上面的最新脚本。
 
 ## 开发
 

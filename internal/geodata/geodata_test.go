@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tuoro/kdae-panel/internal/host"
 	"github.com/tuoro/kdae-panel/internal/upstream"
@@ -72,9 +73,37 @@ func (r *fakeReloader) Reload(context.Context) error {
 	return nil
 }
 
+// testDirectory 在 Windows 上给刚关闭文件的过滤驱动一个短暂释放窗口。
+//
+// t.TempDir 的清理会立即把 RemoveAll 的一次性失败记为测试失败；Defender 等过滤
+// 驱动偶尔还持有刚完成原子改名的目录项，随后目录已经是空的。这里仅重试清理，
+// 超过窗口仍删不掉就照常让测试失败，避免掩盖真实的文件句柄泄漏。
+func testDirectory(t *testing.T) string {
+	t.Helper()
+	directory, err := os.MkdirTemp("", "kdae-panel-geodata-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			err := os.RemoveAll(directory)
+			if err == nil || os.IsNotExist(err) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Errorf("清理临时目录 %s: %v", directory, err)
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
+	return directory
+}
+
 func newTestManager(t *testing.T) (*Manager, *fakeFetcher, *fakeReloader, string) {
 	t.Helper()
-	directory := t.TempDir()
+	directory := testDirectory(t)
 	fetcher := &fakeFetcher{
 		release: upstream.GeoRelease{Tag: "202607252248"},
 		files: map[string][]byte{
@@ -233,7 +262,7 @@ func TestCommitFailureKeepsOldDataInPlace(t *testing.T) {
 
 // 还原也失败时，回滚点是仅存的一份旧数据，绝不能被 cleanup 顺手删掉。
 func TestFailedRollbackKeepsBackup(t *testing.T) {
-	directory := t.TempDir()
+	directory := testDirectory(t)
 	seedGeo(t, directory, upstream.GeoIPName, "old-geoip")
 
 	transaction := &geoTransaction{directory: directory}
@@ -363,7 +392,7 @@ func TestStatusReportsShadowedCopies(t *testing.T) {
 // /usr/local/share/dae，改往配置目录写会生成一份优先级更高的副本，从此用户跑
 // 上游更新脚本毫无效果且没有任何提示。
 func TestTargetDirFollowsEffectiveFile(t *testing.T) {
-	directory := t.TempDir()
+	directory := testDirectory(t)
 	system := filepath.Join(directory, "usr-local-share-dae")
 	seedGeo(t, system, upstream.GeoIPName, "installed-by-dae-installer")
 
@@ -375,7 +404,7 @@ func TestTargetDirFollowsEffectiveFile(t *testing.T) {
 }
 
 func TestTargetDirFallsBackToConfigDir(t *testing.T) {
-	directory := t.TempDir()
+	directory := testDirectory(t)
 	configDir := filepath.Join(directory, "etc-dae")
 	files := locate([]string{configDir, filepath.Join(directory, "system")}, Names)
 	if target := targetDir(files, configDir); target != configDir {

@@ -235,9 +235,9 @@ func TestStatusReportsUnwritableBinaryDir(t *testing.T) {
 	}
 }
 
-// 重启请求失败不该让已完成的替换回退：新版本已在磁盘上，
-// 下次重启就会生效，此时谎报失败反而会诱导用户重复升级。
-func TestApplySucceedsEvenIfRestartRequestFails(t *testing.T) {
+// 重启请求失败时二进制已经替换，不能假装整次任务成功；
+// 错误必须明确要求手动重启，同时保留磁盘上的新版本。
+func TestApplyReportsRestartFailureAfterReplacement(t *testing.T) {
 	fetcher := &fakeFetcher{latest: "v0.2.0", binary: upstream.PanelBinary{Content: elfBytes("v0.2.0")}}
 	service := &fakeService{err: errors.New("systemctl 不可用")}
 	manager, binaryPath := newTestManager(t, fetcher, service)
@@ -246,12 +246,89 @@ func TestApplySucceedsEvenIfRestartRequestFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Apply(context.Background(), binary); err != nil {
-		t.Fatalf("替换已完成，不应因重启请求失败而报错: %v", err)
+	err = manager.Apply(context.Background(), binary)
+	if err == nil || !strings.Contains(err.Error(), "手动重启") {
+		t.Fatalf("重启失败应如实返回并给出恢复动作: %v", err)
 	}
 	content, _ := os.ReadFile(binaryPath)
 	if string(content) != string(elfBytes("v0.2.0")) {
 		t.Fatal("二进制应已替换")
 	}
-	waitRestart(t, service, 1)
+	if service.count() != 1 {
+		t.Fatalf("重启请求次数 = %d，期望 1", service.count())
+	}
+	status := manager.Status(context.Background())
+	if status.Updatable || !strings.Contains(status.Problem, "必须先手动重启") {
+		t.Fatalf("重启失败后不得再次升级并覆盖旧版副本: %+v", status)
+	}
+}
+
+func TestNewRejectsBackupAtBinaryPath(t *testing.T) {
+	directory := t.TempDir()
+	binaryPath := filepath.Join(directory, "kdae-panel")
+	_, err := New(Options{
+		Version:    "v0.1.0",
+		BinaryPath: binaryPath,
+		BackupPath: filepath.Join(directory, ".", "kdae-panel"),
+		Fetcher:    &fakeFetcher{},
+		Service:    &fakeService{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "不能使用同一个路径") {
+		t.Fatalf("回滚副本覆盖主二进制时应拒绝启动: %v", err)
+	}
+}
+
+func TestNewRejectsBackupThroughSymlinkedParent(t *testing.T) {
+	directory := t.TempDir()
+	binaryDir := filepath.Join(directory, "bin")
+	if err := os.MkdirAll(binaryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(directory, "alias")
+	if err := os.Symlink(binaryDir, alias); err != nil {
+		t.Skipf("当前环境不能创建目录符号链接: %v", err)
+	}
+	_, err := New(Options{
+		Version:    "v0.1.0",
+		BinaryPath: filepath.Join(binaryDir, "kdae-panel"),
+		BackupPath: filepath.Join(alias, "kdae-panel"),
+		Fetcher:    &fakeFetcher{},
+		Service:    &fakeService{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "不能使用同一个路径") {
+		t.Fatalf("经符号链接覆盖主二进制时应拒绝启动: %v", err)
+	}
+}
+
+func TestNewRejectsBackupThroughDanglingSymlink(t *testing.T) {
+	directory := t.TempDir()
+	binaryDir := filepath.Join(directory, "bin")
+	if err := os.MkdirAll(binaryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dangling := filepath.Join(directory, "dangling")
+	if err := os.Symlink(filepath.Join(directory, "missing"), dangling); err != nil {
+		t.Skipf("当前环境不能创建目录符号链接: %v", err)
+	}
+	_, err := New(Options{
+		Version:    "v0.1.0",
+		BinaryPath: filepath.Join(binaryDir, "kdae-panel"),
+		BackupPath: filepath.Join(dangling, "kdae-panel.previous"),
+		Fetcher:    &fakeFetcher{},
+		Service:    &fakeService{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "悬空符号链接") {
+		t.Fatalf("回滚路径经过悬空符号链接时应拒绝启动: %v", err)
+	}
+}
+
+func TestStatusRejectsNonRegularBackupTarget(t *testing.T) {
+	manager, _ := newTestManager(t, &fakeFetcher{}, &fakeService{})
+	if err := os.MkdirAll(manager.backupPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	status := manager.Status(context.Background())
+	if status.Updatable || !strings.Contains(status.Problem, "不是普通文件") {
+		t.Fatalf("目录不能作为回滚副本: %+v", status)
+	}
 }
