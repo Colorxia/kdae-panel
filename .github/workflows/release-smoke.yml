@@ -332,24 +332,33 @@ jobs:
           if [[ ${USE_CHECKOUT_UNINSTALL} == true ]]; then
             uninstall=scripts/uninstall.sh
           fi
+          echo "卸载脚本：${uninstall}（使用当前检出：${USE_CHECKOUT_UNINSTALL}）"
           sudo KDAE_PANEL_PURGE=true bash "${uninstall}"
 
       - name: 卸载应清理干净
         run: |
+          failures=0
           for leftover in /usr/bin/kdae-panel /etc/systemd/system/kdae-panel.service \
             /etc/systemd/system/kdae-panel.service.d \
             /usr/share/kdae-panel /etc/kdae-panel /var/lib/kdae-panel; do
-            if [[ -e ${leftover} ]]; then
-              echo "卸载后仍残留 ${leftover}" >&2
-              exit 1
+            # -e 看不到悬空符号链接；卸载验证不能把这种残留当作不存在。
+            if [[ -e ${leftover} || -L ${leftover} ]]; then
+              echo "::error::卸载后仍残留 ${leftover}"
+              sudo ls -lad "${leftover}" || true
+              failures=1
             fi
           done
           # 单元不该再被 systemd 认识
-          systemctl list-unit-files kdae-panel.service > /tmp/kdae-panel-units
-          if grep -q kdae-panel /tmp/kdae-panel-units; then
-            echo "systemd 中仍存在 kdae-panel 单元" >&2
-            exit 1
+          if ! systemctl list-unit-files kdae-panel.service > /tmp/kdae-panel-units; then
+            echo "::error::systemctl 无法列出卸载后的单元状态"
+            failures=1
           fi
+          cat /tmp/kdae-panel-units
+          if grep -q kdae-panel /tmp/kdae-panel-units; then
+            echo "::error::systemd 中仍存在 kdae-panel 单元"
+            failures=1
+          fi
+          exit "${failures}"
 
   # 自升级：一个进程替换掉自己的可执行文件、再让 systemd 把自己重启。
   #
