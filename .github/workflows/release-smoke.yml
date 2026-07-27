@@ -11,6 +11,17 @@ name: 发布装机验证
 # GitHub 的 ubuntu runner 里 systemd 是 PID 1，因此单元能真的启动，
 # ProtectSystem=strict / ProtectHome=true 那套沙箱也会真的生效。
 on:
+  # 主路径：由发布流水线在发布完成后直接调用。
+  #
+  # 不能只靠 release: published——用 GITHUB_TOKEN 创建的 release 不会触发新的
+  # 工作流（GitHub 为防递归的明文限制），而本仓库的 release 正是流水线用该
+  # token 发的。实测过：v0.3.0 发布后这个触发器毫无动静。
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+  # 手工发布（比如在网页上直接建 release）时仍然有效。
   release:
     types: [published]
   workflow_dispatch:
@@ -40,7 +51,8 @@ jobs:
       - name: 确定待验证版本
         id: target
         env:
-          # release 事件给出本次发布的 tag；手动触发用输入；push 自检取 latest。
+          # workflow_call 与手动触发走 inputs；release 事件给出本次发布的 tag；
+          # push 自检两者皆空，退回 releases/latest。
           EVENT_TAG: ${{ github.event.release.tag_name }}
           INPUT_TAG: ${{ inputs.version }}
         run: |

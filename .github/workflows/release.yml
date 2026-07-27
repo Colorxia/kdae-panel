@@ -59,3 +59,14 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS
+
+  # 发布完成后立即真装一遍。
+  #
+  # 必须在这里显式调用，不能指望装机验证自己的 release: published 触发器：
+  # 用 GITHUB_TOKEN 创建的 release 不会触发新的工作流，那个触发器对本流水线
+  # 发出的版本永远不响（v0.3.0 实测如此）。
+  smoke:
+    needs: release
+    uses: ./.github/workflows/release-smoke.yml
+    with:
+      version: ${{ github.ref_name }}
