@@ -730,6 +730,21 @@ pre,
   color: var(--accent);
 }
 
+.update-banner-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+@media (max-width: 820px) {
+  .update-banner-body {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+}
+
 @media (max-width: 820px) {
   .auth-page {
     grid-template-columns: 1fr;

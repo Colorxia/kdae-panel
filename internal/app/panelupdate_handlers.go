@@ -2,21 +2,30 @@ package app
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tuoro/kdae-panel/internal/panelupdate"
+	"github.com/tuoro/kdae-panel/internal/upstream"
 )
 
 // PanelReleaseChecker 查询面板自身的最新发布 tag。
 type PanelReleaseChecker func(ctx context.Context) (string, error)
 
-// 面板自身的仓库坐标，新版本检查与一键部署脚本指向同一处。
-const (
-	panelRepoOwner = "tuoro"
-	panelRepoName  = "kdae-panel"
-)
+// PanelUpdateService 是面板自升级能力的消费者侧接口。
+type PanelUpdateService interface {
+	Status(ctx context.Context) panelupdate.Status
+	Download(ctx context.Context, version string) (upstream.PanelBinary, error)
+	Apply(ctx context.Context, binary upstream.PanelBinary) error
+}
+
+type panelUpdateRequest struct {
+	Version string `json:"version"`
+}
 
 type panelUpdate struct {
 	Current         string    `json:"current"`
@@ -30,29 +39,34 @@ const (
 	// 这是给人看的提醒，不追求新鲜度；但绝不能把 GitHub 接口打成限流。
 	panelUpdateCacheOK   = 6 * time.Hour
 	panelUpdateCacheFail = 15 * time.Minute
+	// 自升级要下载几兆的发布包，给得比接口超时宽裕。
+	panelUpdateTimeout = 10 * time.Minute
 )
 
-// registerPanelUpdateRoutes 提供 GET /api/v1/panel/update。
+// registerPanelUpdateRoutes 提供面板自身的版本检查与（可选的）一键自升级。
+//
 // checker 为 nil 表示检查被关闭（KDAE_PANEL_DISABLE_UPDATE_CHECK），
-// 端点仍然存在并如实说明，前端据此不再展示提醒。
-func registerPanelUpdateRoutes(router *http.ServeMux, current string, checker PanelReleaseChecker) {
+// service 为 nil 表示自升级未启用（KDAE_PANEL_ENABLE_SELF_UPDATE）——
+// 两者独立：只想要提醒、不想给面板改写自身二进制的权限，是合理的部署选择。
+func registerPanelUpdateRoutes(router *http.ServeMux, current string, checker PanelReleaseChecker,
+	service PanelUpdateService, operations *sync.Mutex, logger *slog.Logger) {
 	var mu sync.Mutex
 	var cached panelUpdate
 	var expiresAt time.Time
+	jobs := &installJobs{job: Job{Phase: PhaseIdle}}
 
-	router.HandleFunc("GET /api/v1/panel/update", func(writer http.ResponseWriter, request *http.Request) {
+	check := func(ctx context.Context) panelUpdate {
 		mu.Lock()
 		defer mu.Unlock()
 		now := time.Now()
 		if now.Before(expiresAt) {
-			writeJSON(writer, http.StatusOK, cached)
-			return
+			return cached
 		}
 		result := panelUpdate{Current: current, CheckedAt: now.UTC()}
 		ttl := panelUpdateCacheOK
 		// dev 构建没有可比的版本号：不联网、不提示，而不是拿 dev 和 tag 硬比
 		if _, ok := parseSemver(current); checker != nil && ok {
-			latest, err := checker(request.Context())
+			latest, err := checker(ctx)
 			if err != nil {
 				result.Error = err.Error()
 				ttl = panelUpdateCacheFail
@@ -63,8 +77,90 @@ func registerPanelUpdateRoutes(router *http.ServeMux, current string, checker Pa
 		}
 		cached = result
 		expiresAt = now.Add(ttl)
-		writeJSON(writer, http.StatusOK, cached)
+		return cached
+	}
+
+	router.HandleFunc("GET /api/v1/panel/update", func(writer http.ResponseWriter, request *http.Request) {
+		payload := map[string]any{"check": check(request.Context())}
+		if service != nil {
+			payload["status"] = service.Status(request.Context())
+			payload["job"] = jobs.snapshot()
+		}
+		writeJSON(writer, http.StatusOK, payload)
 	})
+
+	router.HandleFunc("POST /api/v1/panel/update", func(writer http.ResponseWriter, request *http.Request) {
+		if service == nil {
+			writeAPIError(writer, http.StatusServiceUnavailable, "panel_self_update_disabled",
+				"面板自升级未启用，请设置 KDAE_PANEL_ENABLE_SELF_UPDATE=true")
+			return
+		}
+		payload := panelUpdateRequest{}
+		if !decodeOptionalJSONBody(writer, request, &payload) {
+			return
+		}
+		if payload.Version != "" && !validVersionTag(payload.Version) {
+			writeAPIError(writer, http.StatusBadRequest, "invalid_panel_version",
+				"版本号需与发布 tag 一致，形如 v0.2.0")
+			return
+		}
+		status := service.Status(request.Context())
+		if !status.Updatable {
+			writeAPIError(writer, http.StatusConflict, "panel_self_update_unavailable", status.Problem)
+			return
+		}
+		if !jobs.begin(PhaseDownloading, "panel", payload.Version, "面板自身") {
+			writeAPIError(writer, http.StatusConflict, "panel_self_update_in_progress", "已有升级任务正在执行")
+			return
+		}
+		go runPanelUpdate(jobs, service, operations, logger, payload.Version)
+		writeJSON(writer, http.StatusAccepted, map[string]any{"job": jobs.snapshot()})
+	})
+}
+
+// validVersionTag 与一键部署脚本对 KDAE_PANEL_VERSION 的校验保持一致：
+// 拼进下载地址之前拦住含斜杠、空白等会改写路径或让请求离奇失败的取值。
+func validVersionTag(value string) bool {
+	if len(value) < 2 || value[0] != 'v' {
+		return false
+	}
+	for _, char := range value[1:] {
+		switch {
+		case char >= '0' && char <= '9', char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z':
+		case char == '.', char == '_', char == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func runPanelUpdate(jobs *installJobs, service PanelUpdateService, operations *sync.Mutex,
+	logger *slog.Logger, version string) {
+	ctx, cancel := context.WithTimeout(context.Background(), panelUpdateTimeout)
+	defer cancel()
+
+	// 下载与校验不触碰任何共享状态，因此不占控制锁。
+	binary, err := service.Download(ctx, version)
+	if err != nil {
+		logger.Warn("下载面板新版本失败", "error", err)
+		jobs.finish(err)
+		return
+	}
+
+	jobs.advance(PhaseApplying)
+	// 替换自身之前先拿控制锁：正在进行的配置保存或 dae 安装不该被一次
+	// 自我重启从中间打断。
+	operations.Lock()
+	defer operations.Unlock()
+	if err := service.Apply(ctx, binary); err != nil {
+		logger.Warn("升级面板失败", "error", err)
+		jobs.finish(err)
+		return
+	}
+	// 走到这里进程即将被 systemd 停掉。把任务标记为完成只是尽力而为——
+	// 状态本就随进程消失，界面靠"健康接口报出新版本"确认升级成功。
+	jobs.finish(nil)
 }
 
 type semver struct {

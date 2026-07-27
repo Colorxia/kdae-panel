@@ -24,6 +24,7 @@ import (
 	"github.com/tuoro/kdae-panel/internal/geodata"
 	"github.com/tuoro/kdae-panel/internal/host"
 	"github.com/tuoro/kdae-panel/internal/netprobe"
+	"github.com/tuoro/kdae-panel/internal/panelupdate"
 	"github.com/tuoro/kdae-panel/internal/schedule"
 	"github.com/tuoro/kdae-panel/internal/upstream"
 )
@@ -814,6 +815,7 @@ func newUpdateCheckApp(t *testing.T, version string, checker PanelReleaseChecker
 	return application
 }
 
+// fetchPanelUpdate 返回响应里的 check 部分——自升级未启用时那是全部内容。
 func fetchPanelUpdate(t *testing.T, application *App) map[string]any {
 	t.Helper()
 	recorder := httptest.NewRecorder()
@@ -821,11 +823,139 @@ func fetchPanelUpdate(t *testing.T, application *App) map[string]any {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d，响应 = %s", recorder.Code, recorder.Body.String())
 	}
-	var payload map[string]any
+	var payload struct {
+		Check map[string]any `json:"check"`
+	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	return payload
+	return payload.Check
+}
+
+type stubPanelUpdateService struct {
+	status    panelupdate.Status
+	mu        sync.Mutex
+	applied   int
+	requested string
+	err       error
+}
+
+func (s *stubPanelUpdateService) Status(context.Context) panelupdate.Status { return s.status }
+
+func (s *stubPanelUpdateService) Download(_ context.Context, version string) (upstream.PanelBinary, error) {
+	s.mu.Lock()
+	s.requested = version
+	s.mu.Unlock()
+	if s.err != nil {
+		return upstream.PanelBinary{}, s.err
+	}
+	return upstream.PanelBinary{Version: version, Content: []byte("\x7fELF")}, nil
+}
+
+func (s *stubPanelUpdateService) Apply(context.Context, upstream.PanelBinary) error {
+	s.mu.Lock()
+	s.applied++
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *stubPanelUpdateService) applyCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.applied
+}
+
+// 未启用自升级时必须返回可读的 panel_self_update_disabled：
+// 前端据此不显示升级按钮，落到 api_not_found 会被当成版本不匹配。
+func TestPanelSelfUpdateDisabledByDefault(t *testing.T) {
+	application := newUpdateCheckApp(t, "v0.1.0", nil)
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/panel/update", nil))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("状态码 = %d，期望 503", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "panel_self_update_disabled") {
+		t.Fatalf("响应应说明功能未启用: %s", recorder.Body.String())
+	}
+}
+
+func newSelfUpdateApp(t *testing.T, service PanelUpdateService) *App {
+	t.Helper()
+	application, err := NewWithDependencies(
+		Config{Version: "v0.1.0"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{Dae: stubDaeService{}, PanelUpdate: service},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return application
+}
+
+func TestPanelSelfUpdateRunsAsynchronously(t *testing.T) {
+	service := &stubPanelUpdateService{status: panelupdate.Status{Updatable: true}}
+	application := newSelfUpdateApp(t, service)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/panel/update",
+		strings.NewReader(`{"version":"v0.2.0"}`))
+	application.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("状态码 = %d，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && service.applyCount() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if service.applyCount() != 1 {
+		t.Fatalf("应用次数 = %d，期望 1", service.applyCount())
+	}
+	service.mu.Lock()
+	requested := service.requested
+	service.mu.Unlock()
+	if requested != "v0.2.0" {
+		t.Fatalf("请求的版本 = %q", requested)
+	}
+}
+
+// 目录不可写等情形要在启动任务前就挡住，并把原因如实带出。
+func TestPanelSelfUpdateRejectsWhenNotUpdatable(t *testing.T) {
+	service := &stubPanelUpdateService{status: panelupdate.Status{
+		Updatable: false,
+		Problem:   "面板无法写入 /usr/bin：只读文件系统",
+	}}
+	application := newSelfUpdateApp(t, service)
+
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/panel/update", nil))
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("状态码 = %d，期望 409", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "只读文件系统") {
+		t.Fatalf("应带出具体原因: %s", recorder.Body.String())
+	}
+	if service.applyCount() != 0 {
+		t.Fatal("不可升级时不得执行替换")
+	}
+}
+
+// 版本号会被拼进下载地址，含斜杠或空白的取值必须在拼接前拦住。
+func TestPanelSelfUpdateRejectsMalformedVersion(t *testing.T) {
+	service := &stubPanelUpdateService{status: panelupdate.Status{Updatable: true}}
+	application := newSelfUpdateApp(t, service)
+
+	for _, bad := range []string{`{"version":"../../etc"}`, `{"version":"v1 0"}`, `{"version":"1.0.0"}`} {
+		recorder := httptest.NewRecorder()
+		application.Handler().ServeHTTP(recorder,
+			httptest.NewRequest(http.MethodPost, "/api/v1/panel/update", strings.NewReader(bad)))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("%s 状态码 = %d，期望 400", bad, recorder.Code)
+		}
+	}
+	if service.applyCount() != 0 {
+		t.Fatal("非法版本不得触发升级")
+	}
 }
 
 // 新版本检查：结果必须缓存，dev 构建不联网也不提示。

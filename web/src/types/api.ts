@@ -185,12 +185,28 @@ export interface GeoStatus {
 }
 
 /** 面板自身的新版本检查结果；dev 构建或检查被关闭时 latest 为空。 */
-export interface PanelUpdate {
+export interface PanelUpdateCheck {
   current: string
   latest?: string
   updateAvailable: boolean
   checkedAt: string
   error?: string
+}
+
+/** 自升级的可行性；未启用该功能时整个字段不存在。 */
+export interface PanelUpdateStatus {
+  current: string
+  binaryPath: string
+  platform: string
+  updatable: boolean
+  problem?: string
+  previousPath?: string
+}
+
+export interface PanelUpdatePayload {
+  check: PanelUpdateCheck
+  status?: PanelUpdateStatus
+  job?: InstallJob
 }
 
 /** 定时任务（订阅自动刷新 / geo 自动更新）的设置与执行状态，两个端点同构。 */

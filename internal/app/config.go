@@ -27,6 +27,15 @@ type Config struct {
 	GeoStatePath string
 	// GeoSchedulePath 持久化 geo 数据自动更新的设置与上次执行时间。
 	GeoSchedulePath string
+	// PanelBackupPath 存放自升级时被替换掉的上一版面板二进制。
+	PanelBackupPath string
+	// EnableSelfUpdate 打开面板的一键自升级。
+	//
+	// 默认关闭，理由与 EnableDaeInstall 同级甚至更强：它要求面板能改写自己的
+	// 可执行文件，一旦面板存在可被利用的缺陷，那个缺陷就能把自己写成持久化的
+	// 任意代码。只想收到新版本提醒的部署不该被迫承担这个权限——因此它与
+	// DisableUpdateCheck 是两个独立开关。
+	EnableSelfUpdate bool
 	// DisableUpdateCheck 关闭面板自身的新版本检查。
 	//
 	// 检查默认开启：它只读取本仓库 releases/latest 的 tag，结果长时间缓存。
@@ -62,6 +71,7 @@ func DefaultConfig() Config {
 		InstallStatePath: "/var/lib/kdae-panel/dae-install.json",
 		GeoStatePath:     "/var/lib/kdae-panel/geo-update.json",
 		GeoSchedulePath:  "/var/lib/kdae-panel/geo-schedule.json",
+		PanelBackupPath:  "/var/lib/kdae-panel/kdae-panel.previous",
 		SessionTTL:       12 * time.Hour,
 	}
 }
@@ -106,6 +116,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.GeoSchedulePath == "" {
 		c.GeoSchedulePath = defaults.GeoSchedulePath
+	}
+	if c.PanelBackupPath == "" {
+		c.PanelBackupPath = defaults.PanelBackupPath
 	}
 	if c.InstallStatePath == "" {
 		c.InstallStatePath = defaults.InstallStatePath

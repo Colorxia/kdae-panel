@@ -148,11 +148,23 @@ dae 只在重载时重新拉取 `subscription` 链接，因此"订阅定时刷�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/panel/update` | 面板自身的新版本检查结果 |
+| `GET` | `/panel/update` | 新版本检查结果与自升级状态 |
+| `POST` | `/panel/update` | 触发一键自升级 |
 
-响应含 `current`、`latest`、`updateAvailable`、`checkedAt`，检查失败时带 `error`。
-结果按 TTL 缓存（成功 6 小时、失败 15 分钟）；dev 构建不发起检查。
-`KDAE_PANEL_DISABLE_UPDATE_CHECK=true` 时端点仍在，但不再联网、恒不提示。
+`GET` 响应里的 `check` 含 `current`、`latest`、`updateAvailable`、`checkedAt`，检查失败时带 `error`；
+结果按 TTL 缓存（成功 6 小时、失败 15 分钟），dev 构建不发起检查，
+`KDAE_PANEL_DISABLE_UPDATE_CHECK=true` 时不再联网、恒不提示。
+
+自升级启用（`KDAE_PANEL_ENABLE_SELF_UPDATE`）时，响应额外带 `status`（是否可升级、
+二进制路径、上一版副本位置）与 `job`（任务进度）；未启用时这两个字段不存在，
+`POST` 返回 `503 panel_self_update_disabled`。
+
+`POST` 可选 `{"version":"v0.2.0"}`，省略则取最新正式发布；立即返回 `202` 并在后台执行：
+下载 → 比对 `SHA256SUMS` → 新二进制 `-version` 自证 → 备份上一版 → 原子替换 →
+`systemctl restart --no-block` 重启自身。任一步失败都在替换之前中止，原文件不动。
+
+**没有自动回滚**：被替换、被重启的是当前进程自己，systemd 停掉它之后无从补救。
+上一版副本保留在 `KDAE_PANEL_BACKUP_FILE`，还原步骤见 [deployment.md](deployment.md)。
 
 ## 网络探测
 

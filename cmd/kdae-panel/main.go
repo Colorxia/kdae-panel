@@ -47,6 +47,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	enableSelfUpdateDefault, err := envBool("KDAE_PANEL_ENABLE_SELF_UPDATE", cfg.EnableSelfUpdate)
+	if err != nil {
+		return err
+	}
 	listen := flag.String("listen", envOr("KDAE_PANEL_LISTEN", cfg.ListenAddress), "HTTP 监听地址")
 	bootstrapToken := flag.String("bootstrap-token", envOr("KDAE_PANEL_BOOTSTRAP_TOKEN", cfg.BootstrapToken), "首次初始化 bootstrap token")
 	trustedProxies := flag.String("trusted-proxies", envOr("KDAE_PANEL_TRUSTED_PROXIES", cfg.TrustedProxies), "可信反向代理 CIDR，逗号分隔")
@@ -64,6 +68,8 @@ func run() error {
 	enableDaeInstall := flag.Bool("enable-dae-install", enableDaeInstallDefault, "允许通过面板安装与切换 dae 版本")
 	enableGeoUpdate := flag.Bool("enable-geo-update", enableGeoUpdateDefault, "允许通过面板一键更新 geo 数据")
 	disableUpdateCheck := flag.Bool("disable-update-check", disableUpdateCheckDefault, "关闭面板自身的新版本检查")
+	enableSelfUpdate := flag.Bool("enable-self-update", enableSelfUpdateDefault, "允许面板一键升级自身")
+	panelBackupPath := flag.String("panel-backup-file", envOr("KDAE_PANEL_BACKUP_FILE", cfg.PanelBackupPath), "自升级时保留的上一版面板二进制路径")
 	sessionTTL := flag.Duration("session-ttl", sessionTTLDefault, "登录会话有效期")
 	secureCookie := flag.Bool("secure-cookie", secureCookieDefault, "仅通过 HTTPS 发送登录 Cookie")
 	showVersion := flag.Bool("version", false, "显示版本")
@@ -90,6 +96,8 @@ func run() error {
 	cfg.EnableDaeInstall = *enableDaeInstall
 	cfg.EnableGeoUpdate = *enableGeoUpdate
 	cfg.DisableUpdateCheck = *disableUpdateCheck
+	cfg.EnableSelfUpdate = *enableSelfUpdate
+	cfg.PanelBackupPath = *panelBackupPath
 	cfg.SessionTTL = *sessionTTL
 	cfg.SecureCookie = *secureCookie
 	cfg.Version = version

@@ -98,6 +98,8 @@ sudo systemctl restart kdae-panel
 | `KDAE_PANEL_GEO_SCHEDULE_FILE` | `/var/lib/kdae-panel/geo-schedule.json` | geo 自动更新的设置与上次执行时间 |
 | `KDAE_PANEL_ENABLE_GEO_UPDATE` | `false` | 允许一键更新 geo 数据，与上一项相互独立 |
 | `KDAE_PANEL_DISABLE_UPDATE_CHECK` | `false` | 关闭面板自身的新版本检查（检查只读取本仓库 releases/latest 的 tag，结果缓存 6 小时） |
+| `KDAE_PANEL_ENABLE_SELF_UPDATE` | `false` | 允许面板一键升级自身，需放宽 `ReadWritePaths` |
+| `KDAE_PANEL_BACKUP_FILE` | `/var/lib/kdae-panel/kdae-panel.previous` | 自升级保留的上一版面板二进制 |
 | `KDAE_PANEL_SESSION_TTL` | `12h` | 会话绝对有效期 |
 | `KDAE_PANEL_SECURE_COOKIE` | `false` | Cookie 是否仅允许 HTTPS |
 
@@ -138,6 +140,34 @@ systemctl restart kdae-panel
 首次安装会写入可执行文件、geo 数据、服务单元，以及一份不劫持任何流量的种子配置（仅在配置不存在时）。**它不会自动启动 dae**——请先在配置管理页写好规则再手动启动，否则透明代理可能切断你当前的连接。已存在的服务单元与配置一律不覆盖。
 
 只想升级已有的 dae 时不需要这一步。若你更习惯官方工具，[dae-installer](https://github.com/daeuniverse/dae-installer) 依然可用，两者互不冲突。
+
+### 启用面板一键自升级
+
+**又一个独立开关**，与上面两个互不影响。开启后，界面顶部的新版本横幅会多出一个「立即升级」按钮：面板下载发布包、比对 `SHA256SUMS`、用新二进制自证能在本机运行，然后替换自己并请求 systemd 重启。
+
+```bash
+env_file=/etc/kdae-panel/kdae-panel.env
+if grep -q '^KDAE_PANEL_ENABLE_SELF_UPDATE=' "$env_file"; then
+  sed -i 's/^KDAE_PANEL_ENABLE_SELF_UPDATE=.*/KDAE_PANEL_ENABLE_SELF_UPDATE=true/' "$env_file"
+else
+  echo 'KDAE_PANEL_ENABLE_SELF_UPDATE=true' >> "$env_file"
+fi
+
+# 让面板能写入自己所在的目录
+systemctl edit kdae-panel    # 追加 ReadWritePaths=/usr/bin
+systemctl restart kdae-panel
+```
+
+**这个开关的代价要说透**：它让面板能改写自己的可执行文件，因此面板本身的任何可利用缺陷都能被写成持久化的任意代码——严重程度不低于 dae 版本管理。不开也完全够用：新版本提醒始终可用，在服务器上重跑一次一键部署命令即可升级，配置与账号数据同样保留。
+
+**没有自动回滚。** 被替换、被重启的是当前进程自己，一旦 systemd 把它停掉就无从执行补救。风险因此前移：替换之前先运行新二进制的 `-version` 让它自证能在这台机器上跑起来，版本对不上或跑不起来就中止，原文件一个字节都不动。替换时把上一版复制到 `KDAE_PANEL_BACKUP_FILE`，万一新版本起不来：
+
+```bash
+install -m0755 /var/lib/kdae-panel/kdae-panel.previous /usr/bin/kdae-panel
+systemctl restart kdae-panel
+```
+
+升级期间面板会短暂无法访问（通常几秒）。**dae 与代理流量完全不受影响**——面板只是管理界面，它的重启不碰 dae 的任何东西。
 
 ### 启用 geo 数据更新
 

@@ -23,6 +23,7 @@ import (
 	"github.com/tuoro/kdae-panel/internal/geodata"
 	"github.com/tuoro/kdae-panel/internal/host"
 	"github.com/tuoro/kdae-panel/internal/netprobe"
+	"github.com/tuoro/kdae-panel/internal/panelupdate"
 	"github.com/tuoro/kdae-panel/internal/schedule"
 	"github.com/tuoro/kdae-panel/internal/upstream"
 	"github.com/tuoro/kdae-panel/internal/webui"
@@ -61,6 +62,7 @@ type Dependencies struct {
 	Install        InstallService
 	Geo            GeoService
 	PanelRelease   PanelReleaseChecker
+	PanelUpdate    PanelUpdateService
 }
 
 type AuthenticationService interface {
@@ -146,6 +148,20 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		}
 		dependencies.Geo = manager
 	}
+	if cfg.EnableSelfUpdate {
+		updater, err := panelupdate.New(panelupdate.Options{
+			Version:    cfg.Version,
+			BackupPath: cfg.PanelBackupPath,
+			Fetcher:    upstream.NewPanelFetcher(),
+			Service:    hostManager,
+			Logger:     logger,
+		})
+		if err != nil {
+			_ = authStore.Close()
+			return nil, fmt.Errorf("初始化面板自升级: %w", err)
+		}
+		dependencies.PanelUpdate = updater
+	}
 	application, err := NewWithDependencies(cfg, logger, dependencies)
 	if err != nil {
 		_ = authStore.Close()
@@ -221,10 +237,10 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 	panelRelease := dependencies.PanelRelease
 	if panelRelease == nil && !cfg.DisableUpdateCheck {
 		panelRelease = func(ctx context.Context) (string, error) {
-			return upstream.LatestPanelRelease(ctx, panelRepoOwner, panelRepoName)
+			return upstream.LatestPanelRelease(ctx, upstream.PanelRepoOwner, upstream.PanelRepoName)
 		}
 	}
-	registerPanelUpdateRoutes(router, cfg.Version, panelRelease)
+	registerPanelUpdateRoutes(router, cfg.Version, panelRelease, dependencies.PanelUpdate, operations, logger)
 	router.HandleFunc("GET /api/v1/dae/capabilities", func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, http.StatusOK, dependencies.Dae.Inspect(request.Context()))
 	})

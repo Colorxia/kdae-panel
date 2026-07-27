@@ -207,6 +207,27 @@ func (m *Manager) Action(ctx context.Context, action Action) error {
 	return nil
 }
 
+// PanelUnit 是面板自身的 systemd 单元名。
+const PanelUnit = "kdae-panel.service"
+
+// RestartSelf 请求 systemd 重启面板自身的单元。
+//
+// 必须带 --no-block：不带的话 systemctl 会等重启完成，而它是面板的子进程、
+// 与面板同属一个 cgroup——systemd 停止该单元时会把这个 systemctl 一起杀掉，
+// 于是调用方看到的是"命令被信号终止"，而重启其实已经在进行。
+// --no-block 把作业排进队列后立即返回，重启的实际发生与本进程的死亡解耦。
+//
+// 刻意不复用 Action：那条路径操作的是 dae 的单元，而这里的目标固定是面板
+// 自己；把两者混在一个入口里，只要服务名参数传错一次，就会变成"想升级面板
+// 却重启了 dae"。
+func (m *Manager) RestartSelf(ctx context.Context) error {
+	result, err := m.runFor(ctx, actionTimeout, m.systemctl, "restart", "--no-block", PanelUnit)
+	if err != nil {
+		return fmt.Errorf("请求重启 %s: %s", PanelUnit, command.Describe(err, result))
+	}
+	return nil
+}
+
 func (m *Manager) Logs(ctx context.Context, limit int) ([]LogEntry, error) {
 	if limit <= 0 {
 		limit = 200
