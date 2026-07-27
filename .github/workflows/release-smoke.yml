@@ -322,7 +322,7 @@ jobs:
         env:
           # 工作流文件刚推到 main 时 latest 还是旧包，新断言只能由当前检出脚本自证；
           # release 调用会显式传版本，仍然必须验证发布包内的实际副本。
-          USE_CHECKOUT_UNINSTALL: ${{ github.event_name == 'push' && inputs.version == '' }}
+          USE_CHECKOUT_UNINSTALL: ${{ github.event_name == 'push' && github.ref_type == 'branch' }}
         run: |
           # 模拟用户通过 systemctl edit 留下的高权限 override，卸载必须一并清掉。
           sudo mkdir -p /etc/systemd/system/kdae-panel.service.d
