@@ -348,11 +348,9 @@ jobs:
               failures=1
             fi
           done
-          # 单元不该再被 systemd 认识
-          if ! systemctl list-unit-files kdae-panel.service > /tmp/kdae-panel-units; then
-            echo "::error::systemctl 无法列出卸载后的单元状态"
-            failures=1
-          fi
+          # 没有匹配单元时 systemctl 会返回非零，这恰好是卸载成功的正常结果；
+          # 因此只检查输出里是否仍有单元，不能把退出码本身当成失败。
+          systemctl list-unit-files kdae-panel.service > /tmp/kdae-panel-units || true
           cat /tmp/kdae-panel-units
           if grep -q kdae-panel /tmp/kdae-panel-units; then
             echo "::error::systemd 中仍存在 kdae-panel 单元"
