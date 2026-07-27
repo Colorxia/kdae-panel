@@ -42,39 +42,76 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  smoke:
+  # 版本解析独立成一个作业：下面两个验证作业都要用，逻辑只写一遍，
+  # 且它们可以并行跑。
+  target:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      previous: ${{ steps.resolve.outputs.previous }}
+      self_update_testable: ${{ steps.resolve.outputs.self_update_testable }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: 确定待验证版本
-        id: target
+      - name: 解析待验证版本与上一版
+        id: resolve
         env:
           # workflow_call 与手动触发走 inputs；release 事件给出本次发布的 tag；
           # push 自检两者皆空，退回 releases/latest。
           EVENT_TAG: ${{ github.event.release.tag_name }}
           INPUT_TAG: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          api() {
+            curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' "$@"
+          }
+
           version="${INPUT_TAG:-$EVENT_TAG}"
           if [[ -z ${version} ]]; then
-            url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-              https://github.com/${{ github.repository }}/releases/latest)
-            version="${url##*/}"
+            version=$(api "https://api.github.com/repos/${{ github.repository }}/releases/latest" \
+              | jq -r '.tag_name')
           fi
           if [[ ! ${version} =~ ^v[0-9A-Za-z._-]+$ ]]; then
             echo "无法确定要验证的版本（得到 '${version}'）" >&2
             exit 1
           fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "将验证 ${version}"
+
+          # 上一版取最新的正式发布（排除预发布与本次目标）：自升级要从旧版升到新版，
+          # 而预发布不进 releases/latest，不该作为"用户现有版本"的代表。
+          previous=$(api "https://api.github.com/repos/${{ github.repository }}/releases?per_page=30" \
+            | jq -r --arg target "${version}" \
+              '[.[] | select(.prerelease == false and .draft == false) | .tag_name]
+               | map(select(. != $target)) | .[0] // ""')
+
+          # 自升级是 v0.3.0 才有的能力，更早的版本没有那个端点，
+          # 拿它做起点只会得到一个与被测代码无关的失败。
+          testable=false
+          if [[ -n ${previous} ]] &&
+             [[ $(printf '%s\n' v0.3.0 "${previous}" | sort -V | head -n1) == v0.3.0 ]]; then
+            testable=true
+          fi
+
+          {
+            echo "version=${version}"
+            echo "previous=${previous}"
+            echo "self_update_testable=${testable}"
+          } >> "$GITHUB_OUTPUT"
+          echo "目标 ${version}；上一版 ${previous:-（无）}；自升级可验证：${testable}"
+
+  smoke:
+    needs: target
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # 走用户真正会执行的那条路径：仓库里的 get.sh 下载并校验发布包，
       # 再由包内的 install.sh 完成安装。预发布不会成为 latest，
       # 因此这里显式传版本，rc 同样能被验证。
       - name: 一键部署
         env:
-          KDAE_PANEL_VERSION: ${{ steps.target.outputs.version }}
+          KDAE_PANEL_VERSION: ${{ needs.target.outputs.version }}
         run: sudo -E bash scripts/get.sh
 
       - name: 服务应处于运行状态
@@ -91,7 +128,7 @@ jobs:
 
       - name: 健康接口应返回本次发布的版本
         env:
-          EXPECTED: ${{ steps.target.outputs.version }}
+          EXPECTED: ${{ needs.target.outputs.version }}
         run: |
           for _ in $(seq 1 15); do
             if curl -fsS http://127.0.0.1:2023/api/v1/health >/tmp/health.json 2>/dev/null; then break; fi
@@ -134,3 +171,134 @@ jobs:
             echo "systemd 中仍存在 kdae-panel 单元" >&2
             exit 1
           fi
+
+  # 自升级：一个进程替换掉自己的可执行文件、再让 systemd 把自己重启。
+  #
+  # 单元测试全程用桩（假下载、假 systemd、假自证），这条路径在真机上一次都
+  # 没跑过；而它一旦出错，代价是面板把自己换成一个起不来的二进制。
+  # 这里装上一个正式版，打开开关，调真实接口升到本次目标版本。
+  self-update:
+    needs: target
+    if: needs.target.outputs.self_update_testable == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BASE: http://127.0.0.1:2023
+      PANEL_PASSWORD: smoke-Password-2026
+      PREVIOUS: ${{ needs.target.outputs.previous }}
+      TARGET: ${{ needs.target.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: 安装上一个正式版作为升级起点
+        env:
+          KDAE_PANEL_VERSION: ${{ needs.target.outputs.previous }}
+        run: sudo -E bash scripts/get.sh
+
+      - name: 起点版本应就位
+        run: |
+          for _ in $(seq 1 15); do
+            if curl -fsS "${BASE}/api/v1/health" >/tmp/health.json 2>/dev/null; then break; fi
+            sleep 1
+          done
+          got=$(jq -r '.version' /tmp/health.json)
+          if [[ ${got} != "${PREVIOUS}" ]]; then
+            echo "起点版本 = ${got}，期望 ${PREVIOUS}" >&2
+            exit 1
+          fi
+          # 记下替换前的二进制摘要，升级后用它核对备份确实是"上一版"
+          sha256sum /usr/bin/kdae-panel | cut -d' ' -f1 | sudo tee /tmp/before.sha256
+
+      - name: 按文档步骤开启自升级
+        run: |
+          # 与 docs/deployment.md 里给用户的步骤一致：改 env、加 ReadWritePaths。
+          # 这里顺带验证那份文档是对的——写错了这一步会当场失败。
+          env_file=/etc/kdae-panel/kdae-panel.env
+          if grep -q '^KDAE_PANEL_ENABLE_SELF_UPDATE=' "${env_file}"; then
+            sudo sed -i 's/^KDAE_PANEL_ENABLE_SELF_UPDATE=.*/KDAE_PANEL_ENABLE_SELF_UPDATE=true/' "${env_file}"
+          else
+            echo 'KDAE_PANEL_ENABLE_SELF_UPDATE=true' | sudo tee -a "${env_file}"
+          fi
+          sudo mkdir -p /etc/systemd/system/kdae-panel.service.d
+          printf '[Service]\nReadWritePaths=/usr/bin\n' \
+            | sudo tee /etc/systemd/system/kdae-panel.service.d/self-update.conf
+          sudo systemctl daemon-reload
+          sudo systemctl restart kdae-panel.service
+          for _ in $(seq 1 15); do
+            if curl -fsS "${BASE}/api/v1/health" >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          systemctl is-active kdae-panel.service
+
+      - name: 建立管理员会话
+        run: |
+          # 一次性初始化链接只出现在服务日志里，这也顺带验证了它可用
+          token=$(sudo journalctl -u kdae-panel.service --no-pager \
+            | grep -o 'bootstrap=[A-Za-z0-9_-]*' | tail -n1 | cut -d= -f2)
+          test -n "${token}"
+          curl -fsS -c /tmp/jar -X POST -H 'Content-Type: application/json' \
+            -d "{\"token\":\"${token}\"}" "${BASE}/api/v1/auth/bootstrap"
+          curl -fsS -b /tmp/jar -c /tmp/jar -X POST -H 'Content-Type: application/json' \
+            -d "{\"username\":\"admin\",\"password\":\"${PANEL_PASSWORD}\"}" \
+            "${BASE}/api/v1/auth/setup" > /tmp/session.json
+          jq -r '.csrfToken' /tmp/session.json > /tmp/csrf
+          test -s /tmp/csrf
+
+      - name: 沙箱下应报告可升级
+        run: |
+          curl -fsS -b /tmp/jar "${BASE}/api/v1/panel/update" > /tmp/update.json
+          jq . /tmp/update.json
+          # 这一条检验的是真实沙箱下的可写性探测：ProtectSystem=strict 生效时，
+          # 只有那条 ReadWritePaths 真的起作用，它才会是 true
+          if [[ $(jq -r '.status.updatable' /tmp/update.json) != true ]]; then
+            echo "面板报告不可升级：$(jq -r '.status.problem' /tmp/update.json)" >&2
+            exit 1
+          fi
+
+      - name: 触发自升级
+        run: |
+          curl -fsS -b /tmp/jar -X POST \
+            -H "X-CSRF-Token: $(cat /tmp/csrf)" -H 'Content-Type: application/json' \
+            -d "{\"version\":\"${TARGET}\"}" "${BASE}/api/v1/panel/update"
+
+      - name: 面板应重启为新版本
+        run: |
+          # 替换、重启、新进程接管都要时间，且期间请求必然失败；
+          # 只认"健康接口报出目标版本"这一个成功信号。
+          for _ in $(seq 1 60); do
+            got=$(curl -fsS "${BASE}/api/v1/health" 2>/dev/null | jq -r '.version' 2>/dev/null || true)
+            if [[ ${got} == "${TARGET}" ]]; then
+              echo "已升级到 ${got}"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "等待升级超时，最后读到的版本：${got:-（无响应）}" >&2
+          systemctl status kdae-panel.service --no-pager --full || true
+          sudo journalctl -u kdae-panel.service --no-pager -n 80 >&2
+          exit 1
+
+      - name: 磁盘上的二进制与备份都应正确
+        run: |
+          # 磁盘上的确实是新版本，而不只是进程内存里的
+          test "$(sudo /usr/bin/kdae-panel -version)" = "${TARGET}"
+          # 自升级没有自动回滚，上一版副本是唯一退路，必须与替换前逐字节一致
+          backup=/var/lib/kdae-panel/kdae-panel.previous
+          sudo test -f "${backup}"
+          if [[ $(sudo sha256sum "${backup}" | cut -d' ' -f1) != $(cat /tmp/before.sha256) ]]; then
+            echo "备份内容与替换前的二进制不一致" >&2
+            exit 1
+          fi
+          # 文档给出的还原命令依赖它可执行
+          sudo test -x "${backup}"
+
+      - name: 升级后仍可正常卸载
+        run: |
+          sudo KDAE_PANEL_PURGE=true bash /usr/share/kdae-panel/uninstall.sh
+          for leftover in /usr/bin/kdae-panel /var/lib/kdae-panel/kdae-panel.previous \
+            /etc/kdae-panel /var/lib/kdae-panel; do
+            if [[ -e ${leftover} ]]; then
+              echo "卸载后仍残留 ${leftover}" >&2
+              exit 1
+            fi
+          done
