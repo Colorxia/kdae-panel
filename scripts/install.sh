@@ -71,6 +71,10 @@ fi
 
 install -Dm0644 "${service_file}" /etc/systemd/system/kdae-panel.service
 systemctl daemon-reload
+# 先记住当前日志末尾，后面只读取本次重启新产生的内容。相比依赖
+# _SYSTEMD_INVOCATION_ID，这在字段裁剪过的 journald 环境里同样有效。
+journal_cursor=$(journalctl --no-pager -n 1 --show-cursor 2>/dev/null |
+  sed -n 's/^-- cursor: //p' | tail -n1 || true)
 # 升级场景必须重启：enable --now 对已在运行的服务是空操作，
 # 旧二进制会继续跑，升级看似成功实则没有生效。
 if systemctl is-active --quiet kdae-panel.service; then
@@ -81,12 +85,13 @@ fi
 
 setup_urls=""
 for ((attempt = 0; attempt < 40; attempt++)); do
-  invocation_id=$(systemctl show kdae-panel.service --property=InvocationID --value)
-  if [[ -z ${invocation_id} ]]; then
-    sleep 0.25
-    continue
+  if [[ -n ${journal_cursor} ]]; then
+    fresh_logs=$(journalctl -u kdae-panel.service --after-cursor="${journal_cursor}" --no-pager -o cat 2>/dev/null || true)
+  else
+    invocation_id=$(systemctl show kdae-panel.service --property=InvocationID --value)
+    fresh_logs=$(journalctl "_SYSTEMD_INVOCATION_ID=${invocation_id}" --no-pager -o cat 2>/dev/null || true)
   fi
-  setup_urls=$(journalctl "_SYSTEMD_INVOCATION_ID=${invocation_id}" --no-pager -o cat 2>/dev/null |
+  setup_urls=$(printf '%s\n' "${fresh_logs}" |
     sed -n 's/.*setup_url="\([^"]*\)".*/\1/p; t; s/.*setup_url=\([^ ]*\).*/\1/p' |
     awk '!seen[$0]++')
   if [[ -n ${setup_urls} ]]; then
