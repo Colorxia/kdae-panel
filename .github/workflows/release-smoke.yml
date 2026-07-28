@@ -361,6 +361,7 @@ jobs:
         run: node release-smoke.mjs
 
       - name: 管理员创建后应删除首次访问链接文件
+        if: github.event_name != 'push' || github.ref_type != 'branch'
         env:
           BASE: http://127.0.0.1:2023
         run: |
