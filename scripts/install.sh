@@ -79,8 +79,29 @@ else
   systemctl enable --now kdae-panel.service
 fi
 
+setup_urls=""
+for ((attempt = 0; attempt < 40; attempt++)); do
+  invocation_id=$(systemctl show kdae-panel.service --property=InvocationID --value)
+  if [[ -z ${invocation_id} ]]; then
+    sleep 0.25
+    continue
+  fi
+  setup_urls=$(journalctl "_SYSTEMD_INVOCATION_ID=${invocation_id}" --no-pager -o cat 2>/dev/null |
+    sed -n 's/.*setup_url="\([^"]*\)".*/\1/p; t; s/.*setup_url=\([^ ]*\).*/\1/p' |
+    awk '!seen[$0]++')
+  if [[ -n ${setup_urls} ]]; then
+    break
+  fi
+  sleep 0.25
+done
+
 echo "kdae-panel 已启动，默认监听 0.0.0.0:2023（本机和局域网均可访问）。"
-echo "局域网访问：http://<这台机器的内网 IP>:2023"
-echo "首次初始化请通过 journalctl -u kdae-panel -n 20 --no-pager 查看 setup_url；"
-echo "面板会直接列出检测到的内网地址和 127.0.0.1 本机地址。"
+if [[ -n ${setup_urls} ]]; then
+  echo "首次访问地址："
+  while IFS= read -r setup_url; do
+    echo "  ${setup_url}"
+  done <<<"${setup_urls}"
+else
+  echo "面板已经初始化；请通过这台机器的内网地址访问 2023 端口。"
+fi
 echo "卸载：sudo bash /usr/share/kdae-panel/uninstall.sh"

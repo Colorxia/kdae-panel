@@ -20,8 +20,8 @@ type Config struct {
 	SessionTTL       time.Duration
 	SecureCookie     bool
 	// EnableDaeInstall 打开通过面板安装与切换 dae 版本的能力。
-	// 默认关闭：它要求放宽面板单元的 ReadWritePaths 才能写入 dae 所在目录，
-	// 不使用这个功能的部署不该承担那份放宽。
+	// 默认开启，发行单元同时开放默认二进制与 systemd 单元目录；不需要版本管理的
+	// 部署仍可显式关闭开关并收紧 ReadWritePaths。
 	EnableDaeInstall bool
 	// GeoStatePath 记录面板上次把 geo 数据更新到了哪一版。
 	GeoStatePath string
@@ -73,6 +73,7 @@ func DefaultConfig() Config {
 		GeoSchedulePath:  "/var/lib/kdae-panel/geo-schedule.json",
 		PanelBackupPath:  "/var/lib/kdae-panel/kdae-panel.previous",
 		SessionTTL:       12 * time.Hour,
+		EnableDaeInstall: true,
 	}
 }
 

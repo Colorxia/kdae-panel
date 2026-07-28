@@ -267,7 +267,31 @@ jobs:
       - name: 一键部署
         env:
           KDAE_PANEL_VERSION: ${{ needs.target.outputs.version }}
-        run: sudo -E bash scripts/get.sh
+        run: sudo -E bash scripts/get.sh | tee /tmp/kdae-panel-install-output
+
+      - name: 安装输出应直接给出内网初始化链接
+        if: github.event_name != 'push' || github.ref_type != 'branch'
+        run: |
+          grep -Eq 'http://([0-9]{1,3}\.){3}[0-9]{1,3}:2023/setup#bootstrap=[A-Za-z0-9_-]+' \
+            /tmp/kdae-panel-install-output
+          if grep -q '127\.0\.0\.1:2023/setup#bootstrap=' /tmp/kdae-panel-install-output; then
+            echo "安装输出不应在已经检测到内网地址时继续展示回环初始化链接" >&2
+            exit 1
+          fi
+          if grep -q 'journalctl -u kdae-panel' /tmp/kdae-panel-install-output; then
+            echo "安装输出不应再要求用户手工查询 journalctl" >&2
+            exit 1
+          fi
+
+      - name: dae 版本管理应默认可用
+        if: github.event_name != 'push' || github.ref_type != 'branch'
+        run: |
+          sudo grep -qx 'KDAE_PANEL_ENABLE_DAE_INSTALL=true' \
+            /etc/kdae-panel/kdae-panel.env
+          unit=$(systemctl cat kdae-panel.service)
+          read_write_paths=$(grep '^ReadWritePaths=' <<<"${unit}")
+          grep -Fq ' /usr/bin ' <<<" ${read_write_paths#ReadWritePaths=} "
+          grep -Fq ' /etc/systemd/system ' <<<" ${read_write_paths#ReadWritePaths=} "
 
       - name: 服务应处于运行状态
         run: |
@@ -301,7 +325,8 @@ jobs:
       - name: 首次初始化链接应出现在服务日志中
         run: |
           # 这是新装机器唯一的进入方式，日志里没有它就等于装完进不去
-          sudo journalctl -u kdae-panel.service --no-pager > /tmp/kdae-panel-journal
+          sudo journalctl -u kdae-panel.service --no-pager |
+            tee /tmp/kdae-panel-journal >/dev/null
           grep -q 'setup_url' /tmp/kdae-panel-journal
 
       - name: 前端资源应可访问
@@ -397,8 +422,8 @@ jobs:
 
       - name: 按文档步骤开启自升级
         run: |
-          # 与 docs/deployment.md 里给用户的步骤一致：改 env、加 ReadWritePaths。
-          # 这里顺带验证那份文档是对的——写错了这一步会当场失败。
+          # v0.3.2 及更早版本的发行单元还没有默认开放 /usr/bin；升级起点可能来自
+          # 这些旧版本，因此补一个兼容 drop-in。新安装的发行单元本身已经包含该路径。
           env_file=/etc/kdae-panel/kdae-panel.env
           if sudo grep -q '^KDAE_PANEL_ENABLE_SELF_UPDATE=' "${env_file}"; then
             sudo sed -i 's/^KDAE_PANEL_ENABLE_SELF_UPDATE=.*/KDAE_PANEL_ENABLE_SELF_UPDATE=true/' "${env_file}"
@@ -420,7 +445,8 @@ jobs:
       - name: 建立管理员会话
         run: |
           # 一次性初始化链接只出现在服务日志里，这也顺带验证了它可用
-          sudo journalctl -u kdae-panel.service --no-pager > /tmp/kdae-panel-journal
+          sudo journalctl -u kdae-panel.service --no-pager |
+            tee /tmp/kdae-panel-journal >/dev/null
           token=$(grep -o 'bootstrap=[A-Za-z0-9_-]*' /tmp/kdae-panel-journal |
             tail -n1 | cut -d= -f2)
           test -n "${token}"

@@ -354,7 +354,10 @@ func bootstrapSetupURLsForAddresses(listenAddress, token string, addresses []net
 		urls = append(urls, setupURL)
 	}
 	sort.Strings(urls)
-	return append(urls, fallback)
+	if len(urls) > 0 {
+		return urls
+	}
+	return []string{fallback}
 }
 
 func writeAPIError(writer http.ResponseWriter, status int, code, message string) {

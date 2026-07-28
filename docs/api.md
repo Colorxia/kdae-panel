@@ -65,7 +65,7 @@ X-CSRF-Token: <csrfToken>
 
 ## dae 版本管理
 
-默认关闭。未设置 `KDAE_PANEL_ENABLE_DAE_INSTALL=true` 时，以下接口一律返回 `503 dae_install_disabled`。
+默认开启。显式设置 `KDAE_PANEL_ENABLE_DAE_INSTALL=false` 时，以下接口一律返回 `503 dae_install_disabled`。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
