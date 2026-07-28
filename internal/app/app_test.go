@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1540,6 +1541,30 @@ func TestBootstrapSetupURLUsesLoopbackForWildcardListen(t *testing.T) {
 	got := bootstrapSetupURL("0.0.0.0:2023", "secret")
 	want := "http://127.0.0.1:2023/setup#bootstrap=secret"
 	if got != want {
+		t.Fatalf("初始化链接 = %q，期望 %q", got, want)
+	}
+}
+
+func TestDefaultConfigListensOnLAN(t *testing.T) {
+	if got := DefaultConfig().ListenAddress; got != "0.0.0.0:2023" {
+		t.Fatalf("默认监听地址 = %q，期望同时接受本机和局域网连接", got)
+	}
+}
+
+func TestBootstrapSetupURLsIncludePrivateIPv4Addresses(t *testing.T) {
+	addresses := []net.Addr{
+		&net.IPNet{IP: net.ParseIP("192.168.50.8"), Mask: net.CIDRMask(24, 32)},
+		&net.IPNet{IP: net.ParseIP("10.20.30.40"), Mask: net.CIDRMask(8, 32)},
+		&net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)},
+		&net.IPNet{IP: net.ParseIP("203.0.113.7"), Mask: net.CIDRMask(24, 32)},
+	}
+	got := bootstrapSetupURLsForAddresses("0.0.0.0:2023", "secret", addresses)
+	want := []string{
+		"http://10.20.30.40:2023/setup#bootstrap=secret",
+		"http://192.168.50.8:2023/setup#bootstrap=secret",
+		"http://127.0.0.1:2023/setup#bootstrap=secret",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("初始化链接 = %q，期望 %q", got, want)
 	}
 }

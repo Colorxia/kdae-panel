@@ -79,8 +79,8 @@ else
   systemctl enable --now kdae-panel.service
 fi
 
-echo "kdae-panel 已启动：http://127.0.0.1:2023"
-echo "面板只监听本机回环地址；从其他机器访问请先建立 SSH 端口转发："
-echo "  ssh -L 2023:127.0.0.1:2023 root@<这台机器>"
-echo "首次初始化请通过 journalctl -u kdae-panel -n 20 --no-pager 查看并打开 setup_url。"
+echo "kdae-panel 已启动，默认监听 0.0.0.0:2023（本机和局域网均可访问）。"
+echo "局域网访问：http://<这台机器的内网 IP>:2023"
+echo "首次初始化请通过 journalctl -u kdae-panel -n 20 --no-pager 查看 setup_url；"
+echo "面板会直接列出检测到的内网地址和 127.0.0.1 本机地址。"
 echo "卸载：sudo bash /usr/share/kdae-panel/uninstall.sh"

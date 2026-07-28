@@ -56,7 +56,7 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		ListenAddress:  "127.0.0.1:2023",
+		ListenAddress:  "0.0.0.0:2023",
 		Version:        "dev",
 		TrustedProxies: "127.0.0.0/8,::1/128",
 		DaeBinary:      "dae",

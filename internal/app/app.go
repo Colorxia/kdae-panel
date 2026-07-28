@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -108,7 +109,9 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 				return nil, err
 			}
 		}
-		logger.Warn("首次初始化请打开一次性链接", "setup_url", bootstrapSetupURL(cfg.ListenAddress, cfg.BootstrapToken))
+		for _, setupURL := range bootstrapSetupURLs(cfg.ListenAddress, cfg.BootstrapToken) {
+			logger.Warn("首次初始化请打开一次性链接", "setup_url", setupURL)
+		}
 	}
 	dependencies := Dependencies{
 		Dae:            daeClient,
@@ -311,6 +314,47 @@ func bootstrapSetupURL(listenAddress, token string) string {
 		Fragment:    fragment,
 		RawFragment: rawFragment,
 	}).String()
+}
+
+func bootstrapSetupURLs(listenAddress, token string) []string {
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		return []string{bootstrapSetupURL(listenAddress, token)}
+	}
+	return bootstrapSetupURLsForAddresses(listenAddress, token, addresses)
+}
+
+func bootstrapSetupURLsForAddresses(listenAddress, token string, addresses []net.Addr) []string {
+	fallback := bootstrapSetupURL(listenAddress, token)
+	host, port, err := net.SplitHostPort(listenAddress)
+	if err != nil || (host != "" && host != "0.0.0.0") {
+		return []string{fallback}
+	}
+
+	seen := make(map[string]struct{})
+	urls := make([]string, 0, len(addresses)+1)
+	for _, address := range addresses {
+		var ip net.IP
+		switch value := address.(type) {
+		case *net.IPNet:
+			ip = value.IP
+		case *net.IPAddr:
+			ip = value.IP
+		default:
+			continue
+		}
+		if ip = ip.To4(); ip == nil || !ip.IsPrivate() {
+			continue
+		}
+		setupURL := bootstrapSetupURL(net.JoinHostPort(ip.String(), port), token)
+		if _, exists := seen[setupURL]; exists {
+			continue
+		}
+		seen[setupURL] = struct{}{}
+		urls = append(urls, setupURL)
+	}
+	sort.Strings(urls)
+	return append(urls, fallback)
 }
 
 func writeAPIError(writer http.ResponseWriter, status int, code, message string) {
