@@ -288,6 +288,18 @@ jobs:
             exit 1
           fi
 
+      - name: 首次访问链接应通过私有运行时文件交接
+        if: github.event_name != 'push' || github.ref_type != 'branch'
+        run: |
+          setup_file=/run/kdae-panel/setup-url
+          sudo test -s "${setup_file}"
+          test "$(sudo stat -c '%a' "${setup_file}")" = 600
+          test "$(sudo stat -c '%U:%G' "${setup_file}")" = root:root
+          while IFS= read -r setup_url; do
+            test -n "${setup_url}"
+            grep -Fqx "  ${setup_url}" /tmp/kdae-panel-install-output
+          done < <(sudo cat "${setup_file}")
+
       - name: dae 版本管理应默认可用
         if: github.event_name != 'push' || github.ref_type != 'branch'
         run: |
@@ -327,9 +339,9 @@ jobs:
           fi
           test "$(jq -r '.status' /tmp/health.json)" = ok
 
-      - name: 首次初始化链接应出现在服务日志中
+      - name: 首次初始化链接也应保留在服务日志中
         run: |
-          # 这是新装机器唯一的进入方式，日志里没有它就等于装完进不去
+          # 日志只用于排障，安装脚本的数据接口是 /run 下的私有文件。
           sudo journalctl -u kdae-panel.service --no-pager |
             tee /tmp/kdae-panel-journal >/dev/null
           grep -q 'setup_url' /tmp/kdae-panel-journal
@@ -347,6 +359,21 @@ jobs:
         env:
           BASE: http://127.0.0.1:2023/
         run: node release-smoke.mjs
+
+      - name: 管理员创建后应删除首次访问链接文件
+        env:
+          BASE: http://127.0.0.1:2023
+        run: |
+          setup_url=$(sudo head -n1 /run/kdae-panel/setup-url)
+          token=${setup_url##*bootstrap=}
+          test -n "${token}"
+          curl -fsS -c /tmp/setup-cookie -X POST -H 'Content-Type: application/json' \
+            -d "{\"token\":\"${token}\"}" "${BASE}/api/v1/auth/bootstrap"
+          curl -fsS -b /tmp/setup-cookie -X POST -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"smoke-Password-2026"}' \
+            "${BASE}/api/v1/auth/setup" >/tmp/setup-session.json
+          jq -e '.user.username == "admin"' /tmp/setup-session.json
+          sudo test ! -e /run/kdae-panel/setup-url
 
       - name: 卸载并清除数据
         env:
@@ -449,7 +476,7 @@ jobs:
 
       - name: 建立管理员会话
         run: |
-          # 一次性初始化链接只出现在服务日志里，这也顺带验证了它可用
+          # 升级起点是尚未提供 /run 交接文件的旧正式版，只能从旧版服务日志取链接。
           sudo journalctl -u kdae-panel.service --no-pager |
             tee /tmp/kdae-panel-journal >/dev/null
           token=$(grep -o 'bootstrap=[A-Za-z0-9_-]*' /tmp/kdae-panel-journal |

@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1460,8 +1462,12 @@ func TestAuthenticationProtectsAPIAndChecksCSRF(t *testing.T) {
 func TestSetupRequiresBootstrapTokenAndClosesAfterInitialization(t *testing.T) {
 	session := auth.Session{Token: "session", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour), User: auth.User{ID: 1, Username: "admin"}}
 	authService := &stubAuthenticationService{session: session}
+	setupURLFile := filepath.Join(t.TempDir(), "setup-url")
+	if err := os.WriteFile(setupURLFile, []byte("one-time-link\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	application, err := NewWithDependencies(
-		Config{Version: "test", BootstrapToken: "bootstrap-secret"},
+		Config{Version: "test", BootstrapToken: "bootstrap-secret", SetupURLFile: setupURLFile},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Dependencies{Dae: stubDaeService{}, Authentication: authService},
 	)
@@ -1506,6 +1512,9 @@ func TestSetupRequiresBootstrapTokenAndClosesAfterInitialization(t *testing.T) {
 	application.Handler().ServeHTTP(accepted, acceptedRequest)
 	if accepted.Code != http.StatusCreated || authService.setupCalls != 1 {
 		t.Fatalf("正确 token 响应: status=%d body=%s calls=%d", accepted.Code, accepted.Body, authService.setupCalls)
+	}
+	if _, err := os.Stat(setupURLFile); !os.IsNotExist(err) {
+		t.Fatalf("管理员创建后首次访问链接文件仍然存在: %v", err)
 	}
 
 	authService.initialized = true
@@ -1596,6 +1605,37 @@ func TestBootstrapSetupURLEscapesConfiguredToken(t *testing.T) {
 	}
 	if values.Get("bootstrap") != token {
 		t.Fatalf("初始化链接 token = %q，期望 %q", values.Get("bootstrap"), token)
+	}
+}
+
+func TestSyncSetupURLFileWritesPrivateFileAndRemovesStaleFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime", "setup-url")
+	urls := []string{
+		"http://10.0.0.2:2023/setup#bootstrap=first",
+		"http://10.0.0.3:2023/setup#bootstrap=second",
+	}
+	if err := syncSetupURLFile(path, urls); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(content), strings.Join(urls, "\n")+"\n"; got != want {
+		t.Fatalf("交接文件内容 = %q，期望 %q", got, want)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
+		t.Fatalf("交接文件权限 = %o，期望 600", got)
+	}
+	if err := syncSetupURLFile(path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("已初始化启动后旧交接文件仍然存在: %v", err)
 	}
 }
 

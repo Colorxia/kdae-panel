@@ -9,7 +9,10 @@ Type=simple
 User=root
 Group=root
 EnvironmentFile=-/etc/kdae-panel/kdae-panel.env
-ExecStart=/usr/bin/kdae-panel
+# 一次性链接通过 root-only 的运行时文件交给安装脚本，避免解析 journald 文本。
+RuntimeDirectory=kdae-panel
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/kdae-panel --setup-url-file=/run/kdae-panel/setup-url
 Restart=on-failure
 RestartSec=3s
 TimeoutStartSec=30s

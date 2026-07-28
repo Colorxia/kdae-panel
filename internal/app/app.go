@@ -12,11 +12,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/tuoro/kdae-panel/internal/atomicfile"
 	"github.com/tuoro/kdae-panel/internal/auth"
 	"github.com/tuoro/kdae-panel/internal/configstore"
 	"github.com/tuoro/kdae-panel/internal/dae"
@@ -101,6 +103,7 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		_ = authStore.Close()
 		return nil, fmt.Errorf("检查管理员初始化状态: %w", err)
 	}
+	var setupURLs []string
 	if !initialized {
 		if cfg.BootstrapToken == "" {
 			cfg.BootstrapToken, err = newBootstrapToken()
@@ -109,9 +112,7 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 				return nil, err
 			}
 		}
-		for _, setupURL := range bootstrapSetupURLs(cfg.ListenAddress, cfg.BootstrapToken) {
-			logger.Warn("首次初始化请打开一次性链接", "setup_url", setupURL)
-		}
+		setupURLs = bootstrapSetupURLs(cfg.ListenAddress, cfg.BootstrapToken)
 	}
 	dependencies := Dependencies{
 		Dae:            daeClient,
@@ -171,6 +172,13 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		return nil, err
 	}
 	application.closers = append(application.closers, authStore)
+	if err := syncSetupURLFile(cfg.SetupURLFile, setupURLs); err != nil {
+		_ = application.Close()
+		return nil, fmt.Errorf("同步首次访问链接: %w", err)
+	}
+	for _, setupURL := range setupURLs {
+		logger.Warn("首次初始化请打开一次性链接", "setup_url", setupURL)
+	}
 	return application, nil
 }
 
@@ -262,7 +270,7 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 	registerScheduleRoutes(router, "/api/v1/schedule/geo", geoScheduleService)
 	registerUpstreamRoutes(router, dependencies.Install, operations, logger)
 	registerGeoRoutes(router, geo)
-	registerAuthenticationRoutes(router, dependencies.Authentication, cfg.SecureCookie, cfg.BootstrapToken, proxyTrust)
+	registerAuthenticationRoutes(router, dependencies.Authentication, cfg.SecureCookie, cfg.BootstrapToken, cfg.SetupURLFile, proxyTrust, logger)
 	apiNotFound := func(writer http.ResponseWriter, _ *http.Request) {
 		writeAPIError(writer, http.StatusNotFound, "api_not_found", "API 路径不存在")
 	}
@@ -295,6 +303,28 @@ func newBootstrapToken() (string, error) {
 		return "", fmt.Errorf("生成 bootstrap token: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(content), nil
+}
+
+// syncSetupURLFile 只在等待首次初始化时留下链接；已初始化启动会清理旧文件。
+func syncSetupURLFile(path string, setupURLs []string) error {
+	if path == "" {
+		return nil
+	}
+	if len(setupURLs) == 0 {
+		return removeSetupURLFile(path)
+	}
+	content := []byte(strings.Join(setupURLs, "\n") + "\n")
+	return atomicfile.Write(path, content, 0o600)
+}
+
+func removeSetupURLFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func bootstrapSetupURL(listenAddress, token string) string {

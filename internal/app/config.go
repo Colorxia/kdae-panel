@@ -6,6 +6,9 @@ type Config struct {
 	ListenAddress  string
 	Version        string
 	BootstrapToken string
+	// SetupURLFile 是 systemd 安装流程读取的一次性链接交接文件。
+	// 留空表示只写服务日志，便于非 systemd 环境直接运行。
+	SetupURLFile   string
 	TrustedProxies string
 	DaeBinary      string
 	DaeConfigPath  string
