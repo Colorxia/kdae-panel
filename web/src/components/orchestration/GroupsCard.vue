@@ -103,10 +103,19 @@ function applyFilter() {
     <template #header-extra>
       <NTag size="small" :bordered="false">{{ groups.length }} 个</NTag>
     </template>
-    <div v-if="groups.length === 0" class="orchestrate-empty">
+    <div class="orchestrate-add inset" data-testid="group-add">
+      <NInputGroup>
+        <NInput v-model:value="newGroupName" placeholder="新分组名，如 proxy" @keyup.enter="createGroup" />
+        <NSelect v-model:value="newGroupPolicy" :options="POLICY_OPTIONS" class="group-policy-select" />
+        <NButton type="primary" ghost @click="createGroup">
+          <template #icon><NIcon><AddOutline /></NIcon></template>新建
+        </NButton>
+      </NInputGroup>
+    </div>
+    <div v-if="groups.length === 0" class="orchestrate-empty" data-testid="group-list">
       <NText depth="3">还没有分组。分组是路由规则的出站目标，按策略从命中的节点中选择。</NText>
     </div>
-    <div v-for="(group, groupIndex) in groups" :key="groupIndex" class="group-item">
+    <div v-for="(group, groupIndex) in groups" :key="groupIndex" class="group-item" data-testid="group-list">
       <div class="group-head">
         <code>{{ group.name }}</code>
         <NPopconfirm positive-text="删除" negative-text="取消" @positive-click="content = removeGroup(content, group)">
@@ -159,15 +168,6 @@ function applyFilter() {
           </NButton>
         </NSpace>
       </div>
-    </div>
-    <div class="orchestrate-add borderless">
-      <NInputGroup>
-        <NInput v-model:value="newGroupName" placeholder="新分组名，如 proxy" @keyup.enter="createGroup" />
-        <NSelect v-model:value="newGroupPolicy" :options="POLICY_OPTIONS" class="group-policy-select" />
-        <NButton type="primary" ghost @click="createGroup">
-          <template #icon><NIcon><AddOutline /></NIcon></template>新建
-        </NButton>
-      </NInputGroup>
     </div>
   </NCard>
 

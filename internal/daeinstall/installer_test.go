@@ -53,8 +53,12 @@ func (p fakeProbe) Validate(context.Context, string) error {
 }
 
 type fakeService struct {
-	execStart string
-	actions   []host.Action
+	execStart     string
+	unitPath      string
+	unitFileState string
+	actions       []host.Action
+	// actionErrors 可让某个动作的前若干次调用失败；切片会按调用顺序消费。
+	actionErrors map[host.Action][]error
 	// failRestart 指定第几次 restart 之后服务起不来（从 1 起算，0 表示始终能起来）。
 	//
 	// 刻意不按"第几次状态查询"计数：那个次数取决于事务内部调了多少次 Status，
@@ -66,6 +70,7 @@ type fakeService struct {
 	// 模拟"两次采样之间服务已经崩过一轮又被拉起来"——ActiveState 全程 active。
 	restartsGrow bool
 	restartsAt   uint64
+	activeState  string
 	statusErr    error
 	actionErr    error
 }
@@ -75,6 +80,12 @@ func (s *fakeService) Action(_ context.Context, action host.Action) error {
 	if action == host.ActionRestart {
 		s.restarts++
 	}
+	if failures := s.actionErrors[action]; len(failures) > 0 {
+		s.actionErrors[action] = failures[1:]
+		if failures[0] != nil {
+			return failures[0]
+		}
+	}
 	return s.actionErr
 }
 
@@ -82,7 +93,10 @@ func (s *fakeService) Status(context.Context) (host.Status, error) {
 	if s.statusErr != nil {
 		return host.Status{}, s.statusErr
 	}
-	state := "active"
+	state := s.activeState
+	if state == "" {
+		state = "active"
+	}
 	if s.failRestart > 0 && s.restarts == s.failRestart {
 		state = "failed"
 	}
@@ -93,6 +107,8 @@ func (s *fakeService) Status(context.Context) (host.Status, error) {
 		ActiveState:   state,
 		SubState:      "running",
 		ExecStartPath: s.execStart,
+		UnitPath:      s.unitPath,
+		UnitFileState: s.unitFileState,
 		Restarts:      s.restartsAt,
 	}, nil
 }

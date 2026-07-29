@@ -86,17 +86,25 @@ func TestParseExecStartPath(t *testing.T) {
 func TestActionAllowlist(t *testing.T) {
 	runner := &fakeRunner{results: map[string]command.Result{
 		"systemctl restart dae": {},
+		"systemctl enable dae":  {},
+		"systemctl disable dae": {},
 	}, errors: map[string]error{}}
 	manager, _ := NewManagerWithRunner("dae", "systemctl", "journalctl", runner, time.Second)
 	if err := manager.Action(context.Background(), ActionRestart); err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []Action{"mask", "disable", "isolate", "poweroff"} {
+	if err := manager.Action(context.Background(), ActionEnable); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Action(context.Background(), ActionDisable); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []Action{"mask", "isolate", "poweroff"} {
 		if err := manager.Action(context.Background(), forbidden); err == nil {
 			t.Fatalf("未允许的动作 %q 应该被拒绝", forbidden)
 		}
 	}
-	want := []string{"systemctl restart dae"}
+	want := []string{"systemctl restart dae", "systemctl enable dae", "systemctl disable dae"}
 	if !reflect.DeepEqual(runner.calls, want) {
 		t.Fatalf("命令调用 = %v，期望 %v", runner.calls, want)
 	}

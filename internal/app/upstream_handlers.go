@@ -21,6 +21,7 @@ type InstallService interface {
 	Install(ctx context.Context, binary []byte, source upstream.Source, ref, label string) (daeinstall.Status, error)
 	FirstInstall(ctx context.Context, bundle upstream.Bundle, source upstream.Source, ref, label string) (daeinstall.Status, error)
 	Rollback(ctx context.Context) (daeinstall.Status, error)
+	Uninstall(ctx context.Context) error
 }
 
 type installRequest struct {
@@ -108,6 +109,7 @@ func registerUpstreamRoutes(router *http.ServeMux, service InstallService, opera
 		for _, pattern := range []string{
 			"GET /api/v1/dae/install", "POST /api/v1/dae/install",
 			"GET /api/v1/dae/versions", "POST /api/v1/dae/rollback",
+			"POST /api/v1/dae/uninstall",
 		} {
 			router.HandleFunc(pattern, unavailable)
 		}
@@ -182,6 +184,15 @@ func registerUpstreamRoutes(router *http.ServeMux, service InstallService, opera
 		go runRollback(jobs, service, operations, logger)
 		writeJSON(writer, http.StatusAccepted, map[string]any{"job": jobs.snapshot()})
 	})
+
+	router.HandleFunc("POST /api/v1/dae/uninstall", func(writer http.ResponseWriter, request *http.Request) {
+		if !jobs.begin(PhaseApplying, "", "", "卸载 dae") {
+			writeAPIError(writer, http.StatusConflict, "install_in_progress", "已有版本管理任务正在执行")
+			return
+		}
+		go runUninstall(jobs, service, operations, logger)
+		writeJSON(writer, http.StatusAccepted, map[string]any{"job": jobs.snapshot()})
+	})
 }
 
 // installTimeout 覆盖下载与替换的总时长。任务在后台跑，不受 HTTP 写超时约束。
@@ -233,5 +244,20 @@ func runRollback(jobs *installJobs, service InstallService, operations *sync.Mut
 		return
 	}
 	logger.Info("已回滚 dae 版本")
+	jobs.finish(nil)
+}
+
+func runUninstall(jobs *installJobs, service InstallService, operations *sync.Mutex, logger *slog.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
+	defer cancel()
+
+	operations.Lock()
+	defer operations.Unlock()
+	if err := service.Uninstall(ctx); err != nil {
+		logger.Warn("卸载 dae 失败", "error", err)
+		jobs.finish(err)
+		return
+	}
+	logger.Info("已卸载 dae，配置与 geo 数据保持不变")
 	jobs.finish(nil)
 }

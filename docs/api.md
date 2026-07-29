@@ -73,6 +73,7 @@ X-CSRF-Token: <csrfToken>
 | `GET` | `/dae/versions?source=official\|kdae` | 列出可安装版本 |
 | `POST` | `/dae/install` | 开始安装指定版本 |
 | `POST` | `/dae/rollback` | 回滚到上一版本 |
+| `POST` | `/dae/uninstall` | 卸载面板管理的 dae，保留配置与 geo 数据 |
 
 安装请求体：
 
@@ -86,7 +87,9 @@ X-CSRF-Token: <csrfToken>
 
 任务进行中（`downloading`/`applying`）的响应**不含** `provision`：该字段要靠实际试写目标目录才能算出来，而界面每两秒轮询一次，其中一个探测目标正是 systemd 在 inotify 监视的单元目录。客户端应沿用上一次拿到的值，而不是当作"首次安装已不可行"。
 
-安装与回滚耗时以分钟计，远超 HTTP 写超时，因此立即返回 `202` 与任务快照，由客户端轮询 `GET /dae/install` 获取进度。任务阶段依次为 `downloading`、`applying`，终态为 `done` 或 `failed`。同一时刻只允许一个任务，重复提交返回 `409 install_in_progress`。
+安装、回滚与卸载都立即返回 `202` 与任务快照，由客户端轮询 `GET /dae/install` 获取进度。安装任务依次经过 `downloading`、`applying`；回滚与卸载直接进入 `applying`，终态均为 `done` 或 `failed`。同一时刻只允许一个版本管理任务，重复提交返回 `409 install_in_progress`。
+
+卸载只接受面板有安装账本且二进制摘要未漂移的 dae，并要求 systemd 单元位于面板管理的标准路径。它会停止并禁用 dae，移除可执行文件、服务单元与版本回滚记录；`config.dae`、订阅、geo 数据及其他用户文件始终保留。文件移除与 `daemon-reload` 属于同一事务，失败时会恢复文件、开机启动状态和原运行状态。
 
 下载与校验不占用全局控制门，只有替换与重启阶段才进入串行区，避免几十兆的下载把配置保存一并堵住。
 

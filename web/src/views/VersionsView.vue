@@ -20,6 +20,7 @@ import {
   CloudDownloadOutline,
   RefreshOutline,
   ReturnUpBackOutline,
+  TrashOutline,
 } from '@vicons/ionicons5'
 import { APIError, getJSON, postJSON } from '../api/client'
 import type {
@@ -64,6 +65,12 @@ const installPolling = useJobPolling({
 const activeSource = computed(() => SOURCES.find((item) => item.value === source.value)!)
 const busy = computed(() => job.value?.phase === 'downloading' || job.value?.phase === 'applying')
 const installedRef = computed(() => status.value?.managed?.ref || '')
+const canUninstall = computed(() => status.value?.ready === true && status.value.managed !== undefined && !status.value.drifted)
+const uninstallHint = computed(() => {
+  if (status.value?.drifted) return 'dae 已在面板之外被替换，请先重装一个版本后再卸载'
+  if (!status.value?.managed) return '当前 dae 没有面板安装记录，为避免误删外部安装，不能自动卸载'
+  return ''
+})
 
 async function loadStatus() {
   try {
@@ -215,6 +222,39 @@ async function rollback() {
   }
 }
 
+async function confirmUninstall() {
+  // 卸载是破坏性操作，确认框必须依据点击当下的状态，而不是首屏快照。
+  await loadStatus()
+  if (unmounted) return
+  if (!canUninstall.value) {
+    message.warning(uninstallHint.value || '当前 dae 无法由面板卸载')
+    return
+  }
+  dialog.warning({
+    title: '卸载 dae',
+    content: '这会停止 dae，现有代理连接会立即中断，并删除由面板管理的可执行文件、'
+      + 'systemd 服务单元和版本回滚记录。配置文件、订阅与 geo 数据会完整保留，之后可在本页重新安装。',
+    positiveText: '停止并卸载',
+    negativeText: '取消',
+    onPositiveClick: uninstall,
+  })
+}
+
+async function uninstall() {
+  try {
+    const payload = await postJSON<{ job: InstallJob }>('/api/v1/dae/uninstall')
+    job.value = payload.job
+    message.info('已开始卸载 dae')
+    installPolling.start()
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '启动卸载失败')
+    if (error instanceof APIError && error.status === 409) {
+      await loadStatus()
+      if (busy.value) installPolling.start()
+    }
+  }
+}
+
 const columns = computed<DataTableColumns<UpstreamVersion>>(() => [
   {
     title: '版本',
@@ -328,6 +368,16 @@ onBeforeUnmount(() => {
         >
           <template #icon><NIcon><ReturnUpBackOutline /></NIcon></template>回滚上一版
         </NButton>
+        <NTooltip v-if="status?.ready" :disabled="canUninstall">
+          <template #trigger>
+            <span>
+              <NButton type="error" secondary :disabled="busy || !canUninstall" @click="confirmUninstall">
+                <template #icon><NIcon><TrashOutline /></NIcon></template>卸载 dae
+              </NButton>
+            </span>
+          </template>
+          {{ uninstallHint }}
+        </NTooltip>
       </NSpace>
     </div>
 
@@ -341,7 +391,8 @@ onBeforeUnmount(() => {
         正在下载并校验 {{ job.label || job.ref }}…
       </NAlert>
       <NAlert v-else-if="job?.phase === 'applying'" type="warning" :bordered="false">
-        正在替换二进制并重启 dae，期间连接会短暂中断…
+        <template v-if="job.label === '卸载 dae'">正在停止服务并卸载 dae，配置与 geo 数据会保留…</template>
+        <template v-else>正在替换二进制并重启 dae，期间连接会短暂中断…</template>
       </NAlert>
       <NAlert v-else-if="job?.phase === 'failed'" type="error" :bordered="false">
         上次操作失败：{{ job.error }}

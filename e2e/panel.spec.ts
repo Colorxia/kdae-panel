@@ -56,6 +56,16 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
   await test.step('导入节点并保存重载，改动落到磁盘', async () => {
     await page.goto('/proxy')
     await expectCardsAligned(page.locator('.equal-height-grid .panel-card'))
+    for (const [toolbar, content] of [
+      ['subscription-add', 'subscription-list'],
+      ['group-add', 'group-list'],
+    ] as const) {
+      const positions = await Promise.all([
+        page.getByTestId(toolbar).evaluate((element) => element.getBoundingClientRect().top),
+        page.getByTestId(content).first().evaluate((element) => element.getBoundingClientRect().top),
+      ])
+      expect(positions[0], `${toolbar} 应固定在内容区上方`).toBeLessThan(positions[1])
+    }
     await page.getByRole('button', { name: '导入节点' }).click()
     await page.getByPlaceholder(/vmess/).fill(NODE_LINK)
     await page.getByRole('button', { name: '加入编排' }).click()

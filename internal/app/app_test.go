@@ -551,6 +551,11 @@ func (s *stubInstallService) Rollback(context.Context) (daeinstall.Status, error
 	return s.status, s.err
 }
 
+func (s *stubInstallService) Uninstall(context.Context) error {
+	s.record("uninstall")
+	return s.err
+}
+
 func newInstallApp(t *testing.T, service InstallService) *App {
 	t.Helper()
 	application, err := NewWithDependencies(
@@ -572,6 +577,7 @@ func TestDaeInstallDisabledByDefault(t *testing.T) {
 		httptest.NewRequest(http.MethodGet, "/api/v1/dae/versions?source=official", nil),
 		httptest.NewRequest(http.MethodPost, "/api/v1/dae/install", strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)),
 		httptest.NewRequest(http.MethodPost, "/api/v1/dae/rollback", nil),
+		httptest.NewRequest(http.MethodPost, "/api/v1/dae/uninstall", nil),
 	} {
 		recorder := httptest.NewRecorder()
 		application.Handler().ServeHTTP(recorder, request)
@@ -757,6 +763,37 @@ func TestDaeRollbackReportsFailure(t *testing.T) {
 	job := awaitJobSettled(t, application)
 	if job.Phase != PhaseFailed || !strings.Contains(job.Error, "没有可回滚") {
 		t.Fatalf("回滚失败应如实上报: %+v", job)
+	}
+}
+
+func TestDaeUninstallRunsAsynchronously(t *testing.T) {
+	service := &stubInstallService{status: daeinstall.Status{Ready: true}}
+	application := newInstallApp(t, service)
+
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/dae/uninstall", nil))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("状态码 = %d，期望 202，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+
+	if job := awaitJobSettled(t, application); job.Phase != PhaseDone || job.Label != "卸载 dae" {
+		t.Fatalf("卸载任务应完成: %+v", job)
+	}
+	if records := service.records(); len(records) != 1 || records[0] != "uninstall" {
+		t.Fatalf("卸载调用 = %v", records)
+	}
+}
+
+func TestDaeUninstallReportsFailure(t *testing.T) {
+	service := &stubInstallService{status: daeinstall.Status{Ready: true}, err: errors.New("当前 dae 没有面板安装记录")}
+	application := newInstallApp(t, service)
+
+	application.Handler().ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/api/v1/dae/uninstall", nil))
+
+	job := awaitJobSettled(t, application)
+	if job.Phase != PhaseFailed || !strings.Contains(job.Error, "没有面板安装记录") {
+		t.Fatalf("卸载失败应如实上报: %+v", job)
 	}
 }
 

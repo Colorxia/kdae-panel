@@ -572,12 +572,11 @@ pre,
 
 .orchestrate-add {
   padding: 12px 14px;
-  border-top: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
 }
 
-.orchestrate-add.borderless {
-  padding: 14px 0 0;
-  border-top: 0;
+.orchestrate-add.inset {
+  padding: 0 0 14px;
 }
 
 .orchestrate-tag-input {
@@ -625,10 +624,6 @@ pre,
   flex-direction: column;
   gap: 9px;
   border-bottom: 1px solid var(--border-soft);
-}
-
-.group-item:first-of-type {
-  padding-top: 0;
 }
 
 .group-head {

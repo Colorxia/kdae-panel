@@ -260,21 +260,7 @@ onMounted(() => void loadSchedule())
         </NButton>
       </NSpace>
     </template>
-    <NDataTable
-      :columns="subscriptionColumns"
-      :data="subscriptions"
-      :row-key="(row: Entry) => row.lineStart"
-      :bordered="false"
-      :scroll-x="620"
-      size="small"
-    >
-      <template #empty>
-        <div class="orchestrate-empty">
-          <NText depth="3">还没有订阅。订阅内容由 dae 在重载时拉取。</NText>
-        </div>
-      </template>
-    </NDataTable>
-    <div class="orchestrate-add">
+    <div class="orchestrate-add" data-testid="subscription-add">
       <NInputGroup>
         <NInput v-model:value="subscriptionTag" placeholder="标签(可选)" class="orchestrate-tag-input" />
         <NInput v-model:value="subscriptionURL" placeholder="https://example.com/subscription" @keyup.enter="addSubscription" />
@@ -290,6 +276,21 @@ onMounted(() => void loadSchedule())
         订阅刷新：{{ scheduleSummary }}<template v-if="reloadSchedule?.nextRunAt">，下次 {{ formatDateTime(reloadSchedule.nextRunAt) }}</template>
       </NText>
     </div>
+    <NDataTable
+      data-testid="subscription-list"
+      :columns="subscriptionColumns"
+      :data="subscriptions"
+      :row-key="(row: Entry) => row.lineStart"
+      :bordered="false"
+      :scroll-x="620"
+      size="small"
+    >
+      <template #empty>
+        <div class="orchestrate-empty">
+          <NText depth="3">还没有订阅。订阅内容由 dae 在重载时拉取。</NText>
+        </div>
+      </template>
+    </NDataTable>
   </NCard>
 
   <NModal :show="editTarget !== null" preset="card" title="编辑订阅" class="orchestrate-modal" @update:show="editTarget = null">
