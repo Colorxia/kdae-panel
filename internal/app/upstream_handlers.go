@@ -21,7 +21,7 @@ type InstallService interface {
 	Install(ctx context.Context, binary []byte, source upstream.Source, ref, label string) (daeinstall.Status, error)
 	FirstInstall(ctx context.Context, bundle upstream.Bundle, source upstream.Source, ref, label string) (daeinstall.Status, error)
 	Rollback(ctx context.Context) (daeinstall.Status, error)
-	Uninstall(ctx context.Context) error
+	Uninstall(ctx context.Context, options daeinstall.UninstallOptions) error
 }
 
 type installRequest struct {
@@ -186,11 +186,16 @@ func registerUpstreamRoutes(router *http.ServeMux, service InstallService, opera
 	})
 
 	router.HandleFunc("POST /api/v1/dae/uninstall", func(writer http.ResponseWriter, request *http.Request) {
+		var options daeinstall.UninstallOptions
+		// 无请求体等同于安全零值，兼容旧客户端；有请求体仍只接受一个小 JSON 对象。
+		if !decodeOptionalJSONBody(writer, request, &options) {
+			return
+		}
 		if !jobs.begin(PhaseApplying, "", "", "卸载 dae") {
 			writeAPIError(writer, http.StatusConflict, "install_in_progress", "已有版本管理任务正在执行")
 			return
 		}
-		go runUninstall(jobs, service, operations, logger)
+		go runUninstall(jobs, service, operations, logger, options)
 		writeJSON(writer, http.StatusAccepted, map[string]any{"job": jobs.snapshot()})
 	})
 }
@@ -247,17 +252,18 @@ func runRollback(jobs *installJobs, service InstallService, operations *sync.Mut
 	jobs.finish(nil)
 }
 
-func runUninstall(jobs *installJobs, service InstallService, operations *sync.Mutex, logger *slog.Logger) {
+func runUninstall(jobs *installJobs, service InstallService, operations *sync.Mutex, logger *slog.Logger,
+	options daeinstall.UninstallOptions) {
 	ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
 	defer cancel()
 
 	operations.Lock()
 	defer operations.Unlock()
-	if err := service.Uninstall(ctx); err != nil {
+	if err := service.Uninstall(ctx, options); err != nil {
 		logger.Warn("卸载 dae 失败", "error", err)
 		jobs.finish(err)
 		return
 	}
-	logger.Info("已卸载 dae，配置与 geo 数据保持不变")
+	logger.Info("已卸载 dae", "purge_config", options.PurgeConfig, "purge_geo", options.PurgeGeo)
 	jobs.finish(nil)
 }

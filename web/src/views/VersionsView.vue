@@ -4,6 +4,7 @@ import {
   NAlert,
   NButton,
   NCard,
+  NCheckbox,
   NDataTable,
   NIcon,
   NRadioButton,
@@ -71,6 +72,8 @@ const uninstallHint = computed(() => {
   if (!status.value?.managed) return '当前 dae 没有面板安装记录，为避免误删外部安装，不能自动卸载'
   return ''
 })
+const purgeConfig = ref(false)
+const purgeGeo = ref(false)
 
 async function loadStatus() {
   try {
@@ -230,19 +233,37 @@ async function confirmUninstall() {
     message.warning(uninstallHint.value || '当前 dae 无法由面板卸载')
     return
   }
+  purgeConfig.value = false
+  purgeGeo.value = false
   dialog.warning({
     title: '卸载 dae',
-    content: '这会停止 dae，现有代理连接会立即中断，并删除由面板管理的可执行文件、'
-      + 'systemd 服务单元和版本回滚记录。配置文件、订阅与 geo 数据会完整保留，之后可在本页重新安装。',
+    content: () => h(NSpace, { vertical: true, size: 12 }, {
+      default: () => [
+        h(NText, null, {
+          default: () => '这会停止 dae，现有代理连接会立即中断，并删除由面板管理的可执行文件、systemd 服务单元和版本回滚记录。',
+        }),
+        h(NCheckbox, {
+          checked: purgeConfig.value,
+          'onUpdate:checked': (value: boolean) => { purgeConfig.value = value },
+        }, { default: () => '同时删除 dae 主配置文件' }),
+        h(NCheckbox, {
+          checked: purgeGeo.value,
+          'onUpdate:checked': (value: boolean) => { purgeGeo.value = value },
+        }, { default: () => '同时删除面板可见的全部 geo 数据副本' }),
+        h(NText, { depth: 3 }, {
+          default: () => '未勾选的数据会保留，之后可在本页重新安装。面板沙箱看不到的 /root/.local/share/dae 不会被删除。',
+        }),
+      ],
+    }),
     positiveText: '停止并卸载',
     negativeText: '取消',
-    onPositiveClick: uninstall,
+    onPositiveClick: () => uninstall({ purgeConfig: purgeConfig.value, purgeGeo: purgeGeo.value }),
   })
 }
 
-async function uninstall() {
+async function uninstall(options: { purgeConfig: boolean; purgeGeo: boolean }) {
   try {
-    const payload = await postJSON<{ job: InstallJob }>('/api/v1/dae/uninstall')
+    const payload = await postJSON<{ job: InstallJob }>('/api/v1/dae/uninstall', options)
     job.value = payload.job
     message.info('已开始卸载 dae')
     installPolling.start()
@@ -391,7 +412,7 @@ onBeforeUnmount(() => {
         正在下载并校验 {{ job.label || job.ref }}…
       </NAlert>
       <NAlert v-else-if="job?.phase === 'applying'" type="warning" :bordered="false">
-        <template v-if="job.label === '卸载 dae'">正在停止服务并卸载 dae，配置与 geo 数据会保留…</template>
+        <template v-if="job.label === '卸载 dae'">正在停止服务并卸载 dae，数据将按确认时的选择处理…</template>
         <template v-else>正在替换二进制并重启 dae，期间连接会短暂中断…</template>
       </NAlert>
       <NAlert v-else-if="job?.phase === 'failed'" type="error" :bordered="false">

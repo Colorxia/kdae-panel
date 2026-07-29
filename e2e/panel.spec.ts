@@ -85,6 +85,51 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expectColumnsAligned(page.locator('.settings-page .equal-height-grid > *'))
   })
 
+  await test.step('卸载 dae 时由用户独立选择配置与 geo 去留', async () => {
+    await page.route('**/api/v1/dae/install', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: {
+            binaryPath: '/usr/bin/dae',
+            platform: 'linux-amd64',
+            ready: true,
+            present: true,
+            version: 'dae version v2.0.0',
+            managed: {
+              source: 'official',
+              ref: 'v2.0.0',
+              label: 'v2.0.0',
+              installedAt: '2026-07-30T00:00:00Z',
+              sha256: 'e2e',
+            },
+            rollbackAvailable: false,
+            serviceActive: true,
+          },
+          job: { phase: 'idle' },
+        }),
+      })
+    })
+    await page.route('**/api/v1/dae/versions**', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ versions: [] }),
+    }))
+
+    await page.goto('/versions')
+    await page.getByRole('button', { name: '卸载 dae' }).click()
+    const dialog = page.locator('.n-dialog')
+    const purgeConfig = dialog.getByRole('checkbox', { name: '同时删除 dae 主配置文件' })
+    const purgeGeo = dialog.getByRole('checkbox', { name: '同时删除面板可见的全部 geo 数据副本' })
+    await expect(purgeConfig).toBeVisible()
+    await expect(purgeGeo).toBeVisible()
+    await expect(purgeConfig).not.toBeChecked()
+    await expect(purgeGeo).not.toBeChecked()
+    await dialog.getByRole('button', { name: '取消' }).click()
+    await page.unroute('**/api/v1/dae/install')
+    await page.unroute('**/api/v1/dae/versions**')
+  })
+
   await test.step('移动端单列布局没有横向溢出', async () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/')

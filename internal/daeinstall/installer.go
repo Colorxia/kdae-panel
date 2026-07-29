@@ -107,11 +107,14 @@ type Installer struct {
 	backupPath  string
 	serviceName string
 	// unitDir 是 systemd 单元的落地目录，留空即用系统默认，测试会覆盖它。
-	unitDir  string
-	fetcher  Fetcher
-	newProbe ProbeFactory
-	service  ServiceController
-	logger   *slog.Logger
+	unitDir string
+	// geoSearchDirs 只供卸载测试把搜索范围收进临时目录；生产环境留空，
+	// 始终使用 dae 的真实 geo 搜索顺序。
+	geoSearchDirs []string
+	fetcher       Fetcher
+	newProbe      ProbeFactory
+	service       ServiceController
+	logger        *slog.Logger
 	// health/interval 是重启后的健康观察窗口与采样间隔，测试会调短它们。
 	health   time.Duration
 	interval time.Duration

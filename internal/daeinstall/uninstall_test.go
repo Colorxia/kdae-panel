@@ -56,7 +56,7 @@ func TestUninstallRemovesManagedDaeButKeepsUserData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := installer.Uninstall(context.Background()); err != nil {
+	if err := installer.Uninstall(context.Background(), UninstallOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -82,6 +82,53 @@ func TestUninstallRemovesManagedDaeButKeepsUserData(t *testing.T) {
 	}
 }
 
+func TestUninstallAppliesIndependentDataChoices(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		options    UninstallOptions
+		keepConfig bool
+		keepGeo    bool
+	}{
+		{name: "全部保留", options: UninstallOptions{}, keepConfig: true, keepGeo: true},
+		{name: "只删配置", options: UninstallOptions{PurgeConfig: true}, keepGeo: true},
+		{name: "只删 geo", options: UninstallOptions{PurgeGeo: true}, keepConfig: true},
+		{name: "全部删除", options: UninstallOptions{PurgeConfig: true, PurgeGeo: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			installer, _, _, _ := managedUninstallFixture(t)
+			directory := filepath.Dir(installer.configPath)
+			installer.geoSearchDirs = []string{directory}
+			geoPaths := []string{
+				filepath.Join(directory, "geoip.dat"),
+				filepath.Join(directory, "geosite.dat"),
+			}
+			for _, path := range geoPaths {
+				if err := os.WriteFile(path, []byte("geo"), geoMode); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := installer.Uninstall(context.Background(), test.options); err != nil {
+				t.Fatal(err)
+			}
+			assertPresence := func(path string, present bool) {
+				t.Helper()
+				_, err := os.Stat(path)
+				if present && err != nil {
+					t.Fatalf("%s 应保留: %v", path, err)
+				}
+				if !present && !os.IsNotExist(err) {
+					t.Fatalf("%s 应删除，状态 = %v", path, err)
+				}
+			}
+			assertPresence(installer.configPath, test.keepConfig)
+			for _, path := range geoPaths {
+				assertPresence(path, test.keepGeo)
+			}
+		})
+	}
+}
+
 func TestUninstallPreservesInactiveOrDisabledServiceState(t *testing.T) {
 	for _, test := range []struct {
 		name      string
@@ -96,7 +143,7 @@ func TestUninstallPreservesInactiveOrDisabledServiceState(t *testing.T) {
 			installer, service, _, _ := managedUninstallFixture(t)
 			service.activeState = test.active
 			service.unitFileState = test.unitState
-			if err := installer.Uninstall(context.Background()); err != nil {
+			if err := installer.Uninstall(context.Background(), UninstallOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(service.actions, test.want) {
@@ -109,7 +156,7 @@ func TestUninstallPreservesInactiveOrDisabledServiceState(t *testing.T) {
 func TestUninstallRefusesRuntimeEnabledUnit(t *testing.T) {
 	installer, service, _, _ := managedUninstallFixture(t)
 	service.unitFileState = "enabled-runtime"
-	if err := installer.Uninstall(context.Background()); err == nil || !strings.Contains(err.Error(), "enabled-runtime") {
+	if err := installer.Uninstall(context.Background(), UninstallOptions{}); err == nil || !strings.Contains(err.Error(), "enabled-runtime") {
 		t.Fatalf("临时启用状态应被拒绝: %v", err)
 	}
 	if len(service.actions) != 0 {
@@ -133,7 +180,7 @@ func TestUninstallRefusesUnmanagedOrDriftedBinary(t *testing.T) {
 			if err := test.prepare(installer); err != nil {
 				t.Fatal(err)
 			}
-			if err := installer.Uninstall(context.Background()); err == nil || !strings.Contains(err.Error(), test.want) {
+			if err := installer.Uninstall(context.Background(), UninstallOptions{}); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("错误 = %v，期望包含 %q", err, test.want)
 			}
 			if len(service.actions) != 0 {
@@ -155,7 +202,7 @@ func TestUninstallRefusesNonStandardUnitPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := installer.Uninstall(context.Background())
+	err := installer.Uninstall(context.Background(), UninstallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "不是面板管理的标准路径") {
 		t.Fatalf("非标准单元应被拒绝: %v", err)
 	}
@@ -164,19 +211,55 @@ func TestUninstallRefusesNonStandardUnitPath(t *testing.T) {
 	}
 }
 
+func TestUninstallRejectsNonFileDataBeforeStoppingService(t *testing.T) {
+	installer, service, _, _ := managedUninstallFixture(t)
+	installer.configPath = testDir(t)
+
+	err := installer.Uninstall(context.Background(), UninstallOptions{PurgeConfig: true})
+	if err == nil || !strings.Contains(err.Error(), "不是普通文件或符号链接") {
+		t.Fatalf("目录不应被当作配置文件删除: %v", err)
+	}
+	if len(service.actions) != 0 {
+		t.Fatalf("数据预检失败前不应控制服务: %v", service.actions)
+	}
+}
+
 func TestUninstallRollbackRestoresFilesAndServiceState(t *testing.T) {
 	installer, service, binaryPath, unitPath := managedUninstallFixture(t)
+	directory := filepath.Dir(installer.configPath)
+	installer.geoSearchDirs = []string{directory}
+	geoPaths := []string{
+		filepath.Join(directory, "geoip.dat"),
+		filepath.Join(directory, "geosite.dat"),
+	}
+	for _, path := range geoPaths {
+		if err := os.WriteFile(path, []byte("geo-before"), geoMode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configBefore, err := os.ReadFile(installer.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	service.actionErrors = map[host.Action][]error{
 		host.ActionDaemonReload: {errors.New("第一次 daemon-reload 失败"), nil},
 	}
 
-	err := installer.Uninstall(context.Background())
+	err = installer.Uninstall(context.Background(), UninstallOptions{PurgeConfig: true, PurgeGeo: true})
 	if err == nil || !strings.Contains(err.Error(), "daemon-reload") {
 		t.Fatalf("应报告 daemon-reload 失败: %v", err)
 	}
 	for _, path := range []string{binaryPath, unitPath, installer.statePath, installer.backupPath} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("回滚后 %s 应恢复: %v", path, err)
+		}
+	}
+	if got, err := os.ReadFile(installer.configPath); err != nil || string(got) != string(configBefore) {
+		t.Fatalf("回滚后配置应恢复: %q, %v", got, err)
+	}
+	for _, path := range geoPaths {
+		if got, err := os.ReadFile(path); err != nil || string(got) != "geo-before" {
+			t.Fatalf("回滚后 %s 应恢复: %q, %v", path, got, err)
 		}
 	}
 	want := []host.Action{
@@ -198,7 +281,7 @@ func TestUninstallStopFailureChangesNothing(t *testing.T) {
 		host.ActionStop: {errors.New("stop failed")},
 	}
 
-	if err := installer.Uninstall(context.Background()); err == nil || !strings.Contains(err.Error(), "停止 dae") {
+	if err := installer.Uninstall(context.Background(), UninstallOptions{}); err == nil || !strings.Contains(err.Error(), "停止 dae") {
 		t.Fatalf("应报告停止失败: %v", err)
 	}
 	for _, path := range []string{binaryPath, unitPath, installer.statePath} {
@@ -217,7 +300,7 @@ func TestUninstallDisableFailureRestoresEnabledAndActiveState(t *testing.T) {
 		host.ActionDisable: {errors.New("disable partially failed")},
 	}
 
-	if err := installer.Uninstall(context.Background()); err == nil || !strings.Contains(err.Error(), "禁用 dae") {
+	if err := installer.Uninstall(context.Background(), UninstallOptions{}); err == nil || !strings.Contains(err.Error(), "禁用 dae") {
 		t.Fatalf("应报告禁用失败: %v", err)
 	}
 	for _, path := range []string{binaryPath, unitPath, installer.statePath} {

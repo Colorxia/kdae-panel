@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -551,8 +552,8 @@ func (s *stubInstallService) Rollback(context.Context) (daeinstall.Status, error
 	return s.status, s.err
 }
 
-func (s *stubInstallService) Uninstall(context.Context) error {
-	s.record("uninstall")
+func (s *stubInstallService) Uninstall(_ context.Context, options daeinstall.UninstallOptions) error {
+	s.record(fmt.Sprintf("uninstall:%t:%t", options.PurgeConfig, options.PurgeGeo))
 	return s.err
 }
 
@@ -779,8 +780,23 @@ func TestDaeUninstallRunsAsynchronously(t *testing.T) {
 	if job := awaitJobSettled(t, application); job.Phase != PhaseDone || job.Label != "卸载 dae" {
 		t.Fatalf("卸载任务应完成: %+v", job)
 	}
-	if records := service.records(); len(records) != 1 || records[0] != "uninstall" {
+	if records := service.records(); len(records) != 1 || records[0] != "uninstall:false:false" {
 		t.Fatalf("卸载调用 = %v", records)
+	}
+}
+
+func TestDaeUninstallPassesExplicitDataChoice(t *testing.T) {
+	service := &stubInstallService{status: daeinstall.Status{Ready: true}}
+	application := newInstallApp(t, service)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/dae/uninstall",
+		strings.NewReader(`{"purgeConfig":true,"purgeGeo":true}`))
+	application.Handler().ServeHTTP(httptest.NewRecorder(), request)
+	if job := awaitJobSettled(t, application); job.Phase != PhaseDone {
+		t.Fatalf("卸载任务应完成: %+v", job)
+	}
+	if records := service.records(); len(records) != 1 || records[0] != "uninstall:true:true" {
+		t.Fatalf("卸载选项没有透传: %v", records)
 	}
 }
 

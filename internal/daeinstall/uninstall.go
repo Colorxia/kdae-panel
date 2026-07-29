@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/tuoro/kdae-panel/internal/atomicfile"
+	"github.com/tuoro/kdae-panel/internal/geodata"
 	"github.com/tuoro/kdae-panel/internal/host"
 	"github.com/tuoro/kdae-panel/internal/upstream"
 )
@@ -18,12 +20,43 @@ type removedFile struct {
 	staged   string
 }
 
+// UninstallOptions 是用户对 dae 数据的明确处置选择。
+// 零值必须安全：旧客户端或空请求一律保留配置与 geo。
+type UninstallOptions struct {
+	PurgeConfig bool `json:"purgeConfig"`
+	PurgeGeo    bool `json:"purgeGeo"`
+}
+
 // Uninstall 删除面板管理的 dae 可执行文件、服务单元与版本账本。
-// 配置和 geo 数据承载用户资产，始终保留。
-func (i *Installer) Uninstall(ctx context.Context) error {
+// 配置和 geo 默认保留，只有 options 显式要求时才进入同一个删除事务。
+func (i *Installer) Uninstall(ctx context.Context, options UninstallOptions) error {
 	status, target, unitPath, err := i.uninstallTarget(ctx)
 	if err != nil {
 		return err
+	}
+	dataPaths, err := i.uninstallDataPaths(status, options)
+	if err != nil {
+		return err
+	}
+	paths := []string{
+		target,
+		unitPath,
+		i.statePath,
+		i.previousStatePath(),
+		i.backupPath,
+		i.pendingBackupPath(),
+	}
+	paths = append(paths, dataPaths...)
+	for index, path := range paths {
+		if _, err := os.Lstat(path); err != nil {
+			if index >= 2 && os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("检查待删除文件 %s: %w", path, err)
+		}
+		if err := atomicfile.Writable(filepath.Dir(path)); err != nil {
+			return fmt.Errorf("面板无法删除 %s：%w", path, err)
+		}
 	}
 
 	wasActive := status.ActiveState == "active"
@@ -41,14 +74,6 @@ func (i *Installer) Uninstall(ctx context.Context) error {
 		}
 	}
 
-	paths := []string{
-		target,
-		unitPath,
-		i.statePath,
-		i.previousStatePath(),
-		i.backupPath,
-		i.pendingBackupPath(),
-	}
 	removed := make([]removedFile, 0, len(paths))
 	for index, path := range paths {
 		file, err := stageRemoval(path, index >= 2)
@@ -73,8 +98,61 @@ func (i *Installer) Uninstall(ctx context.Context) error {
 			i.logger.Warn("清理 dae 卸载暂存文件失败", "path", file.staged, "error", err)
 		}
 	}
-	i.logger.Info("已卸载 dae，配置与 geo 数据保持不变", "binary", target, "unit", unitPath)
+	i.logger.Info("已卸载 dae", "binary", target, "unit", unitPath,
+		"purge_config", options.PurgeConfig, "purge_geo", options.PurgeGeo)
 	return nil
+}
+
+// uninstallDataPaths 返回用户明确要求一并删除的数据文件。
+// geo 要删除所有面板可见副本，否则高优先级副本移走后，被遮蔽的旧副本会重新生效。
+func (i *Installer) uninstallDataPaths(status host.Status, options UninstallOptions) ([]string, error) {
+	paths := make([]string, 0, 3)
+	seen := make(map[string]struct{})
+	appendPath := func(path, description string) error {
+		path = filepath.Clean(path)
+		if _, exists := seen[path]; exists {
+			return nil
+		}
+		info, err := os.Lstat(path)
+		switch {
+		case os.IsNotExist(err):
+			return nil
+		case err != nil:
+			return fmt.Errorf("检查%s %s: %w", description, path, err)
+		case !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0:
+			return fmt.Errorf("%s %s 不是普通文件或符号链接，拒绝删除", description, path)
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+		return nil
+	}
+	if options.PurgeConfig && i.configPath != "" {
+		if err := appendPath(i.configPath, "dae 主配置文件"); err != nil {
+			return nil, err
+		}
+	}
+	if !options.PurgeGeo {
+		return paths, nil
+	}
+
+	search := i.geoSearchDirs
+	if search == nil {
+		search = geodata.SearchPath(i.configPath, status.Environment)
+	}
+	for _, directory := range search {
+		// ProtectHome=true 使这个目录对面板不可见；跳过比把 EACCES 冒充
+		// "不存在"更诚实，确认框也明确限定为面板可见副本。
+		if filepath.Clean(directory) == filepath.Clean(geodata.SandboxHiddenDir) {
+			continue
+		}
+		for _, name := range geodata.Names {
+			path := filepath.Join(directory, name)
+			if err := appendPath(path, "geo 数据"); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return paths, nil
 }
 
 // uninstallTarget 把所有破坏性操作前的安全检查集中在一起。
