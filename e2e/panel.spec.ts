@@ -130,6 +130,83 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await page.unroute('**/api/v1/dae/versions**')
   })
 
+  await test.step('切换中隐藏事务告警并可管理本地版本', async () => {
+    let applying = true
+    let cached = true
+    let deleted: unknown
+    await page.route('**/api/v1/dae/install', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: {
+            binaryPath: '/usr/bin/dae',
+            platform: 'x86_64_v3_avx2',
+            ready: true,
+            present: true,
+            version: applying ? 'dae version v1.9.0' : 'dae version v2.0.0',
+            managed: {
+              source: 'official',
+              ref: 'v2.0.0',
+              label: 'v2.0.0',
+              installedAt: '2026-07-30T00:00:00Z',
+              sha256: 'e2e',
+            },
+            drifted: applying,
+            rollbackAvailable: true,
+            serviceActive: true,
+            warnings: applying
+              ? ['发现上一次安装留下的暂存备份，说明它在中途被打断；请核对上面的运行版本是否符合预期']
+              : [],
+          },
+          job: applying
+            ? { phase: 'applying', source: 'official', ref: 'v1.9.0', label: 'v1.9.0', cached: true }
+            : { phase: 'idle' },
+        }),
+      })
+    })
+    await page.route('**/api/v1/dae/versions**', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        versions: [{
+          source: 'official',
+          ref: 'v1.9.0',
+          label: 'v1.9.0',
+          description: 'Local cache E2E',
+          publishedAt: '2026-07-01T00:00:00Z',
+          installable: true,
+          cached,
+          cachedAt: '2026-07-30T00:00:00Z',
+          cachedBytes: 33_554_432,
+        }],
+      }),
+    }))
+    await page.route('**/api/v1/dae/cache', async (route) => {
+      if (route.request().method() !== 'DELETE') return route.continue()
+      deleted = route.request().postDataJSON()
+      cached = false
+      await route.fulfill({ status: 204, body: '' })
+    })
+
+    await page.goto('/versions')
+    await expect(page.getByText('正在使用本地版本替换二进制并重启 dae')).toBeVisible()
+    await expect(page.getByText(/发现上一次安装留下的暂存备份/)).toHaveCount(0)
+    await expect(page.getByText(/磁盘上的二进制与面板记录不一致/)).toHaveCount(0)
+
+    applying = false
+    await page.reload()
+    const row = page.locator('tr', { hasText: 'v1.9.0' })
+    await expect(row.getByText('已下载')).toBeVisible()
+    await row.getByRole('button', { name: '删除 v1.9.0 的本地缓存' }).click()
+    await page.locator('.n-dialog').getByRole('button', { name: '删除缓存' }).click()
+    await expect.poll(() => deleted).toEqual({ source: 'official', ref: 'v1.9.0' })
+    await expect(row.getByText('已下载')).toHaveCount(0)
+
+    await page.unroute('**/api/v1/dae/install')
+    await page.unroute('**/api/v1/dae/versions**')
+    await page.unroute('**/api/v1/dae/cache')
+  })
+
   await test.step('移动端单列布局没有横向溢出', async () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/')

@@ -70,8 +70,9 @@ X-CSRF-Token: <csrfToken>
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/dae/install` | 当前安装状态与正在进行的任务 |
-| `GET` | `/dae/versions?source=official\|kdae` | 列出可安装版本 |
+| `GET` | `/dae/versions?source=official\|kdae` | 列出上游与本地版本 |
 | `POST` | `/dae/install` | 开始安装指定版本 |
+| `DELETE` | `/dae/cache` | 删除指定版本的本地缓存 |
 | `POST` | `/dae/rollback` | 回滚到上一版本 |
 | `POST` | `/dae/uninstall` | 卸载面板管理的 dae，可选清理配置与 geo 数据 |
 
@@ -83,11 +84,21 @@ X-CSRF-Token: <csrfToken>
 
 `source` 只接受 `official` 与 `kdae` 两个枚举值，仓库地址在代码中写死，不接受外部指定。`ref` 对官方来源是发布 tag，对 kdae 是构建编号。`GET /dae/versions` 另接受 `limit` 参数（1–100，默认 30），超出范围返回 `400 invalid_limit`。
 
+版本响应在上游字段之外附带 `cached`、`cachedAt`、`cachedBytes`；只存在于本机、不在当前上游清单中的版本还会带 `cachedOnly`。已过期的 kdae 构建只要本地缓存完整仍然可切换；上游暂时不可访问时，只要存在缓存也会返回本地版本。缓存按来源、版本与本机 CPU 平台隔离，真正安装前会重新计算二进制 SHA-256，而不是只信任缓存索引。
+
+删除缓存请求体：
+
+```json
+{ "source": "official", "ref": "v2.0.0" }
+```
+
+删除只影响 `/var/lib/kdae-panel/dae-versions/` 下的对应缓存，不修改当前运行的 `/usr/bin/dae`，也不删除安装事务的上一版回滚点。版本不存在返回 `404 cached_version_not_found`。
+
 机器上还没有 dae 时，`GET /dae/install` 的响应会附带 `provision` 字段，说明首次安装是否可行、将要写入哪些路径、以及缺少哪些可写目录。此时提交安装会走首次安装：除可执行文件外还写入 geo 数据、种子配置与 systemd 单元，然后 `daemon-reload`，但**不会启动服务**。
 
 任务进行中（`downloading`/`applying`）的响应**不含** `provision`：该字段要靠实际试写目标目录才能算出来，而界面每两秒轮询一次，其中一个探测目标正是 systemd 在 inotify 监视的单元目录。客户端应沿用上一次拿到的值，而不是当作"首次安装已不可行"。
 
-安装、回滚与卸载都立即返回 `202` 与任务快照，由客户端轮询 `GET /dae/install` 获取进度。安装任务依次经过 `downloading`、`applying`；回滚与卸载直接进入 `applying`，终态均为 `done` 或 `failed`。同一时刻只允许一个版本管理任务，重复提交返回 `409 install_in_progress`。
+安装、回滚与卸载都立即返回 `202` 与任务快照，由客户端轮询 `GET /dae/install` 获取进度。安装任务依次经过 `downloading`、`applying`；命中本地版本时仍从 `downloading` 开始，但任务会带 `cached: true` 并很快进入替换阶段。回滚与卸载直接进入 `applying`，终态均为 `done` 或 `failed`。同一时刻只允许一个版本管理任务，重复提交返回 `409 install_in_progress`。
 
 卸载请求体可选，零值是安全默认：
 
@@ -97,7 +108,7 @@ X-CSRF-Token: <csrfToken>
 
 `purgeConfig` 与 `purgeGeo` 相互独立，只有显式设为 `true` 才删除对应数据。geo 清理覆盖 dae 搜索路径里所有面板可见的副本，受 `ProtectHome=true` 隐藏的 `/root/.local/share/dae` 不在其中。卸载只接受面板有安装账本且二进制摘要未漂移的 dae，并要求 systemd 单元位于面板管理的标准路径。它会停止并禁用 dae，移除可执行文件、服务单元与版本回滚记录；文件移除、可选的数据清理与 `daemon-reload` 属于同一事务，失败时会恢复文件、开机启动状态和原运行状态。
 
-下载与校验不占用全局控制门，只有替换与重启阶段才进入串行区，避免几十兆的下载把配置保存一并堵住。
+读取缓存、下载与校验不占用全局控制门，只有替换与重启阶段才进入串行区，避免几十兆的 I/O 把配置保存一并堵住。普通升级和切换只缓存可执行文件；首次安装还需要服务单元、种子配置与 geo，因此即使该版本已有二进制缓存，也会重新取得并校验完整发布包。
 
 校验和缺失或格式不符时拒绝安装，没有跳过校验的开关。kdae 的构建产物保留 90 天，过期版本在列表中标记为不可安装；面板只接受本仓库自己的构建，解析时会重新核对 `head_repository`、事件类型、分支与工作流文件路径四项。
 

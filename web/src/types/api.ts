@@ -97,6 +97,10 @@ export interface UpstreamVersion {
   installable: boolean
   note?: string
   expiresAt?: string
+  cached?: boolean
+  cachedOnly?: boolean
+  cachedAt?: string
+  cachedBytes?: number
 }
 
 export interface InstalledState {
@@ -139,6 +143,7 @@ export interface InstallJob {
   source?: string
   ref?: string
   label?: string
+  cached?: boolean
   startedAt?: string
   endedAt?: string
   error?: string

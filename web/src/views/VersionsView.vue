@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, ref, type VNode } from 'vue'
 import {
   NAlert,
   NButton,
@@ -21,9 +21,10 @@ import {
   CloudDownloadOutline,
   RefreshOutline,
   ReturnUpBackOutline,
+  SwapHorizontalOutline,
   TrashOutline,
 } from '@vicons/ionicons5'
-import { APIError, getJSON, postJSON } from '../api/client'
+import { APIError, deleteJSON, getJSON, postJSON } from '../api/client'
 import type {
   InstallJob,
   InstallProvision,
@@ -31,7 +32,7 @@ import type {
   UpstreamSource,
   UpstreamVersion,
 } from '../types/api'
-import { formatDateTime } from '../utils/format'
+import { formatBytes, formatDateTime } from '../utils/format'
 import { useJobPolling } from '../composables/useJobPolling'
 import { SOURCES } from '../components/versions/sources'
 import InstallStatusCard from '../components/versions/InstallStatusCard.vue'
@@ -51,6 +52,7 @@ const versions = ref<UpstreamVersion[]>([])
 const source = ref<UpstreamSource>('official')
 const loadError = ref('')
 const listError = ref('')
+const cacheDeleting = ref('')
 
 let unmounted = false
 
@@ -58,7 +60,10 @@ const installPolling = useJobPolling({
   refresh: () => loadStatus(),
   phase: () => job.value?.phase,
   onSettled: (phase) => {
-    if (phase === 'done') message.success('已完成')
+    if (phase === 'done') {
+      message.success('已完成')
+      void loadVersions()
+    }
     else if (phase === 'failed') message.error(job.value?.error || '安装失败')
   },
 })
@@ -66,6 +71,13 @@ const installPolling = useJobPolling({
 const activeSource = computed(() => SOURCES.find((item) => item.value === source.value)!)
 const busy = computed(() => job.value?.phase === 'downloading' || job.value?.phase === 'applying')
 const installedRef = computed(() => status.value?.managed?.ref || '')
+function isInstalled(version: UpstreamVersion): boolean {
+  return version.ref === installedRef.value && version.source === status.value?.managed?.source
+}
+
+function versionKey(version: UpstreamVersion): string {
+  return `${version.source}:${version.ref}`
+}
 const canUninstall = computed(() => status.value?.ready === true && status.value.managed !== undefined && !status.value.drifted)
 const uninstallHint = computed(() => {
   if (status.value?.drifted) return 'dae 已在面板之外被替换，请先重装一个版本后再卸载'
@@ -170,11 +182,14 @@ async function confirmInstall(version: UpstreamVersion) {
     })
     return
   }
+  const local = version.cached === true
   dialog.warning({
     title: `安装 ${version.label}`,
-    content: '面板会下载并校验该版本，用它验证当前配置，然后替换二进制并重启 dae。'
+    content: (local
+      ? '面板会读取并重新校验本地版本，用它验证当前配置，然后替换二进制并重启 dae。'
+      : '面板会下载并校验该版本，用它验证当前配置，然后替换二进制并重启 dae。')
       + '重启会中断现有连接；若新版本起不来，会自动回滚到当前版本。',
-    positiveText: '下载并安装',
+    positiveText: local ? '使用本地版本' : '下载并安装',
     negativeText: '取消',
     onPositiveClick: () => install(version),
   })
@@ -188,7 +203,7 @@ async function install(version: UpstreamVersion) {
       label: version.label,
     })
     job.value = payload.job
-    message.info('已开始安装，可以留在本页查看进度')
+    message.info(version.cached && !firstInstall.value ? '已开始使用本地版本切换' : '已开始下载安装')
     installPolling.start()
   } catch (error) {
     message.error(error instanceof Error ? error.message : '启动安装失败')
@@ -197,6 +212,33 @@ async function install(version: UpstreamVersion) {
       await loadStatus()
       if (busy.value) installPolling.start()
     }
+  }
+}
+
+function confirmDeleteCached(version: UpstreamVersion) {
+  const current = isInstalled(version)
+  const size = formatBytes(version.cachedBytes)
+  dialog.warning({
+    title: `删除本地版本 ${version.label}`,
+    content: `将删除这份 ${size} 的本地缓存。`
+      + (current ? '当前运行中的 dae 不受影响；以后再次安装该版本需要重新下载。' : '当前运行文件和回滚点不受影响。'),
+    positiveText: '删除缓存',
+    negativeText: '取消',
+    onPositiveClick: () => deleteCached(version),
+  })
+}
+
+async function deleteCached(version: UpstreamVersion) {
+  const key = versionKey(version)
+  cacheDeleting.value = key
+  try {
+    await deleteJSON<void>('/api/v1/dae/cache', { source: version.source, ref: version.ref })
+    message.success(`已删除 ${version.label} 的本地缓存`)
+    await loadVersions()
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '删除本地版本失败')
+  } finally {
+    cacheDeleting.value = ''
   }
 }
 
@@ -284,8 +326,14 @@ const columns = computed<DataTableColumns<UpstreamVersion>>(() => [
     render: (row) => h(NSpace, { size: 4, align: 'center', wrap: false }, {
       default: () => [
         h('span', { class: 'mono version-label' }, row.label),
-        row.ref === installedRef.value
+        isInstalled(row)
           ? h(NTag, { size: 'tiny', type: 'success', bordered: false }, { default: () => '当前' })
+          : null,
+        row.cached
+          ? h(NTooltip, null, {
+              trigger: () => h(NTag, { size: 'tiny', type: 'info', bordered: false }, { default: () => '已下载' }),
+              default: () => `本地缓存 ${formatBytes(row.cachedBytes)} · ${formatDateTime(row.cachedAt)}`,
+            })
           : null,
         row.prerelease
           ? h(NTag, { size: 'tiny', type: 'warning', bordered: false }, { default: () => '预发布' })
@@ -325,7 +373,7 @@ const columns = computed<DataTableColumns<UpstreamVersion>>(() => [
   {
     title: '操作',
     key: 'actions',
-    width: 110,
+    width: 158,
     fixed: 'right',
     render: (row) => {
       if (!row.installable) {
@@ -334,20 +382,38 @@ const columns = computed<DataTableColumns<UpstreamVersion>>(() => [
           default: () => row.note || '该版本无法安装',
         })
       }
+      const actions: VNode[] = []
       // 磁盘被外部替换过时，"已安装"这条也要能重装回来修复漂移
-      if (row.ref === installedRef.value && !status.value?.drifted) {
-        return h(NText, { depth: 3 }, { default: () => '已安装' })
+      if (isInstalled(row) && !status.value?.drifted) {
+        actions.push(h(NText, { depth: 3 }, { default: () => '已安装' }))
+      } else {
+        const local = row.cached && !firstInstall.value
+        actions.push(h(NButton, {
+          size: 'small',
+          secondary: true,
+          type: 'primary',
+          disabled: busy.value || !(status.value?.ready || firstInstall.value),
+          onClick: () => void confirmInstall(row),
+        }, {
+          icon: () => h(NIcon, null, { default: () => h(local ? SwapHorizontalOutline : CloudDownloadOutline) }),
+          default: () => firstInstall.value ? '安装' : '切换',
+        }))
       }
-      return h(NButton, {
-        size: 'small',
-        secondary: true,
-        type: 'primary',
-        disabled: busy.value || !(status.value?.ready || firstInstall.value),
-        onClick: () => void confirmInstall(row),
-      }, {
-        icon: () => h(NIcon, null, { default: () => h(CloudDownloadOutline) }),
-        default: () => firstInstall.value ? '安装' : '切换',
-      })
+      if (row.cached) {
+        actions.push(h(NTooltip, null, {
+          trigger: () => h(NButton, {
+            size: 'small',
+            quaternary: true,
+            type: 'error',
+            'aria-label': `删除 ${row.label} 的本地缓存`,
+            loading: cacheDeleting.value === versionKey(row),
+            disabled: busy.value || cacheDeleting.value !== '',
+            onClick: () => confirmDeleteCached(row),
+          }, { icon: () => h(NIcon, null, { default: () => h(TrashOutline) }) }),
+          default: () => isInstalled(row) ? '删除缓存，不影响当前运行' : '删除本地缓存',
+        }))
+      }
+      return h(NSpace, { size: 4, align: 'center', wrap: false }, { default: () => actions })
     },
   },
 ])
@@ -413,13 +479,14 @@ onBeforeUnmount(() => {
       </NAlert>
       <NAlert v-else-if="job?.phase === 'applying'" type="warning" :bordered="false">
         <template v-if="job.label === '卸载 dae'">正在停止服务并卸载 dae，数据将按确认时的选择处理…</template>
+        <template v-else-if="job.cached">正在使用本地版本替换二进制并重启 dae，期间连接会短暂中断…</template>
         <template v-else>正在替换二进制并重启 dae，期间连接会短暂中断…</template>
       </NAlert>
       <NAlert v-else-if="job?.phase === 'failed'" type="error" :bordered="false">
         上次操作失败：{{ job.error }}
       </NAlert>
 
-      <InstallStatusCard :loading="loading" :status="status" :provision="provision" />
+      <InstallStatusCard :loading="loading" :busy="busy" :status="status" :provision="provision" />
 
       <NCard class="panel-card" content-style="padding: 0;">
         <template #header>
@@ -438,7 +505,7 @@ onBeforeUnmount(() => {
           :data="versions"
           :loading="listing"
           :row-key="(row: UpstreamVersion) => row.ref"
-          :scroll-x="720"
+          :scroll-x="820"
           :bordered="false"
           size="small"
         >

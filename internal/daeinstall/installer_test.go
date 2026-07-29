@@ -18,19 +18,25 @@ import (
 )
 
 type fakeFetcher struct {
-	binary []byte
+	binary     []byte
+	versions   []upstream.Version
+	listErr    error
+	resolveErr error
+	fetchErr   error
+	fetches    int
 }
 
 func (f *fakeFetcher) List(context.Context, upstream.Source, int) ([]upstream.Version, error) {
-	return nil, nil
+	return f.versions, f.listErr
 }
 
 func (f *fakeFetcher) Resolve(context.Context, upstream.Source, string, upstream.Platform) (upstream.Asset, error) {
-	return upstream.Asset{}, nil
+	return upstream.Asset{}, f.resolveErr
 }
 
 func (f *fakeFetcher) FetchBundle(context.Context, upstream.Asset) (upstream.Bundle, error) {
-	return upstream.Bundle{Binary: f.binary}, nil
+	f.fetches++
+	return upstream.Bundle{Binary: f.binary}, f.fetchErr
 }
 
 // fakeProbe 按二进制内容决定行为，从而模拟"新版本跑不起来/不认配置"。
@@ -462,9 +468,13 @@ func TestInstallRejectsEmptyBinary(t *testing.T) {
 func TestDownloadReturnsVerifiedBinary(t *testing.T) {
 	fetcher := &fakeFetcher{binary: elf("v2")}
 	installer, _ := newTestInstaller(t, fetcher, &fakeService{})
-	bundle, err := installer.Download(context.Background(), upstream.SourceOfficial, "v2.0.0")
+	bundle, cached, err := installer.Acquire(
+		context.Background(), upstream.SourceOfficial, "v2.0.0", "v2.0.0", false)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if cached {
+		t.Fatal("第一次获取不应命中缓存")
 	}
 	if string(bundle.Binary) != string(elf("v2")) {
 		t.Fatalf("下载内容 = %q", bundle.Binary)

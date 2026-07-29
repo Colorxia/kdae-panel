@@ -90,7 +90,7 @@ sudo systemctl restart kdae-panel
 | `KDAE_PANEL_DATABASE` | `/var/lib/kdae-panel/panel.db` | 认证数据库 |
 | `KDAE_PANEL_BACKUP_DIR` | `/var/lib/kdae-panel/backups` | 配置备份目录 |
 | `KDAE_PANEL_SCHEDULE_FILE` | `/var/lib/kdae-panel/schedule.json` | 订阅自动刷新的设置与上次执行时间 |
-| `KDAE_PANEL_INSTALL_STATE_FILE` | `/var/lib/kdae-panel/dae-install.json` | dae 版本安装记录，同前缀下还存放回滚用的上一版二进制 |
+| `KDAE_PANEL_INSTALL_STATE_FILE` | `/var/lib/kdae-panel/dae-install.json` | dae 版本安装记录，同目录还存放回滚点与 `dae-versions/` 本地版本库 |
 | `KDAE_PANEL_ENABLE_DAE_INSTALL` | `true` | 允许通过面板首次安装、升级与切换 dae 版本 |
 | `KDAE_PANEL_GEO_STATE_FILE` | `/var/lib/kdae-panel/geo-update.json` | geo 数据更新记录 |
 | `KDAE_PANEL_GEO_SCHEDULE_FILE` | `/var/lib/kdae-panel/geo-schedule.json` | geo 自动更新的设置与上次执行时间 |
@@ -110,6 +110,8 @@ sudo systemctl restart kdae-panel
 首次安装会写入可执行文件、geo 数据、服务单元，以及一份不劫持任何流量的种子配置（仅在配置不存在时）。**它不会自动启动 dae**——请先在配置管理页写好规则再手动启动，否则透明代理可能切断你当前的连接。已存在的服务单元与配置一律不覆盖。
 
 版本页也可以卸载 dae。确认框分别提供“同时删除主配置文件”和“同时删除面板可见的全部 geo 数据副本”两个选项，默认都不勾选；因此常规卸载只删除面板管理的 dae 可执行文件、标准路径下的 systemd 单元和版本回滚记录，配置、订阅与 geo 数据默认保留。选择删除的数据会进入同一个可回滚事务。受面板沙箱隐藏的 `/root/.local/share/dae` 无法代为删除，界面会明确说明。为避免误删包管理器或用户手工维护的程序，没有面板安装记录、二进制摘要已经漂移，或服务单元不在标准路径时，自动卸载会被拒绝。
+
+版本切换下载的二进制缓存在安装状态文件同目录的 `dae-versions/`。缓存不会随 dae 卸载而删除，便于稍后重新安装；可在版本表格逐个清理。卸载 kdae-panel 时，默认仍保留该目录，`KDAE_PANEL_PURGE=true` 的清除模式会随 `/var/lib/kdae-panel` 一并移除默认位置的数据。若安装状态文件被改到默认数据目录之外，缓存也会跟随到那个目录，清除面板前应先在版本页删除或自行处理。
 
 只想升级已有的 dae 时不需要这一步。若你更习惯官方工具，[dae-installer](https://github.com/daeuniverse/dae-installer) 依然可用，两者互不冲突。
 

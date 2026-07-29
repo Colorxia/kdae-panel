@@ -497,8 +497,9 @@ func TestScheduleRunnerWiredWithOperationsLock(t *testing.T) {
 type stubInstallService struct {
 	status   daeinstall.Status
 	plan     daeinstall.Provision
-	versions []upstream.Version
+	versions []daeinstall.Version
 	binary   []byte
+	cached   bool
 	err      error
 	release  chan struct{}
 	// 安装在后台 goroutine 里执行，测试主协程会同时读取记录，必须加锁。
@@ -522,7 +523,7 @@ func (s *stubInstallService) Status(context.Context) daeinstall.Status {
 	return s.status
 }
 
-func (s *stubInstallService) Versions(_ context.Context, source upstream.Source, _ int) ([]upstream.Version, error) {
+func (s *stubInstallService) Versions(_ context.Context, source upstream.Source, _ int) ([]daeinstall.Version, error) {
 	return s.versions, s.err
 }
 
@@ -530,11 +531,20 @@ func (s *stubInstallService) Provision(context.Context) daeinstall.Provision {
 	return s.plan
 }
 
-func (s *stubInstallService) Download(context.Context, upstream.Source, string) (upstream.Bundle, error) {
+func (s *stubInstallService) Acquire(_ context.Context, _ upstream.Source, _, _ string, requireBundle bool) (upstream.Bundle, bool, error) {
 	if s.release != nil {
 		<-s.release
 	}
-	return upstream.Bundle{Binary: s.binary}, s.err
+	bundle := upstream.Bundle{Binary: s.binary}
+	if requireBundle {
+		bundle.Unit = []byte("dae.service")
+	}
+	return bundle, s.cached, s.err
+}
+
+func (s *stubInstallService) DeleteCached(source upstream.Source, ref string) error {
+	s.record("delete-cache:" + string(source) + ":" + ref)
+	return s.err
 }
 
 func (s *stubInstallService) FirstInstall(_ context.Context, _ upstream.Bundle, source upstream.Source, ref, _ string) (daeinstall.Status, error) {
@@ -577,6 +587,7 @@ func TestDaeInstallDisabledByDefault(t *testing.T) {
 		httptest.NewRequest(http.MethodGet, "/api/v1/dae/install", nil),
 		httptest.NewRequest(http.MethodGet, "/api/v1/dae/versions?source=official", nil),
 		httptest.NewRequest(http.MethodPost, "/api/v1/dae/install", strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)),
+		httptest.NewRequest(http.MethodDelete, "/api/v1/dae/cache", strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)),
 		httptest.NewRequest(http.MethodPost, "/api/v1/dae/rollback", nil),
 		httptest.NewRequest(http.MethodPost, "/api/v1/dae/uninstall", nil),
 	} {
@@ -604,7 +615,7 @@ func TestDaeVersionsRejectsUnknownSource(t *testing.T) {
 
 func TestDaeInstallRunsAsynchronously(t *testing.T) {
 	// Ready 表示机器上已有 dae，因此走替换而不是首次安装
-	service := &stubInstallService{binary: []byte("v2"), status: daeinstall.Status{Ready: true}}
+	service := &stubInstallService{binary: []byte("v2"), cached: true, status: daeinstall.Status{Ready: true}}
 	application := newInstallApp(t, service)
 
 	recorder := httptest.NewRecorder()
@@ -624,6 +635,36 @@ func TestDaeInstallRunsAsynchronously(t *testing.T) {
 	}
 	if installed := service.records(); len(installed) != 1 || installed[0] != "kdae:30187784287" {
 		t.Fatalf("安装调用 = %v", installed)
+	}
+	if job := awaitJobSettled(t, application); !job.Cached {
+		t.Fatalf("缓存命中应写进任务状态: %+v", job)
+	}
+}
+
+func TestDaeCachedVersionCanBeDeleted(t *testing.T) {
+	service := &stubInstallService{}
+	application := newInstallApp(t, service)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/dae/cache",
+		strings.NewReader(`{"source":"official","ref":"v2.0.0"}`))
+	application.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("状态码 = %d，期望 204，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+	if records := service.records(); len(records) != 1 || records[0] != "delete-cache:official:v2.0.0" {
+		t.Fatalf("删除缓存调用 = %v", records)
+	}
+}
+
+func TestDaeCachedVersionDeleteReportsMissing(t *testing.T) {
+	service := &stubInstallService{err: daeinstall.ErrCachedVersionNotFound}
+	application := newInstallApp(t, service)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/dae/cache",
+		strings.NewReader(`{"source":"kdae","ref":"30187784287"}`))
+	application.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "cached_version_not_found") {
+		t.Fatalf("不存在的缓存响应 = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 

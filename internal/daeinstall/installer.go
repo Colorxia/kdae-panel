@@ -106,6 +106,7 @@ type Installer struct {
 	statePath   string
 	backupPath  string
 	serviceName string
+	cache       *versionCache
 	// unitDir 是 systemd 单元的落地目录，留空即用系统默认，测试会覆盖它。
 	unitDir string
 	// geoSearchDirs 只供卸载测试把搜索范围收进临时目录；生产环境留空，
@@ -162,6 +163,7 @@ func New(options Options) (*Installer, error) {
 		statePath:   options.StatePath,
 		backupPath:  options.StatePath + ".previous-dae",
 		serviceName: options.ServiceName,
+		cache:       newVersionCache(options.StatePath),
 		fetcher:     options.Fetcher,
 		newProbe:    newProbe,
 		service:     options.Service,
@@ -187,8 +189,59 @@ func resolveBinaryPath(configured string) (string, error) {
 	return filepath.Join("/usr/bin", configured), nil
 }
 
-func (i *Installer) Versions(ctx context.Context, source upstream.Source, limit int) ([]upstream.Version, error) {
-	return i.fetcher.List(ctx, source, limit)
+func (i *Installer) Versions(ctx context.Context, source upstream.Source, limit int) ([]Version, error) {
+	platform, err := upstream.DetectPlatform()
+	if err != nil {
+		return nil, err
+	}
+	cached, cacheErr := i.cache.list(source, platform.Name)
+	if cacheErr != nil {
+		i.logger.Warn("读取 dae 本地版本列表时跳过了无效条目", "error", cacheErr)
+	}
+	remote, upstreamErr := i.fetcher.List(ctx, source, limit)
+	if upstreamErr != nil && len(cached) == 0 {
+		return nil, upstreamErr
+	}
+	if upstreamErr != nil {
+		i.logger.Warn("上游版本列表不可用，仅返回本地版本", "source", source, "error", upstreamErr)
+	}
+
+	versions := make([]Version, 0, len(remote)+len(cached))
+	byRef := make(map[string]int, len(remote))
+	for _, item := range remote {
+		byRef[item.Ref] = len(versions)
+		versions = append(versions, Version{Version: item})
+	}
+	for _, item := range cached {
+		cachedAt := item.CachedAt
+		if index, exists := byRef[item.Ref]; exists {
+			versions[index].Cached = true
+			versions[index].CachedAt = &cachedAt
+			versions[index].CachedBytes = item.Size
+			// 上游产物即使已经过期，本地副本仍可安装。
+			versions[index].Installable = true
+			continue
+		}
+		description := "仅保留在本机"
+		if upstreamErr != nil {
+			description = "上游暂不可用，仅显示本机缓存"
+		}
+		versions = append(versions, Version{
+			Version: upstream.Version{
+				Source:      item.Source,
+				Ref:         item.Ref,
+				Label:       item.Label,
+				Description: description,
+				PublishedAt: item.CachedAt,
+				Installable: true,
+			},
+			Cached:      true,
+			CachedOnly:  true,
+			CachedAt:    &cachedAt,
+			CachedBytes: item.Size,
+		})
+	}
+	return versions, nil
 }
 
 // target 以 systemd 单元实际启动的可执行文件为准。
@@ -291,24 +344,54 @@ func (i *Installer) geoWarnings(ctx context.Context) []string {
 	return nil
 }
 
-// Download 取回并校验指定版本，返回发布包内的全部物料。
-// 这一步耗时最长且不触碰任何共享状态，因此调用方可以在不持有控制锁的情况下先做完。
-func (i *Installer) Download(ctx context.Context, source upstream.Source, ref string) (upstream.Bundle, error) {
+// Acquire 优先读取并重新校验本地版本；requireBundle 为真时仍取完整发布包，
+// 因为首次安装还需要服务单元、种子配置与 geo，而缓存只保留可执行文件。
+func (i *Installer) Acquire(ctx context.Context, source upstream.Source, ref, label string,
+	requireBundle bool) (upstream.Bundle, bool, error) {
 	platform, err := upstream.DetectPlatform()
 	if err != nil {
-		return upstream.Bundle{}, err
+		return upstream.Bundle{}, false, err
+	}
+	if !requireBundle {
+		content, metadata, err := i.cache.load(source, ref, platform.Name)
+		switch {
+		case err == nil:
+			i.logger.Info("使用已校验的 dae 本地版本", "source", source, "ref", ref,
+				"cached_at", metadata.CachedAt, "bytes", len(content))
+			return upstream.Bundle{Binary: content}, true, nil
+		case errors.Is(err, ErrCachedVersionNotFound):
+		case errors.Is(err, errInvalidVersionCache):
+			i.logger.Warn("dae 本地版本已损坏，将重新下载", "source", source, "ref", ref, "error", err)
+			if removeErr := i.cache.discardInvalid(source, ref, platform.Name); removeErr != nil {
+				i.logger.Warn("清理损坏的 dae 本地版本失败", "source", source, "ref", ref, "error", removeErr)
+			}
+		default:
+			return upstream.Bundle{}, false, fmt.Errorf("读取 dae 本地版本: %w", err)
+		}
 	}
 	asset, err := i.fetcher.Resolve(ctx, source, ref, platform)
 	if err != nil {
-		return upstream.Bundle{}, err
+		return upstream.Bundle{}, false, err
 	}
 	bundle, err := i.fetcher.FetchBundle(ctx, asset)
 	if err != nil {
-		return upstream.Bundle{}, err
+		return upstream.Bundle{}, false, err
+	}
+	if err := i.cache.store(source, ref, label, platform.Name, bundle.Binary); err != nil {
+		return upstream.Bundle{}, false, fmt.Errorf("保存 dae 本地版本: %w", err)
 	}
 	i.logger.Info("已取得并校验 dae 发布包",
 		"source", source, "ref", ref, "asset", asset.Filename, "bytes", len(bundle.Binary))
-	return bundle, nil
+	return bundle, false, nil
+}
+
+// DeleteCached 删除指定版本的本地副本，不触碰当前运行文件与事务回滚点。
+func (i *Installer) DeleteCached(source upstream.Source, ref string) error {
+	platform, err := upstream.DetectPlatform()
+	if err != nil {
+		return err
+	}
+	return i.cache.delete(source, ref, platform.Name)
 }
 
 // Install 把已下载的内容装上去。调用方应在持有全局控制锁时调用它。
@@ -540,6 +623,15 @@ func (i *Installer) backupCurrent(target string) (*pendingBackup, error) {
 	// 一并记下旧版本的账本，回滚后才能如实显示回到了哪一版。
 	if state, err := i.readState(); err == nil && state != nil {
 		pending.state, _ = json.Marshal(state)
+		// 只有账本摘要与当前文件一致时才能用该账本给缓存命名；否则它可能是
+		// 面板外替换的未知二进制，绝不能冒充已知版本。
+		if state.Source != "" && state.Ref != "" && state.SHA256 != "" && state.SHA256 == digestBytes(current) {
+			if platform, err := upstream.DetectPlatform(); err == nil {
+				if err := i.cache.store(state.Source, state.Ref, state.Label, platform.Name, current); err != nil {
+					i.logger.Warn("保留当前 dae 本地版本失败", "source", state.Source, "ref", state.Ref, "error", err)
+				}
+			}
+		}
 	}
 	return pending, nil
 }
