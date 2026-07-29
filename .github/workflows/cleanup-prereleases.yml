@@ -48,3 +48,10 @@ jobs:
               git push origin --delete "${tag}"
             fi
           done < <(git tag --list 'v*-*')
+
+          # 本机没有 GitHub CLI 时可推一个专用 tag 触发清理；任务结束后自删，
+          # 不让维护用标签反过来污染版本列表。workflow_call/手工触发不走这里。
+          if [[ ${GITHUB_REF_TYPE} == tag && ${GITHUB_REF_NAME} == cleanup-prereleases-* ]]; then
+            echo "删除维护触发 tag ${GITHUB_REF_NAME}"
+            git push origin --delete "${GITHUB_REF_NAME}"
+          fi
