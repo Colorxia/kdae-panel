@@ -186,6 +186,44 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
   })
 
   await test.step('设置页左右列保持同一底边', async () => {
+    const targetPanelVersion = 'v0.8.1'
+    let upgradeStarted = false
+    await page.route('**/api/v1/panel/update/check', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        check: {
+          current: 'v0.8.0',
+          latest: targetPanelVersion,
+          updateAvailable: true,
+          checkedAt: '2026-07-30T00:00:00Z',
+        },
+        status: {
+          current: 'v0.8.0',
+          binaryPath: '/usr/bin/kdae-panel',
+          platform: 'linux/amd64',
+          enabled: true,
+          updatable: true,
+        },
+        job: { phase: 'idle' },
+      }),
+    }))
+    await page.route('**/api/v1/panel/update', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue()
+      upgradeStarted = true
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({ job: { phase: 'downloading' } }),
+      })
+    })
+    await page.route('**/api/v1/health', (route) => {
+      if (!upgradeStarted) return route.continue()
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'ok', version: targetPanelVersion }),
+      })
+    })
+
     await page.goto('/settings')
     await expect(page.getByRole('heading', { name: '面板设置', level: 2 })).toBeVisible()
     await expectColumnsAligned(page.locator('.settings-page .equal-height-grid > *'))
@@ -194,6 +232,33 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
       response.url().endsWith('/api/v1/panel/update/check') && response.request().method() === 'POST')
     await page.getByRole('button', { name: '立即检查' }).click()
     expect((await forcedPanelCheck).status()).toBe(200)
+
+    const upgradeButton = page.getByTestId('panel-upgrade')
+    await expect(upgradeButton).toHaveText(`升级到 ${targetPanelVersion}`)
+
+    await page.setViewportSize({ width: 390, height: 844 })
+    await expect.poll(() => page.locator('.app-content').evaluate((content) =>
+      content.getBoundingClientRect().left)).toBeLessThanOrEqual(64)
+    const buttonBoxes = await page.locator('.settings-update-buttons .n-button').evaluateAll((buttons) =>
+      buttons.map((button) => button.getBoundingClientRect().toJSON()))
+    expect(buttonBoxes).toHaveLength(2)
+    expect(buttonBoxes[1].top).toBeGreaterThanOrEqual(buttonBoxes[0].bottom)
+    expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(390)
+    for (const box of buttonBoxes) expect(box.right).toBeLessThanOrEqual(390)
+    await page.setViewportSize({ width: 1600, height: 900 })
+
+    const panelUpgrade = page.waitForRequest((request) =>
+      request.url().endsWith('/api/v1/panel/update') && request.method() === 'POST')
+    await upgradeButton.click()
+    const restarted = page.waitForEvent('load')
+    await page.locator('.n-dialog').getByRole('button', { name: '下载并升级' }).click()
+    const upgradeRequest = await panelUpgrade
+    expect(upgradeRequest.postDataJSON()).toEqual({ version: targetPanelVersion })
+    await restarted
+    await page.unroute('**/api/v1/panel/update/check')
+    await page.unroute('**/api/v1/panel/update')
+    await page.unroute('**/api/v1/health')
+    await expect(page.getByRole('heading', { name: '面板设置', level: 2 })).toBeVisible()
 
     const selfUpdate = page.getByRole('switch', { name: '允许面板一键升级' })
     await expect(selfUpdate).toBeChecked()

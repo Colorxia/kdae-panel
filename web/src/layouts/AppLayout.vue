@@ -12,13 +12,11 @@ import {
   NLayoutSider,
   NMenu,
   NText,
-  useDialog,
   useMessage,
   type MenuOption,
 } from 'naive-ui'
 import {
   ArchiveOutline,
-  CloudDownloadOutline,
   CodeSlashOutline,
   CubeOutline,
   DocumentTextOutline,
@@ -28,15 +26,15 @@ import {
   ReaderOutline,
   SettingsOutline,
 } from '@vicons/ionicons5'
-import { getJSON, postJSON, putJSON } from '../api/client'
+import { getJSON } from '../api/client'
 import type { PanelUpdatePayload, PanelUpdateStatus } from '../types/api'
+import PanelUpdateAction from '../components/PanelUpdateAction.vue'
 import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const message = useMessage()
-const dialog = useDialog()
 const collapsed = ref(window.innerWidth < 900)
 
 function menuLink(label: string, name: string, icon: typeof GridOutline): MenuOption {
@@ -84,10 +82,6 @@ function handleResize() {
 // 检查失败保持沉默——提醒是锦上添花，不该因为 GitHub 不可达而打扰使用。
 const update = ref<PanelUpdatePayload | null>(null)
 const updateDismissed = ref(false)
-const upgrading = ref(false)
-const preferenceSaving = ref(false)
-const canSelfUpdate = computed(() => update.value?.status?.enabled === true && update.value.status.updatable)
-const canEnableSelfUpdate = computed(() => update.value?.status !== undefined && !update.value.status.enabled)
 
 async function checkUpdate() {
   try {
@@ -97,80 +91,9 @@ async function checkUpdate() {
   }
 }
 
-function confirmUpgrade() {
-  const latest = update.value?.check.latest
-  dialog.warning({
-    title: `升级面板到 ${latest}`,
-    content: '面板会下载发布包、比对 sha256，用新版本自证能在本机运行，'
-      + `然后替换 ${update.value?.status?.binaryPath} 并重启自身。`
-      + '重启期间面板会短暂无法访问（通常几秒），dae 与代理流量不受影响。'
-      + '上一版会保留一份副本，万一新版本起不来可以手工换回。',
-    positiveText: '下载并升级',
-    negativeText: '取消',
-    onPositiveClick: () => upgrade(latest),
-  })
-}
-
-async function upgrade(version?: string) {
-  upgrading.value = true
-  try {
-    await postJSON('/api/v1/panel/update', version ? { version } : {})
-    message.info('已开始升级，面板重启后页面会自动刷新')
-    void waitForRestart(version)
-  } catch (error) {
-    upgrading.value = false
-    message.error(error instanceof Error ? error.message : '启动升级失败')
-  }
-}
-
-function confirmEnableAndUpgrade() {
-  const latest = update.value?.check.latest
-  dialog.warning({
-    title: `启用并升级到 ${latest}`,
-    content: '启用状态会保存在面板数据目录，以后有新版本即可直接在这里升级。'
-      + '本次会下载并校验发布包、备份当前二进制，然后重启面板；dae 与代理流量不受影响。',
-    positiveText: '启用并升级',
-    negativeText: '取消',
-    onPositiveClick: async () => {
-      preferenceSaving.value = true
-      try {
-        const payload = await putJSON<{ status: PanelUpdateStatus }>('/api/v1/panel/update/preference', { enabled: true })
-        if (update.value) update.value.status = payload.status
-        window.dispatchEvent(new CustomEvent('kdae-panel:self-update-changed', { detail: payload.status }))
-        await upgrade(latest)
-      } catch (error) {
-        message.error(error instanceof Error ? error.message : '启用面板一键升级失败')
-      } finally {
-        preferenceSaving.value = false
-      }
-    },
-  })
-}
-
 function handleSelfUpdateChanged(event: Event) {
   const status = (event as CustomEvent<PanelUpdateStatus>).detail
   if (update.value && status) update.value.status = status
-}
-
-// 面板重启期间请求必然失败，因此这里不能把错误当结论：只认"健康接口
-// 报出了新版本"这一个成功信号，其余一律继续等，直到超时。
-async function waitForRestart(expected?: string) {
-  const deadline = Date.now() + 120_000
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => window.setTimeout(resolve, 2000))
-    try {
-      const health = await getJSON<{ version: string }>('/api/v1/health')
-      if (!expected || health.version === expected) {
-        // 前端资源也换了新的，必须整页重载而不是只更新状态
-        window.location.reload()
-        return
-      }
-    } catch {
-      // 重启中，继续等
-    }
-  }
-  upgrading.value = false
-  message.warning('等待面板重启超时，请手动刷新页面确认升级结果')
 }
 
 onMounted(() => {
@@ -229,41 +152,20 @@ onBeforeUnmount(() => {
         <NAlert
           v-if="update?.check.updateAvailable && !updateDismissed"
           type="info"
-          :closable="!upgrading"
+          closable
           class="update-banner"
           @close="updateDismissed = true"
         >
           <div class="update-banner-body">
             <span>
               面板有新版本 <strong>{{ update.check.latest }}</strong>（当前 {{ update.check.current }}）。
-              <template v-if="canSelfUpdate">升级会替换面板二进制并重启自身，配置与账号数据都会保留。</template>
-              <template v-else-if="canEnableSelfUpdate">可直接在这里启用一键升级，不需要 SSH。</template>
+              <template v-if="update.status?.enabled && update.status.updatable">升级会替换面板二进制并重启自身，配置与账号数据都会保留。</template>
+              <template v-else-if="update.status && !update.status.enabled">可直接在这里启用一键升级，不需要 SSH。</template>
               <template v-else-if="update.status?.problem">当前无法一键升级：{{ update.status.problem }}</template>
               <template v-else>当前部署不支持一键升级，可重新执行一键部署命令。</template>
               <a href="https://github.com/tuoro/kdae-panel/releases/latest" target="_blank" rel="noopener">查看发布说明</a>
             </span>
-            <NButton
-              v-if="canSelfUpdate"
-              size="small"
-              type="primary"
-              :loading="upgrading"
-              :disabled="upgrading"
-              @click="confirmUpgrade"
-            >
-              <template #icon><NIcon><CloudDownloadOutline /></NIcon></template>
-              {{ upgrading ? '升级中…' : '立即升级' }}
-            </NButton>
-            <NButton
-              v-else-if="canEnableSelfUpdate"
-              size="small"
-              type="primary"
-              :loading="preferenceSaving || upgrading"
-              :disabled="preferenceSaving || upgrading"
-              @click="confirmEnableAndUpgrade"
-            >
-              <template #icon><NIcon><CloudDownloadOutline /></NIcon></template>
-              启用并升级
-            </NButton>
+            <PanelUpdateAction :payload="update" label="立即升级" />
           </div>
         </NAlert>
         <RouterView />

@@ -516,6 +516,30 @@ pre,
   margin-top: 18px;
 }
 
+.settings-update-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.settings-update-action-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.settings-update-buttons {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .orchestrate-page .panel-card {
   min-height: auto;
 }
@@ -1064,6 +1088,21 @@ pre,
     align-items: flex-start;
     flex-direction: column;
     gap: 10px;
+  }
+
+  .settings-update-actions {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .settings-update-buttons {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .settings-update-buttons .n-button {
+    width: 100%;
   }
 }
 

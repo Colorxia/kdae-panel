@@ -16,9 +16,10 @@ import {
   type FormInst,
   type FormRules,
 } from 'naive-ui'
-import { CloudDownloadOutline, DownloadOutline, KeyOutline, RefreshOutline } from '@vicons/ionicons5'
+import { DownloadOutline, KeyOutline, RefreshOutline } from '@vicons/ionicons5'
 import { getDownload, getJSON, postJSON, putJSON } from '../api/client'
 import type { PanelUpdatePayload, PanelUpdateStatus } from '../types/api'
+import PanelUpdateAction from '../components/PanelUpdateAction.vue'
 import { useAuthStore } from '../stores/auth'
 import { formatDateTime } from '../utils/format'
 
@@ -128,6 +129,10 @@ async function setSelfUpdate(enabled: boolean) {
   }
 }
 
+function applyPanelUpdateStatus(status: PanelUpdateStatus) {
+  if (panelUpdate.value) panelUpdate.value.status = status
+}
+
 onMounted(() => void loadPanelUpdate())
 </script>
 
@@ -180,26 +185,12 @@ onMounted(() => void loadPanelUpdate())
     </NGrid>
 
     <NCard title="面板更新" class="panel-card settings-update">
-      <template #header-extra>
-        <NSpace size="small" align="center">
-          <NButton
-            size="small"
-            secondary
-            :loading="updateChecking"
-            :disabled="updateLoading || updateChecking"
-            @click="checkPanelUpdate"
-          >
-            <template #icon><NIcon><RefreshOutline /></NIcon></template>立即检查
-          </NButton>
-          <NIcon size="20"><CloudDownloadOutline /></NIcon>
-        </NSpace>
-      </template>
       <NAlert v-if="updateError" type="error" :bordered="false" class="card-alert">{{ updateError }}</NAlert>
       <template v-else>
         <div class="settings-toggle-row">
           <div>
             <strong>允许一键升级</strong>
-            <NText depth="3">有新版本时可直接在顶部提示中完成校验、备份、替换和重启。</NText>
+            <NText depth="3">有新版本时可直接在当前页面或顶部提示中完成校验、备份、替换和重启。</NText>
           </div>
           <NSwitch
             :value="panelUpdate?.status?.enabled || false"
@@ -209,6 +200,34 @@ onMounted(() => void loadPanelUpdate())
             @update:value="setSelfUpdate"
           />
         </div>
+
+        <div class="settings-update-actions">
+          <div class="settings-update-action-copy">
+            <strong v-if="updateLoading">正在读取版本信息</strong>
+            <strong v-else-if="panelUpdate?.check.updateAvailable">发现新版本 {{ panelUpdate.check.latest }}</strong>
+            <strong v-else-if="panelUpdate?.check.latest">当前已是最新版本</strong>
+            <strong v-else>尚未取得发布版本</strong>
+            <NText depth="3">手动检查不会改变当前版本；升级会先校验并备份，再重启面板自身。</NText>
+          </div>
+          <div class="settings-update-buttons">
+            <NButton
+              size="small"
+              secondary
+              :loading="updateChecking"
+              :disabled="updateLoading || updateChecking"
+              @click="checkPanelUpdate"
+            >
+              <template #icon><NIcon><RefreshOutline /></NIcon></template>立即检查
+            </NButton>
+            <PanelUpdateAction
+              v-if="panelUpdate?.check.updateAvailable"
+              :payload="panelUpdate"
+              :disabled="updateLoading || updateChecking"
+              @status-change="applyPanelUpdateStatus"
+            />
+          </div>
+        </div>
+
         <dl v-if="panelUpdate" class="details-list settings-update-details">
           <div><dt>当前版本</dt><dd class="mono">{{ panelUpdate.check.current }}</dd></div>
           <div><dt>最新版本</dt><dd class="mono">{{ panelUpdate.check.latest || '暂未取得' }}</dd></div>
