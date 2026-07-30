@@ -66,6 +66,22 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
       ])
       expect(positions[0], `${toolbar} 应固定在内容区上方`).toBeLessThan(positions[1])
     }
+
+    const global = page.getByTestId('global-card')
+    await expect(global).toBeVisible()
+    await global.getByRole('button', { name: '编辑设置' }).click()
+    const globalModal = page.getByTestId('global-editor-modal')
+    const logLevel = globalModal.locator('.global-field', { hasText: '日志级别' })
+    const logLevelSelect = logLevel.locator('.n-base-selection')
+    await expect(logLevelSelect).toContainText('info')
+    await logLevelSelect.click()
+    await page.locator('.n-base-select-option', { hasText: 'debug' }).click()
+    const wanInterface = globalModal.locator('.global-field', { hasText: '广域网接口' })
+    await wanInterface.locator('input').fill('auto')
+    await globalModal.getByRole('button', { name: '应用到编排' }).click()
+    await expect(global).toContainText('debug')
+    await expect(global).toContainText('auto')
+
     await page.getByRole('button', { name: '导入节点' }).click()
     await page.getByPlaceholder(/vmess/).fill(NODE_LINK)
     await page.getByRole('button', { name: '加入编排' }).click()
@@ -115,8 +131,17 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     const simpleTab = routingModal.locator('.n-tabs-tab', { hasText: '简单模式' })
     await expect(advancedTab).toHaveClass(/n-tabs-tab--active/)
     await expect(page).toHaveURL(/\/proxy$/)
+    const originalAdvanced = await routingModal.locator('textarea').inputValue()
     await simpleTab.click()
-    await routingModal.getByRole('button', { name: '应用到编排' }).click()
+    await advancedTab.click()
+    await expect(routingModal.locator('textarea')).toHaveValue(originalAdvanced)
+    await routingModal.getByRole('button', { name: '取消' }).click()
+    await expect(routing.getByText('domain(geosite:cn)')).toBeVisible()
+
+    await routing.getByRole('button', { name: '编辑路由' }).click()
+    const reopenedRoutingModal = page.getByTestId('routing-editor-modal')
+    await reopenedRoutingModal.locator('.n-tabs-tab', { hasText: '简单模式' }).click()
+    await reopenedRoutingModal.getByRole('button', { name: '应用到编排' }).click()
     await expect(routing.getByText('pname(NetworkManager, systemd-resolved, dnsmasq)')).toBeVisible()
 
     await page.locator('.page-toolbar').getByRole('button', { name: '保存并重载' }).click()
@@ -129,6 +154,8 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     expect(saved).toContain("e2e_sub: 'https://example.com/e2e-updated'")
     expect(saved).toContain('filter: subtag(e2e_sub)')
     expect(saved).toContain('domain(geosite:gfw) -> proxy')
+    expect(saved).toContain('log_level: debug')
+    expect(saved).toContain("wan_interface: 'auto'")
   })
 
   await test.step('设置页左右列保持同一底边', async () => {
@@ -277,6 +304,15 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expect(page.getByRole('heading', { name: '代理编排', level: 2 })).toBeVisible()
     let overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
     expect(overflow).toBeLessThanOrEqual(1)
+
+    await page.getByTestId('global-card').getByRole('button', { name: '编辑设置' }).click()
+    const globalModal = page.getByTestId('global-editor-modal')
+    const globalModalBox = await globalModal.boundingBox()
+    expect(globalModalBox).not.toBeNull()
+    expect(globalModalBox!.x).toBeGreaterThanOrEqual(0)
+    expect(globalModalBox!.x + globalModalBox!.width).toBeLessThanOrEqual(390)
+    expect(await globalModal.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1)
+    await globalModal.getByRole('button', { name: '取消' }).click()
 
     await page.getByTestId('routing-card').getByRole('button', { name: '编辑路由' }).click()
     const routingModal = page.getByTestId('routing-editor-modal')

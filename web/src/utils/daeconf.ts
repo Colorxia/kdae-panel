@@ -480,6 +480,8 @@ export function removeLine(text: string, lineStart: number, lineEnd: number): st
  */
 export function replaceLine(text: string, lineStart: number, lineEnd: number, line: string, indent = INDENT): string {
   const carriageReturn = text[lineEnd - 1] === '\r' ? '\r' : ''
+  const existing = text.slice(lineStart, lineEnd).replace(/\r$/, '')
+  const existingIndent = /^[ \t]*/.exec(existing)?.[0]
   const masked = maskWithSpans(text).text
   let comment = ''
   for (let index = lineStart; index < lineEnd; index += 1) {
@@ -489,7 +491,7 @@ export function replaceLine(text: string, lineStart: number, lineEnd: number, li
       break
     }
   }
-  return splice(text, lineStart, lineEnd, indent + line + comment + carriageReturn)
+  return splice(text, lineStart, lineEnd, (existingIndent ?? indent) + line + comment + carriageReturn)
 }
 
 /** 声明的键在 dae 词法中必须是裸 ID;这里进一步收窄到无歧义的安全子集。 */

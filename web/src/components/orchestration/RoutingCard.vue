@@ -181,14 +181,8 @@ function openRoutingEditor() {
 }
 
 function changeRoutingEditorTab(value: string) {
-  if (value === 'advanced' && routingEditorTab.value === 'simple') {
-    advancedBody.value = buildSimpleRouting(
-      simpleMode.value,
-      proxyGroup.value,
-      macEnabled.value ? macValues() : [],
-      macAction.value,
-    )
-  }
+  // 两种模式各自保留一份草稿。切换标签只是查看另一份草稿，
+  // 不能因为用户想看一眼高级模式就把简单模式模板写进去。
   routingEditorTab.value = value as 'simple' | 'advanced'
 }
 
