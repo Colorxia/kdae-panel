@@ -389,6 +389,10 @@ func TestFailedInstallKeepsExistingRollbackPoint(t *testing.T) {
 func TestInstallDetectsCrashLoopWithinObservationWindow(t *testing.T) {
 	service := &fakeService{restartsGrow: true}
 	installer, binaryPath := newTestInstaller(t, &fakeFetcher{}, service)
+	// 零窗口刻意压住边界：第一次采样只能建立基线，即使窗口已经结束，
+	// 也必须再采一次才能判断 NRestarts 是否增长。测试因此不依赖 CI 调度速度。
+	installer.health = 0
+	installer.interval = 0
 	seed(t, binaryPath, "v1")
 
 	_, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial, "v2.0.0", "v2")

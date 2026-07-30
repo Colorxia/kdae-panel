@@ -726,6 +726,9 @@ func (i *Installer) restart(ctx context.Context) error {
 		// NRestarts 单调递增，正好把这种"看不见的崩溃"暴露出来。
 		if !sampled {
 			baseline, sampled = status.Restarts, true
+			// 第一次采样只建立基线，不能因为调度延迟已经越过 deadline 就直接成功。
+			// 至少再采一次，才能判断观察期间有没有发生崩溃重启。
+			continue
 		} else if status.Restarts > baseline {
 			return fmt.Errorf("重启后服务在观察窗口内又重启了 %d 次，新版本很可能起不稳",
 				status.Restarts-baseline)
