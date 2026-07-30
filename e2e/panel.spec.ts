@@ -81,8 +81,17 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
 
   await test.step('设置页左右列保持同一底边', async () => {
     await page.goto('/settings')
-    await expect(page.getByRole('heading', { name: '账户与诊断' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '面板设置', level: 2 })).toBeVisible()
     await expectColumnsAligned(page.locator('.settings-page .equal-height-grid > *'))
+
+    const selfUpdate = page.getByRole('switch', { name: '允许面板一键升级' })
+    await expect(selfUpdate).toBeChecked()
+    await selfUpdate.click()
+    await expect(selfUpdate).not.toBeChecked()
+    await page.reload()
+    await expect(page.getByRole('switch', { name: '允许面板一键升级' })).not.toBeChecked()
+    await page.getByRole('switch', { name: '允许面板一键升级' }).click()
+    await expect(page.getByRole('switch', { name: '允许面板一键升级' })).toBeChecked()
   })
 
   await test.step('卸载 dae 时由用户独立选择配置与 geo 去留', async () => {

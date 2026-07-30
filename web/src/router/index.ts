@@ -27,7 +27,7 @@ const router = createRouter({
         { path: 'versions', name: 'versions', component: () => import('../views/VersionsView.vue'), meta: { title: 'dae 版本' } },
         { path: 'logs', name: 'logs', component: () => import('../views/LogsView.vue'), meta: { title: '运行日志' } },
         { path: 'backups', name: 'backups', component: () => import('../views/BackupsView.vue'), meta: { title: '配置备份' } },
-        { path: 'settings', name: 'settings', component: () => import('../views/SettingsView.vue'), meta: { title: '安全设置' } },
+        { path: 'settings', name: 'settings', component: () => import('../views/SettingsView.vue'), meta: { title: '面板设置' } },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },

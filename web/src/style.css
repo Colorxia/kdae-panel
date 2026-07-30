@@ -496,6 +496,26 @@ pre,
   min-height: auto;
 }
 
+.settings-update {
+  min-height: auto;
+}
+
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.settings-toggle-row > div {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-update-details {
+  margin-top: 18px;
+}
+
 .orchestrate-page .panel-card {
   min-height: auto;
 }

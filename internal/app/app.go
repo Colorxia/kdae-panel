@@ -152,20 +152,19 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		}
 		dependencies.Geo = manager
 	}
-	if cfg.EnableSelfUpdate {
-		updater, err := panelupdate.New(panelupdate.Options{
-			Version:    cfg.Version,
-			BackupPath: cfg.PanelBackupPath,
-			Fetcher:    upstream.NewPanelFetcher(),
-			Service:    hostManager,
-			Logger:     logger,
-		})
-		if err != nil {
-			_ = authStore.Close()
-			return nil, fmt.Errorf("初始化面板自升级: %w", err)
-		}
-		dependencies.PanelUpdate = updater
+	updater, err := panelupdate.New(panelupdate.Options{
+		Version:    cfg.Version,
+		BackupPath: cfg.PanelBackupPath,
+		Enabled:    cfg.EnableSelfUpdate,
+		Fetcher:    upstream.NewPanelFetcher(),
+		Service:    hostManager,
+		Logger:     logger,
+	})
+	if err != nil {
+		_ = authStore.Close()
+		return nil, fmt.Errorf("初始化面板自升级: %w", err)
 	}
+	dependencies.PanelUpdate = updater
 	application, err := NewWithDependencies(cfg, logger, dependencies)
 	if err != nil {
 		_ = authStore.Close()

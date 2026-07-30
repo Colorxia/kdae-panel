@@ -32,12 +32,8 @@ type Config struct {
 	GeoSchedulePath string
 	// PanelBackupPath 存放自升级时被替换掉的上一版面板二进制。
 	PanelBackupPath string
-	// EnableSelfUpdate 打开面板的一键自升级。
-	//
-	// 默认关闭，理由与 EnableDaeInstall 同级甚至更强：它要求面板能改写自己的
-	// 可执行文件，一旦面板存在可被利用的缺陷，那个缺陷就能把自己写成持久化的
-	// 任意代码。只想收到新版本提醒的部署不该被迫承担这个权限——因此它与
-	// DisableUpdateCheck 是两个独立开关。
+	// EnableSelfUpdate 是尚未在界面保存偏好时采用的初始值。
+	// 默认开启；管理员可在设置页随时关闭，选择会持久化在面板数据目录。
 	EnableSelfUpdate bool
 	// DisableUpdateCheck 关闭面板自身的新版本检查。
 	//
@@ -77,6 +73,7 @@ func DefaultConfig() Config {
 		PanelBackupPath:  "/var/lib/kdae-panel/kdae-panel.previous",
 		SessionTTL:       12 * time.Hour,
 		EnableDaeInstall: true,
+		EnableSelfUpdate: true,
 	}
 }
 

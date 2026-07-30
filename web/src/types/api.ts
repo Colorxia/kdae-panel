@@ -198,11 +198,12 @@ export interface PanelUpdateCheck {
   error?: string
 }
 
-/** 自升级的可行性；未启用该功能时整个字段不存在。 */
+/** 自升级开关与可行性；正式部署始终返回，关闭时仍可从界面重新启用。 */
 export interface PanelUpdateStatus {
   current: string
   binaryPath: string
   platform: string
+  enabled: boolean
   updatable: boolean
   problem?: string
   previousPath?: string

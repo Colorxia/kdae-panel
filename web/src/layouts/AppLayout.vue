@@ -28,8 +28,8 @@ import {
   ReaderOutline,
   SettingsOutline,
 } from '@vicons/ionicons5'
-import { getJSON, postJSON } from '../api/client'
-import type { PanelUpdatePayload } from '../types/api'
+import { getJSON, postJSON, putJSON } from '../api/client'
+import type { PanelUpdatePayload, PanelUpdateStatus } from '../types/api'
 import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
@@ -55,7 +55,7 @@ const menuOptions: MenuOption[] = [
   menuLink('dae 版本', 'versions', CubeOutline),
   menuLink('运行日志', 'logs', ReaderOutline),
   menuLink('配置备份', 'backups', ArchiveOutline),
-  menuLink('安全设置', 'settings', SettingsOutline),
+  menuLink('面板设置', 'settings', SettingsOutline),
 ]
 
 const selectedKey = computed(() => String(route.name || 'dashboard'))
@@ -85,8 +85,9 @@ function handleResize() {
 const update = ref<PanelUpdatePayload | null>(null)
 const updateDismissed = ref(false)
 const upgrading = ref(false)
-// 自升级未启用时后端不返回 status，此时只提醒、不给升级入口
-const canSelfUpdate = computed(() => update.value?.status?.updatable === true)
+const preferenceSaving = ref(false)
+const canSelfUpdate = computed(() => update.value?.status?.enabled === true && update.value.status.updatable)
+const canEnableSelfUpdate = computed(() => update.value?.status !== undefined && !update.value.status.enabled)
 
 async function checkUpdate() {
   try {
@@ -122,6 +123,35 @@ async function upgrade(version?: string) {
   }
 }
 
+function confirmEnableAndUpgrade() {
+  const latest = update.value?.check.latest
+  dialog.warning({
+    title: `启用并升级到 ${latest}`,
+    content: '启用状态会保存在面板数据目录，以后有新版本即可直接在这里升级。'
+      + '本次会下载并校验发布包、备份当前二进制，然后重启面板；dae 与代理流量不受影响。',
+    positiveText: '启用并升级',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      preferenceSaving.value = true
+      try {
+        const payload = await putJSON<{ status: PanelUpdateStatus }>('/api/v1/panel/update/preference', { enabled: true })
+        if (update.value) update.value.status = payload.status
+        window.dispatchEvent(new CustomEvent('kdae-panel:self-update-changed', { detail: payload.status }))
+        await upgrade(latest)
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : '启用面板一键升级失败')
+      } finally {
+        preferenceSaving.value = false
+      }
+    },
+  })
+}
+
+function handleSelfUpdateChanged(event: Event) {
+  const status = (event as CustomEvent<PanelUpdateStatus>).detail
+  if (update.value && status) update.value.status = status
+}
+
 // 面板重启期间请求必然失败，因此这里不能把错误当结论：只认"健康接口
 // 报出了新版本"这一个成功信号，其余一律继续等，直到超时。
 async function waitForRestart(expected?: string) {
@@ -145,11 +175,13 @@ async function waitForRestart(expected?: string) {
 
 onMounted(() => {
   window.addEventListener('kdae-panel:auth-expired', handleExpired)
+  window.addEventListener('kdae-panel:self-update-changed', handleSelfUpdateChanged)
   window.addEventListener('resize', handleResize)
   void checkUpdate()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('kdae-panel:auth-expired', handleExpired)
+  window.removeEventListener('kdae-panel:self-update-changed', handleSelfUpdateChanged)
   window.removeEventListener('resize', handleResize)
 })
 </script>
@@ -205,7 +237,9 @@ onBeforeUnmount(() => {
             <span>
               面板有新版本 <strong>{{ update.check.latest }}</strong>（当前 {{ update.check.current }}）。
               <template v-if="canSelfUpdate">升级会替换面板二进制并重启自身，配置与账号数据都会保留。</template>
-              <template v-else>在服务器上重新执行一键部署命令即可升级，配置与账号数据都会保留。</template>
+              <template v-else-if="canEnableSelfUpdate">可直接在这里启用一键升级，不需要 SSH。</template>
+              <template v-else-if="update.status?.problem">当前无法一键升级：{{ update.status.problem }}</template>
+              <template v-else>当前部署不支持一键升级，可重新执行一键部署命令。</template>
               <a href="https://github.com/tuoro/kdae-panel/releases/latest" target="_blank" rel="noopener">查看发布说明</a>
             </span>
             <NButton
@@ -218,6 +252,17 @@ onBeforeUnmount(() => {
             >
               <template #icon><NIcon><CloudDownloadOutline /></NIcon></template>
               {{ upgrading ? '升级中…' : '立即升级' }}
+            </NButton>
+            <NButton
+              v-else-if="canEnableSelfUpdate"
+              size="small"
+              type="primary"
+              :loading="preferenceSaving || upgrading"
+              :disabled="preferenceSaving || upgrading"
+              @click="confirmEnableAndUpgrade"
+            >
+              <template #icon><NIcon><CloudDownloadOutline /></NIcon></template>
+              启用并升级
             </NButton>
           </div>
         </NAlert>

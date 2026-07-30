@@ -96,7 +96,7 @@ sudo systemctl restart kdae-panel
 | `KDAE_PANEL_GEO_SCHEDULE_FILE` | `/var/lib/kdae-panel/geo-schedule.json` | geo 自动更新的设置与上次执行时间 |
 | `KDAE_PANEL_ENABLE_GEO_UPDATE` | `false` | 允许一键更新 geo 数据，与上一项相互独立 |
 | `KDAE_PANEL_DISABLE_UPDATE_CHECK` | `false` | 关闭面板自身的新版本检查（检查只读取本仓库 releases/latest 的 tag，结果缓存 6 小时） |
-| `KDAE_PANEL_ENABLE_SELF_UPDATE` | `false` | 允许面板一键升级自身；默认安装路径 `/usr/bin` 已可写 |
+| `KDAE_PANEL_ENABLE_SELF_UPDATE` | `true` | 面板一键升级的初始值；设置页保存过选择后以 UI 偏好为准 |
 | `KDAE_PANEL_BACKUP_FILE` | `/var/lib/kdae-panel/kdae-panel.previous` | 自升级保留的上一版面板二进制 |
 | `KDAE_PANEL_SESSION_TTL` | `12h` | 会话绝对有效期 |
 | `KDAE_PANEL_SECURE_COOKIE` | `false` | Cookie 是否仅允许 HTTPS |
@@ -115,23 +115,13 @@ sudo systemctl restart kdae-panel
 
 只想升级已有的 dae 时不需要这一步。若你更习惯官方工具，[dae-installer](https://github.com/daeuniverse/dae-installer) 依然可用，两者互不冲突。
 
-### 启用面板一键自升级
+### 面板一键自升级
 
-**又一个独立开关**，与上面两个互不影响。开启后，界面顶部的新版本横幅会多出一个「立即升级」按钮：面板下载发布包、比对 `SHA256SUMS`、用新二进制自证能在本机运行，然后替换自己并请求 systemd 重启。
+新安装默认开启。有新版本时，界面顶部会显示「立即升级」按钮：面板下载发布包、比对 `SHA256SUMS`、用新二进制自证能在本机运行，然后替换自己并请求 systemd 重启。设置页的「允许一键升级」开关可以随时关闭或重新开启，不需要 SSH；普通的新版本提示不会随之关闭。
 
-```bash
-env_file=/etc/kdae-panel/kdae-panel.env
-if sudo grep -q '^KDAE_PANEL_ENABLE_SELF_UPDATE=' "$env_file"; then
-  sudo sed -i 's/^KDAE_PANEL_ENABLE_SELF_UPDATE=.*/KDAE_PANEL_ENABLE_SELF_UPDATE=true/' "$env_file"
-else
-  echo 'KDAE_PANEL_ENABLE_SELF_UPDATE=true' | sudo tee -a "$env_file" >/dev/null
-fi
-test "$(sudo grep -c '^KDAE_PANEL_ENABLE_SELF_UPDATE=' "$env_file")" -eq 1
+界面选择原子写入 `/var/lib/kdae-panel/self-update.json`，重启后保持，并优先于 `KDAE_PANEL_ENABLE_SELF_UPDATE` 给出的初始值。这样从旧版本升级、环境文件仍写着 `false` 的实例，也可以直接在新版本横幅中选择「启用并升级」，以后不再需要改环境文件。卸载面板时该偏好默认随其他数据保留，`KDAE_PANEL_PURGE=true` 才会清除。
 
-sudo systemctl restart kdae-panel
-```
-
-**这个开关的代价要说透**：它让面板能改写自己的可执行文件，因此面板本身的任何可利用缺陷都能被写成持久化的任意代码——严重程度不低于 dae 版本管理。不开也完全够用：新版本提醒始终可用，在服务器上重跑一次一键部署命令即可升级，配置与账号数据同样保留。
+**这个开关的代价要说透**：它让面板能改写自己的可执行文件，因此面板本身的任何可利用缺陷都能被写成持久化的任意代码——严重程度不低于默认开启的 dae 版本管理。不接受这一权限时可在设置页关闭；新版本提醒仍然可用，也可以重跑一键部署命令完成整包升级。
 
 **没有自动回滚。** 被替换、被重启的是当前进程自己，一旦 systemd 把它停掉就无从执行补救。风险因此前移：替换之前先运行新二进制的 `-version` 让它自证能在这台机器上跑起来，版本对不上或跑不起来就中止，原文件一个字节都不动。替换时把上一版复制到 `KDAE_PANEL_BACKUP_FILE`，万一新版本起不来：
 

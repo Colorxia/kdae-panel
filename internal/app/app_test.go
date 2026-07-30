@@ -939,6 +939,17 @@ type stubPanelUpdateService struct {
 
 func (s *stubPanelUpdateService) Status(context.Context) panelupdate.Status { return s.status }
 
+func (s *stubPanelUpdateService) SetEnabled(enabled bool) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.mu.Lock()
+	s.status.Enabled = enabled
+	s.status.Updatable = enabled
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *stubPanelUpdateService) Download(_ context.Context, version string) (upstream.PanelBinary, error) {
 	s.mu.Lock()
 	s.requested = version
@@ -962,17 +973,46 @@ func (s *stubPanelUpdateService) applyCount() int {
 	return s.applied
 }
 
-// 未启用自升级时必须返回可读的 panel_self_update_disabled：
-// 前端据此不显示升级按钮，落到 api_not_found 会被当成版本不匹配。
-func TestPanelSelfUpdateDisabledByDefault(t *testing.T) {
+// 没有升级服务的非正式嵌入部署要返回明确错误，不能落到 api_not_found。
+func TestPanelSelfUpdateUnavailable(t *testing.T) {
 	application := newUpdateCheckApp(t, "v0.1.0", nil)
 	recorder := httptest.NewRecorder()
 	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/panel/update", nil))
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("状态码 = %d，期望 503", recorder.Code)
 	}
-	if !strings.Contains(recorder.Body.String(), "panel_self_update_disabled") {
-		t.Fatalf("响应应说明功能未启用: %s", recorder.Body.String())
+	if !strings.Contains(recorder.Body.String(), "panel_self_update_unavailable") {
+		t.Fatalf("响应应说明部署不支持: %s", recorder.Body.String())
+	}
+}
+
+func TestPanelSelfUpdatePreferenceCanBeChangedFromAPI(t *testing.T) {
+	service := &stubPanelUpdateService{status: panelupdate.Status{Enabled: false}}
+	application := newSelfUpdateApp(t, service)
+
+	preference := httptest.NewRecorder()
+	application.Handler().ServeHTTP(preference, httptest.NewRequest(http.MethodPut,
+		"/api/v1/panel/update/preference", strings.NewReader(`{"enabled":true}`)))
+	if preference.Code != http.StatusOK || !strings.Contains(preference.Body.String(), `"enabled":true`) {
+		t.Fatalf("开启响应 = %d %s", preference.Code, preference.Body.String())
+	}
+
+	upgrade := httptest.NewRecorder()
+	application.Handler().ServeHTTP(upgrade, httptest.NewRequest(http.MethodPost,
+		"/api/v1/panel/update", strings.NewReader(`{"version":"v0.2.0"}`)))
+	if upgrade.Code != http.StatusAccepted {
+		t.Fatalf("界面开启后应能升级: %d %s", upgrade.Code, upgrade.Body.String())
+	}
+}
+
+func TestPanelSelfUpdateRejectsWhilePreferenceDisabled(t *testing.T) {
+	service := &stubPanelUpdateService{status: panelupdate.Status{Enabled: false}}
+	application := newSelfUpdateApp(t, service)
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost,
+		"/api/v1/panel/update", strings.NewReader(`{"version":"v0.2.0"}`)))
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "panel_self_update_disabled") {
+		t.Fatalf("关闭状态响应 = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -990,7 +1030,7 @@ func newSelfUpdateApp(t *testing.T, service PanelUpdateService) *App {
 }
 
 func TestPanelSelfUpdateRunsAsynchronously(t *testing.T) {
-	service := &stubPanelUpdateService{status: panelupdate.Status{Updatable: true}}
+	service := &stubPanelUpdateService{status: panelupdate.Status{Enabled: true, Updatable: true}}
 	application := newSelfUpdateApp(t, service)
 
 	recorder := httptest.NewRecorder()
@@ -1019,6 +1059,7 @@ func TestPanelSelfUpdateRunsAsynchronously(t *testing.T) {
 // 目录不可写等情形要在启动任务前就挡住，并把原因如实带出。
 func TestPanelSelfUpdateRejectsWhenNotUpdatable(t *testing.T) {
 	service := &stubPanelUpdateService{status: panelupdate.Status{
+		Enabled:   true,
 		Updatable: false,
 		Problem:   "面板无法写入 /usr/bin：只读文件系统",
 	}}
@@ -1039,7 +1080,7 @@ func TestPanelSelfUpdateRejectsWhenNotUpdatable(t *testing.T) {
 
 // 版本号会被拼进下载地址，含斜杠或空白的取值必须在拼接前拦住。
 func TestPanelSelfUpdateRejectsMalformedVersion(t *testing.T) {
-	service := &stubPanelUpdateService{status: panelupdate.Status{Updatable: true}}
+	service := &stubPanelUpdateService{status: panelupdate.Status{Enabled: true, Updatable: true}}
 	application := newSelfUpdateApp(t, service)
 
 	for _, bad := range []string{`{"version":"../../etc"}`, `{"version":"v1 0"}`, `{"version":"1.0.0"}`} {
@@ -1655,6 +1696,9 @@ func TestDefaultConfigListensOnLAN(t *testing.T) {
 	}
 	if !config.EnableDaeInstall {
 		t.Fatal("dae 版本管理应默认开启")
+	}
+	if !config.EnableSelfUpdate {
+		t.Fatal("面板一键升级应默认开启，并允许在界面关闭")
 	}
 }
 
