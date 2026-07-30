@@ -672,6 +672,40 @@ pre,
   overflow-wrap: anywhere;
 }
 
+.n-base-select-option:has(.interface-option) {
+  height: auto;
+  min-height: 38px;
+}
+
+.interface-option {
+  min-width: 0;
+  padding: 4px 0;
+  display: grid;
+  gap: 2px;
+}
+
+.interface-option strong {
+  color: var(--text-bright);
+  font-size: 13px;
+}
+
+.interface-option-addresses {
+  max-width: min(560px, 72vw);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.n-base-selection .interface-option {
+  padding: 0;
+  display: block;
+}
+
+.n-base-selection .interface-option-addresses {
+  display: none;
+}
+
 .orchestrate-empty {
   padding: 26px 18px;
   text-align: center;
@@ -900,6 +934,32 @@ pre,
   gap: 12px;
 }
 
+.group-resource-hint {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+}
+
+.group-filter-actions {
+  flex: 0 0 auto;
+}
+
+.group-resource-option {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+}
+
+.group-resource-option-meta {
+  max-width: 360px;
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .group-filter-editor-row {
   display: grid;
   grid-template-columns: 160px minmax(0, 1fr) 82px 34px;
@@ -1093,6 +1153,15 @@ pre,
 
   .group-editor-policy {
     align-items: stretch;
+  }
+
+  .group-filter-editor-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .group-filter-actions {
+    width: 100%;
   }
 
   .filter-exclude-placeholder {

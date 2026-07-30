@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -85,9 +86,10 @@ func (s stubDaeService) Sysdump(_ context.Context) (dae.Sysdump, error) {
 }
 
 type stubHostService struct {
-	status  host.Status
-	actions []host.Action
-	err     error
+	status     host.Status
+	interfaces []host.NetworkInterface
+	actions    []host.Action
+	err        error
 }
 
 type stubAuthenticationService struct {
@@ -136,6 +138,10 @@ func (s *stubHostService) Action(_ context.Context, action host.Action) error {
 
 func (s *stubHostService) Logs(_ context.Context, _ int) ([]host.LogEntry, error) {
 	return []host.LogEntry{}, s.err
+}
+
+func (s *stubHostService) Interfaces(_ context.Context) ([]host.NetworkInterface, error) {
+	return s.interfaces, s.err
 }
 
 func TestHealth(t *testing.T) {
@@ -278,6 +284,72 @@ func TestServiceRestartAction(t *testing.T) {
 	}
 	if len(hostService.actions) != 1 || hostService.actions[0] != host.ActionRestart {
 		t.Fatalf("服务动作异常: %v", hostService.actions)
+	}
+}
+
+func TestHostInterfaces(t *testing.T) {
+	want := []host.NetworkInterface{
+		{Name: "dae0", Addresses: []string{"10.0.0.1/24"}},
+		{Name: "ens2", Addresses: []string{"192.168.50.23/24", "fe80::1/64"}},
+		{Name: "lo", Addresses: []string{"127.0.0.1/8", "::1/128"}},
+	}
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{Dae: stubDaeService{}, Host: &stubHostService{interfaces: want}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/host/interfaces", nil)
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+	var got []host.NetworkInterface
+	if err := json.NewDecoder(recorder.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("接口列表 = %+v，期望 %+v", got, want)
+	}
+}
+
+func TestHostInterfacesReportEnumerationFailure(t *testing.T) {
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{Dae: stubDaeService{}, Host: &stubHostService{err: errors.New("枚举失败")}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/host/interfaces", nil)
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "host_interfaces_unavailable") {
+		t.Fatalf("响应异常: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestHostInterfacesRequireHostService(t *testing.T) {
+	application, err := NewWithDae(
+		Config{Version: "test-panel"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		stubDaeService{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/host/interfaces", nil)
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "host_service_unavailable") {
+		t.Fatalf("响应异常: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

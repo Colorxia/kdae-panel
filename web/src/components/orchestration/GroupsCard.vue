@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, h, ref } from 'vue'
 import {
   NAlert,
   NButton,
@@ -17,6 +17,7 @@ import {
   NText,
   NTooltip,
   useMessage,
+  type SelectOption,
 } from 'naive-ui'
 import { AddOutline, CreateOutline, TrashOutline } from '@vicons/ionicons5'
 import {
@@ -24,13 +25,21 @@ import {
   isQuotable,
   isValidTag,
   parseGroups,
-  quote,
   readSection,
   removeGroup,
   setGroupFilter,
   setGroupPolicy,
   type Group,
 } from '../../utils/daeconf'
+import {
+  createGroupFilter,
+  describeGroupFilter,
+  parseGroupFilter,
+  serializeGroupFilter,
+  type GroupFilterDraft,
+  type GroupFilterKind,
+} from '../../utils/group'
+import { parseNodeLink } from '../../utils/nodelink'
 import SectionEditorModal from './SectionEditorModal.vue'
 
 const content = defineModel<string>({ required: true })
@@ -86,49 +95,58 @@ function changeFixedIndex(group: Group, index: number | null) {
   content.value = setGroupPolicy(content.value, group, `fixed(${index ?? 0})`)
 }
 
-type FilterKind = 'subscription' | 'nameKeyword' | 'nameRegex' | 'raw'
-
-interface FilterDraft {
-  kind: FilterKind
-  value: string
-  exclude: boolean
-}
-
 const FILTER_KIND_OPTIONS = [
-  { label: '订阅标签', value: 'subscription' },
+  { label: '指定节点', value: 'nodes' },
+  { label: '指定订阅', value: 'subscriptions' },
   { label: '节点名称关键词', value: 'nameKeyword' },
   { label: '节点名称正则', value: 'nameRegex' },
   { label: '高级表达式', value: 'raw' },
 ]
 
-const subscriptionOptions = computed(() => readSection(content.value, 'subscription').entries
+interface ResourceOption extends SelectOption {
+  label: string
+  value: string
+  description?: string
+}
+
+const subscriptionOptions = computed<ResourceOption[]>(() => readSection(content.value, 'subscription').entries
   .filter((entry) => entry.tag)
-  .map((entry) => ({ label: entry.tag!, value: entry.tag! })))
+  .map((entry) => ({ label: entry.tag!, value: entry.tag!, description: entry.value })))
+
+const nodeOptions = computed<ResourceOption[]>(() => {
+  const options: ResourceOption[] = []
+  const seen = new Set<string>()
+  for (const entry of readSection(content.value, 'node').entries) {
+    const info = parseNodeLink(entry.value)
+    const value = (entry.tag || info?.name || '').trim()
+    if (value === '' || !isQuotable(value) || seen.has(value)) continue
+    seen.add(value)
+    const details = [
+      entry.tag && info?.name && info.name !== entry.tag ? info.name : '',
+      info?.protocol,
+      info?.host,
+    ].filter(Boolean).join(' · ')
+    options.push({ label: value, value, description: details || undefined })
+  }
+  return options
+})
+
+function renderResourceLabel(option: SelectOption) {
+  const label = typeof option.label === 'string' ? option.label : String(option.value || '')
+  const description = typeof option.description === 'string' ? option.description : ''
+  return h('div', { class: 'group-resource-option' }, [
+    h('strong', label),
+    description ? h('span', { class: 'group-resource-option-meta' }, description) : null,
+  ])
+}
 
 const groupEditVisible = ref(false)
 const groupTarget = ref<{ index: number; snapshot: string } | null>(null)
 const groupPolicy = ref('min_moving_avg')
 const groupFixedIndex = ref(0)
-const groupFilters = ref<FilterDraft[]>([])
+const groupFilters = ref<GroupFilterDraft[]>([])
 
-function parseFilter(value: string): FilterDraft {
-  const trimmed = value.trim()
-  const exclude = trimmed.startsWith('!')
-  const expression = exclude ? trimmed.slice(1).trim() : trimmed
-  const subscription = /^subtag\(([^()]+)\)$/.exec(expression)
-  if (subscription) return { kind: 'subscription', value: subscription[1].trim(), exclude }
-  const name = /^name\((keyword|regex)\s*:\s*(['"])(.*)\2\)$/.exec(expression)
-  if (name) return { kind: name[1] === 'keyword' ? 'nameKeyword' : 'nameRegex', value: name[3], exclude }
-  return { kind: 'raw', value: trimmed, exclude: false }
-}
-
-function newFilter(): FilterDraft {
-  return subscriptionOptions.value.length > 0
-    ? { kind: 'subscription', value: subscriptionOptions.value[0].value, exclude: false }
-    : { kind: 'nameKeyword', value: '', exclude: false }
-}
-
-function openGroupEditor(groupIndex: number, appendFilter = false) {
+function openGroupEditor(groupIndex: number) {
   const group = groups.value[groupIndex]
   if (!group) return
   if ((group.policy && !group.policy.editable) || group.filters.some((filter) => !filter.editable)) {
@@ -142,24 +160,12 @@ function openGroupEditor(groupIndex: number, appendFilter = false) {
   }
   groupPolicy.value = policy.name
   groupFixedIndex.value = policy.index
-  groupFilters.value = group.filters.map((filter) => parseFilter(filter.value))
-  if (appendFilter) groupFilters.value.push(newFilter())
+  groupFilters.value = group.filters.map((filter) => parseGroupFilter(filter.value))
   groupEditVisible.value = true
 }
 
-function serializeFilter(filter: FilterDraft): string | null {
-  const value = filter.value.trim()
-  if (value === '') return null
-  if (filter.kind === 'raw') return value
-  let expression: string
-  if (filter.kind === 'subscription') {
-    if (!isValidTag(value)) return null
-    expression = `subtag(${value})`
-  } else {
-    if (!isQuotable(value)) return null
-    expression = `name(${filter.kind === 'nameKeyword' ? 'keyword' : 'regex'}: ${quote(value)})`
-  }
-  return filter.exclude ? `!${expression}` : expression
+function addFilter(kind: GroupFilterKind) {
+  groupFilters.value.push(createGroupFilter(kind))
 }
 
 function applyGroupEdit() {
@@ -170,9 +176,9 @@ function applyGroupEdit() {
     message.error('配置在编辑期间发生了变化，请关闭后重新打开')
     return
   }
-  const serialized = groupFilters.value.map(serializeFilter)
+  const serialized = groupFilters.value.map(serializeGroupFilter)
   if (serialized.some((value) => value === null)) {
-    message.error('过滤条件不能为空；订阅标签必须是有效标识，名称条件不能同时含单双引号')
+    message.error('过滤条件不能为空；请选择节点或订阅，名称也不能同时含单双引号')
     return
   }
 
@@ -263,14 +269,16 @@ function applyGroupEdit() {
                 :closable="filter.editable"
                 @close="content = setGroupFilter(content, group, index, '')"
               >
-                <span class="filter-value" @click="filter.editable && openGroupEditor(groupIndex)">{{ filter.value }}</span>
+                <span class="filter-value" :title="filter.value" @click="filter.editable && openGroupEditor(groupIndex)">
+                  {{ describeGroupFilter(filter.value) }}
+                </span>
               </NTag>
             </template>
             该条件跨行或结构复杂，请使用卡片右上角的原文编辑。
           </NTooltip>
-          <NButton size="tiny" dashed @click="openGroupEditor(groupIndex, true)">
+          <NButton size="tiny" dashed @click="openGroupEditor(groupIndex)">
             <template #icon><NIcon><AddOutline /></NIcon></template>
-            {{ group.filters.length === 0 ? '全部节点，添加过滤' : '添加' }}
+            {{ group.filters.length === 0 ? '全部节点，选择成员' : '编辑成员' }}
           </NButton>
         </NSpace>
       </div>
@@ -279,7 +287,7 @@ function applyGroupEdit() {
 
   <NModal v-model:show="groupEditVisible" preset="card" title="编辑分组" class="orchestrate-group-modal" :mask-closable="false" data-testid="group-editor-modal">
     <NAlert type="info" :bordered="false">
-      多条过滤之间是“或”关系。一个条件需要组合多个函数时请选择“高级表达式”。
+      可直接选择本地节点或订阅；多条过滤之间是“或”关系。订阅内部节点由 dae 拉取，面板按订阅整体加入。
     </NAlert>
     <div class="group-editor-policy">
       <NText depth="3">策略</NText>
@@ -288,21 +296,56 @@ function applyGroupEdit() {
     </div>
     <div class="group-filter-editor">
       <div class="group-filter-editor-head">
-        <strong>过滤条件</strong>
-        <NButton size="small" dashed @click="groupFilters.push(newFilter())">
-          <template #icon><NIcon><AddOutline /></NIcon></template>添加条件
-        </NButton>
+        <div>
+          <strong>分组成员</strong>
+          <NText depth="3" class="group-resource-hint">
+            没有标签或链接名称的本地节点需先打标签；未打标签的订阅也无法由 subtag 稳定引用。
+          </NText>
+        </div>
+        <NSpace size="small" class="group-filter-actions">
+          <NButton size="small" dashed :disabled="nodeOptions.length === 0" @click="addFilter('nodes')">
+            <template #icon><NIcon><AddOutline /></NIcon></template>选择节点
+          </NButton>
+          <NButton size="small" dashed :disabled="subscriptionOptions.length === 0" @click="addFilter('subscriptions')">
+            <template #icon><NIcon><AddOutline /></NIcon></template>选择订阅
+          </NButton>
+          <NButton size="small" quaternary @click="addFilter('nameKeyword')">
+            <template #icon><NIcon><AddOutline /></NIcon></template>高级条件
+          </NButton>
+        </NSpace>
       </div>
       <NText v-if="groupFilters.length === 0" depth="3">不设置过滤时，该分组包含全部节点。</NText>
       <div v-for="(filter, index) in groupFilters" :key="index" class="group-filter-editor-row">
         <NSelect v-model:value="filter.kind" :options="FILTER_KIND_OPTIONS" />
         <NSelect
-          v-if="filter.kind === 'subscription'"
-          v-model:value="filter.value"
-          :options="subscriptionOptions"
+          v-if="filter.kind === 'nodes'"
+          v-model:value="filter.values"
+          :options="nodeOptions"
+          :render-label="renderResourceLabel"
+          multiple
           filterable
           tag
-          placeholder="订阅标签"
+          clearable
+          max-tag-count="responsive"
+          :virtual-scroll="false"
+          :consistent-menu-width="false"
+          placeholder="选择本地节点"
+          data-testid="group-node-picker"
+        />
+        <NSelect
+          v-else-if="filter.kind === 'subscriptions'"
+          v-model:value="filter.values"
+          :options="subscriptionOptions"
+          :render-label="renderResourceLabel"
+          multiple
+          filterable
+          tag
+          clearable
+          max-tag-count="responsive"
+          :virtual-scroll="false"
+          :consistent-menu-width="false"
+          placeholder="选择订阅"
+          data-testid="group-subscription-picker"
         />
         <NInput
           v-else

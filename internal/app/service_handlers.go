@@ -13,6 +13,19 @@ type serviceActionRequest struct {
 }
 
 func registerServiceRoutes(router *http.ServeMux, daeService DaeService, hostService HostService, operations *sync.Mutex) {
+	router.HandleFunc("GET /api/v1/host/interfaces", func(writer http.ResponseWriter, request *http.Request) {
+		if hostService == nil {
+			writeAPIError(writer, http.StatusServiceUnavailable, "host_service_unavailable", "主机服务管理尚未初始化")
+			return
+		}
+		interfaces, err := hostService.Interfaces(request.Context())
+		if err != nil {
+			writeAPIError(writer, http.StatusServiceUnavailable, "host_interfaces_unavailable", err.Error())
+			return
+		}
+		writeJSON(writer, http.StatusOK, interfaces)
+	})
+
 	router.HandleFunc("GET /api/v1/service", func(writer http.ResponseWriter, request *http.Request) {
 		if hostService == nil {
 			writeAPIError(writer, http.StatusServiceUnavailable, "host_service_unavailable", "主机服务管理尚未初始化")

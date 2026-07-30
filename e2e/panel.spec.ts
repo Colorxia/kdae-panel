@@ -54,6 +54,14 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
   })
 
   await test.step('导入节点并保存重载，改动落到磁盘', async () => {
+    await page.route('**/api/v1/host/interfaces', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify([
+        { name: 'dae0', addresses: ['10.0.0.1/24'] },
+        { name: 'ens2', addresses: ['192.168.50.23/24', 'fe80::1/64'] },
+        { name: 'lo', addresses: ['127.0.0.1/8', '::1/128'] },
+      ]),
+    }))
     await page.goto('/proxy')
     await expectCardsAligned(page.locator('.equal-height-grid .panel-card'))
     for (const [toolbar, content] of [
@@ -76,8 +84,19 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expect(logLevelSelect).toContainText('info')
     await logLevelSelect.click()
     await page.locator('.n-base-select-option', { hasText: 'debug' }).click()
+    const lanInterface = globalModal.locator('.global-field', { hasText: '局域网接口' })
+    await lanInterface.locator('.n-base-selection').click()
+    const ens2Option = page.locator('.interface-option', { hasText: 'ens2' })
+    await expect(ens2Option).toContainText('192.168.50.23/24')
+    await ens2Option.click()
+    await expect(lanInterface.locator('.n-base-selection')).toContainText('ens2')
+
     const wanInterface = globalModal.locator('.global-field', { hasText: '广域网接口' })
-    await wanInterface.locator('input').fill('auto')
+    await wanInterface.locator('.n-base-selection').click()
+    const autoOption = page.locator('.interface-option', { hasText: '自动识别' })
+    await expect(autoOption).toContainText('由 dae 自动选择默认广域网接口')
+    await autoOption.click()
+    await expect(wanInterface.locator('.n-base-selection')).toContainText('自动识别')
     await globalModal.getByRole('button', { name: '应用到编排' }).click()
     await expect(global).toContainText('debug')
     await expect(global).toContainText('auto')
@@ -110,9 +129,15 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     const groupItem = groups.locator('.group-item', { hasText: 'proxy' })
     await groupItem.getByRole('button', { name: '编辑' }).click()
     const groupModal = page.getByTestId('group-editor-modal')
-    await groupModal.getByRole('button', { name: '添加条件' }).click()
+    await groupModal.getByRole('button', { name: '选择节点' }).click()
+    await groupModal.getByTestId('group-node-picker').locator('.n-base-selection').click()
+    await page.locator('.n-base-select-option', { hasText: 'E2E-01' }).click()
+    await groupModal.getByRole('button', { name: '选择订阅' }).click()
+    await groupModal.getByTestId('group-subscription-picker').locator('.n-base-selection').click()
+    await page.locator('.n-base-select-option', { hasText: 'e2e_sub' }).click()
     await groupModal.getByRole('button', { name: '应用到编排' }).click()
-    await expect(groupItem).toContainText('subtag(e2e_sub)')
+    await expect(groupItem).toContainText('节点：E2E-01')
+    await expect(groupItem).toContainText('订阅：e2e_sub')
 
     const routing = page.getByTestId('routing-card')
     await routing.getByRole('button', { name: '添加规则' }).click()
@@ -152,9 +177,11 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     const saved = readFileSync(configPath, 'utf8')
     expect(saved).toContain(NODE_LINK)
     expect(saved).toContain("e2e_sub: 'https://example.com/e2e-updated'")
+    expect(saved).toContain('filter: name(E2E-01)')
     expect(saved).toContain('filter: subtag(e2e_sub)')
     expect(saved).toContain('domain(geosite:gfw) -> proxy')
     expect(saved).toContain('log_level: debug')
+    expect(saved).toContain("lan_interface: 'ens2'")
     expect(saved).toContain("wan_interface: 'auto'")
   })
 

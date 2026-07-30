@@ -9,7 +9,7 @@ import {
 } from './daeconf'
 import type { DaeOutline, OutlineElement } from '../types/api'
 
-export type GlobalFieldKind = 'boolean' | 'number' | 'select' | 'text' | 'list'
+export type GlobalFieldKind = 'boolean' | 'number' | 'select' | 'text' | 'list' | 'interface'
 export type GlobalDraftValue = string | number | null
 
 export interface GlobalField {
@@ -62,8 +62,8 @@ export const GLOBAL_FIELD_GROUPS: GlobalFieldGroup[] = [
     key: 'interfaces',
     label: '接口与内核',
     fields: [
-      { key: 'lan_interface', label: '局域网接口', description: '需要代理局域网设备时填写，多个接口用逗号分隔。', kind: 'list', quote: true },
-      { key: 'wan_interface', label: '广域网接口', description: '需要代理本机流量时填写；可用 auto 自动探测，多个接口用逗号分隔。', kind: 'list', quote: true },
+      { key: 'lan_interface', label: '局域网接口', description: '选择需要代理局域网设备的接口；也可输入尚未创建的接口名。', kind: 'interface', quote: true },
+      { key: 'wan_interface', label: '广域网接口', description: '选择需要代理本机流量的接口，或使用 auto 自动探测。', kind: 'interface', quote: true },
       { key: 'auto_config_kernel_parameter', label: '自动配置内核参数', description: '自动设置转发与重定向所需的 Linux 内核参数。', kind: 'boolean', defaultValue: 'false', options: booleanOptions },
     ],
   },
@@ -101,6 +101,35 @@ export const GLOBAL_FIELD_GROUPS: GlobalFieldGroup[] = [
 
 export const GLOBAL_FIELDS = GLOBAL_FIELD_GROUPS.flatMap((group) => group.fields)
 export const GLOBAL_FIELD_BY_KEY = new Map(GLOBAL_FIELDS.map((field) => [field.key, field]))
+
+/** 在界面多选值与 dae 使用的逗号分隔接口列表之间转换。 */
+export function splitInterfaceValue(value: GlobalDraftValue): string[] {
+  if (typeof value !== 'string') return []
+  return [...new Set(value.split(',').map((item) => item.trim()).filter(Boolean))]
+}
+
+export function joinInterfaceValues(values: Array<string | number> | null): string | null {
+  if (!values) return null
+  const normalized = [...new Set(values
+    .flatMap((value) => String(value).split(','))
+    .map((value) => value.trim())
+    .filter(Boolean))]
+  return normalized.length > 0 ? normalized.join(',') : null
+}
+
+/** WAN 的 auto 与具体接口互斥；选择后加入的那一类覆盖原有选择。 */
+export function resolveInterfaceSelection(
+  key: string,
+  previousValue: GlobalDraftValue,
+  values: Array<string | number> | null,
+): string | null {
+  const previous = splitInterfaceValue(previousValue)
+  let next = splitInterfaceValue(joinInterfaceValues(values))
+  if (key === 'wan_interface' && next.includes('auto') && next.length > 1) {
+    next = previous.includes('auto') ? next.filter((value) => value !== 'auto') : ['auto']
+  }
+  return joinInterfaceValues(next)
+}
 
 export interface GlobalCapabilities {
   version: string

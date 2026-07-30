@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, h, onMounted, ref } from 'vue'
 import {
   NAlert,
   NButton,
@@ -16,10 +16,11 @@ import {
   NText,
   NTooltip,
   useMessage,
+  type SelectOption,
 } from 'naive-ui'
 import { CloseCircleOutline, CodeSlashOutline, OptionsOutline } from '@vicons/ionicons5'
 import { getJSON } from '../../api/client'
-import type { DaeOutline } from '../../types/api'
+import type { DaeOutline, NetworkInterface } from '../../types/api'
 import {
   applyGlobalChanges,
   GLOBAL_FIELD_BY_KEY,
@@ -28,6 +29,8 @@ import {
   globalValueLabel,
   readGlobalCapabilities,
   readGlobalState,
+  resolveInterfaceSelection,
+  splitInterfaceValue,
   type GlobalCapabilities,
   type GlobalDraftValue,
   type GlobalField,
@@ -43,6 +46,14 @@ const unknownKeys = computed(() => [...new Set(state.value.entries
   .filter((key): key is string => key !== null && !GLOBAL_FIELD_BY_KEY.has(key)))])
 const capabilities = ref<GlobalCapabilities | null>(null)
 const capabilityChecked = ref(false)
+const networkInterfaces = ref<NetworkInterface[]>([])
+const interfaceLoadFailed = ref(false)
+
+interface InterfaceOption extends SelectOption {
+  label: string
+  value: string
+  addresses?: string[]
+}
 
 async function loadCapabilities() {
   try {
@@ -51,6 +62,16 @@ async function loadCapabilities() {
     capabilities.value = null
   } finally {
     capabilityChecked.value = true
+  }
+}
+
+async function loadInterfaces() {
+  try {
+    networkInterfaces.value = await getJSON<NetworkInterface[]>('/api/v1/host/interfaces')
+    interfaceLoadFailed.value = false
+  } catch {
+    networkInterfaces.value = []
+    interfaceLoadFailed.value = true
   }
 }
 
@@ -134,6 +155,45 @@ function numberValue(field: GlobalField): number | null {
   return typeof value === 'number' ? value : null
 }
 
+const detectedInterfaceOptions = computed<InterfaceOption[]>(() => networkInterfaces.value.map((item) => ({
+  label: item.name,
+  value: item.name,
+  addresses: item.addresses || [],
+})))
+
+function renderInterfaceOption(label: string, addresses: string[]) {
+  return h('div', { class: 'interface-option' }, [
+    h('strong', label),
+    addresses.length > 0
+      ? h('span', { class: 'interface-option-addresses' }, addresses.join(' · '))
+      : null,
+  ])
+}
+
+function renderInterfaceLabel(option: SelectOption) {
+  const label = typeof option.label === 'string' ? option.label : String(option.value || '')
+  const addresses = Array.isArray(option.addresses)
+    ? option.addresses.filter((address): address is string => typeof address === 'string')
+    : []
+  return renderInterfaceOption(label, addresses)
+}
+
+function interfaceOptions(field: GlobalField): InterfaceOption[] {
+  if (field.key !== 'wan_interface') return detectedInterfaceOptions.value
+  return [
+    {
+      label: '自动识别',
+      value: 'auto',
+      addresses: ['由 dae 自动选择默认广域网接口'],
+    },
+    ...detectedInterfaceOptions.value.filter((option) => option.value !== 'auto'),
+  ]
+}
+
+function setInterfaceValue(key: string, values: Array<string | number> | null) {
+  draft.value[key] = resolveInterfaceSelection(key, draft.value[key] ?? null, values)
+}
+
 function setStringValue(key: string, value: string) {
   draft.value[key] = value === '' ? null : value
 }
@@ -167,7 +227,10 @@ function applyEditor() {
   }
 }
 
-onMounted(() => void loadCapabilities())
+onMounted(() => {
+  void loadCapabilities()
+  void loadInterfaces()
+})
 </script>
 
 <template>
@@ -221,6 +284,9 @@ onMounted(() => void loadCapabilities())
     <NAlert v-if="capabilityChecked && !capabilities" type="info" :bordered="false" class="global-editor-alert">
       当前 dae 无法导出完整字段能力，兼容性将在应用前由 dae validate 最终确认。
     </NAlert>
+    <NAlert v-if="interfaceLoadFailed" type="info" :bordered="false" class="global-editor-alert">
+      未能读取本机网络接口；局域网与广域网接口仍可直接输入。
+    </NAlert>
 
     <NCollapse :default-expanded-names="GLOBAL_FIELD_GROUPS.map((group) => group.key)" display-directive="show">
       <NCollapseItem v-for="group in GLOBAL_FIELD_GROUPS" :key="group.key" :name="group.key" :title="group.label">
@@ -264,6 +330,23 @@ onMounted(() => void loadCapabilities())
               clearable
               :data-testid="`global-field-${field.key}`"
               @update:value="(value) => draft[field.key] = value"
+            />
+            <NSelect
+              v-else-if="field.kind === 'interface'"
+              :value="splitInterfaceValue(draft[field.key] ?? null)"
+              :options="interfaceOptions(field)"
+              :render-label="renderInterfaceLabel"
+              :placeholder="defaultHint(field)"
+              :disabled="lockedKeys.has(field.key) || unsupported(field)"
+              multiple
+              filterable
+              tag
+              clearable
+              max-tag-count="responsive"
+              :virtual-scroll="false"
+              :consistent-menu-width="false"
+              :data-testid="`global-field-${field.key}`"
+              @update:value="(value) => setInterfaceValue(field.key, value)"
             />
             <NSelect
               v-else-if="field.kind === 'boolean' || field.kind === 'select'"

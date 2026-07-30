@@ -3,8 +3,11 @@ import {
   applyGlobalChanges,
   globalValueLabel,
   GLOBAL_FIELD_BY_KEY,
+  joinInterfaceValues,
   readGlobalCapabilities,
   readGlobalState,
+  resolveInterfaceSelection,
+  splitInterfaceValue,
 } from './global'
 
 const SAMPLE = `global {
@@ -60,6 +63,20 @@ describe('global 结构化编辑', () => {
     expect(state.values).toMatchObject({ log_level: 'info', tproxy_port: 12345, wan_interface: 'auto' })
     expect(globalValueLabel(state.values.log_level, GLOBAL_FIELD_BY_KEY.get('log_level')!)).toBe('info')
     expect(globalValueLabel(state.values.dial_mode, GLOBAL_FIELD_BY_KEY.get('dial_mode')!)).toBe('domain（默认）')
+  })
+
+  it('在接口多选值和 dae 逗号列表之间无损转换', () => {
+    expect(splitInterfaceValue(' ens2, br-lan,ens2 ')).toEqual(['ens2', 'br-lan'])
+    expect(splitInterfaceValue(null)).toEqual([])
+    expect(joinInterfaceValues(['ens2', ' br-lan ', 'ens2'])).toBe('ens2,br-lan')
+    expect(joinInterfaceValues(['ens2,br-lan'])).toBe('ens2,br-lan')
+    expect(joinInterfaceValues([])).toBeNull()
+  })
+
+  it('广域网自动识别与具体接口互斥', () => {
+    expect(resolveInterfaceSelection('wan_interface', 'ens2', ['ens2', 'auto'])).toBe('auto')
+    expect(resolveInterfaceSelection('wan_interface', 'auto', ['auto', 'ens2'])).toBe('ens2')
+    expect(resolveInterfaceSelection('lan_interface', 'dae0', ['dae0', 'ens2'])).toBe('dae0,ens2')
   })
 
   it('多字段倒序改写保留缩进、注释、未知字段和其他节', () => {

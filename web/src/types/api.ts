@@ -60,6 +60,11 @@ export interface ServiceStatus {
   unitPath?: string
 }
 
+export interface NetworkInterface {
+  name: string
+  addresses?: string[]
+}
+
 export interface ConfigDocument {
   path: string
   content: string

@@ -81,6 +81,7 @@ type HostService interface {
 	Status(ctx context.Context) (host.Status, error)
 	Action(ctx context.Context, action host.Action) error
 	Logs(ctx context.Context, limit int) ([]host.LogEntry, error)
+	Interfaces(ctx context.Context) ([]host.NetworkInterface, error)
 }
 
 func New(cfg Config, logger *slog.Logger) (*App, error) {

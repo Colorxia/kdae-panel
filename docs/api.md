@@ -228,6 +228,7 @@ dae 只在重载时重新拉取 `subscription` 链接，因此"订阅定时刷�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
+| `GET` | `/host/interfaces` | 本机网络接口及其 IP/CIDR 地址，供 global 接口选择器使用 |
 | `GET` | `/service` | systemd 状态与资源数据 |
 | `POST` | `/service/actions/start` | 启动 dae |
 | `POST` | `/service/actions/stop` | 停止 dae |
