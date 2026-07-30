@@ -132,7 +132,11 @@ func (p *GeoProvider) Info() GeoSourceInfo {
 
 // NewGeoRegistry 构造指向上游默认仓库的 geo provider 集合。
 func NewGeoRegistry() *GeoRegistry {
-	client := newHTTPClient()
+	return NewGeoRegistryWithGitHubToken(emptyGitHubTokenSource{})
+}
+
+func NewGeoRegistryWithGitHubToken(source GitHubTokenSource) *GeoRegistry {
+	client := newHTTPClientWithTokenSource(source)
 	return newGeoRegistry(
 		&GeoProvider{
 			client: client,

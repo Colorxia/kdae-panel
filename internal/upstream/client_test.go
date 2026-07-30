@@ -2,13 +2,163 @@ package upstream
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+type staticGitHubToken string
+
+func (token staticGitHubToken) GitHubToken() string { return string(token) }
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func testHTTPClient(transport http.RoundTripper, now func() time.Time) *httpClient {
+	return &httpClient{
+		client:            &http.Client{Transport: transport},
+		githubTokenSource: emptyGitHubTokenSource{},
+		now:               now,
+		jsonCache:         make(map[string]jsonCacheEntry),
+		inflight:          make(map[string]*jsonCall),
+	}
+}
+
+func jsonResponse(status int, body string, headers http.Header) *http.Response {
+	if headers == nil {
+		headers = make(http.Header)
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     headers,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func TestCachedJSONReusesResultAndBacksOffAfterRateLimit(t *testing.T) {
+	now := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
+	var requests atomic.Int32
+	limited := false
+	client := testHTTPClient(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		if limited {
+			return jsonResponse(http.StatusForbidden, "", http.Header{
+				"X-RateLimit-Remaining": []string{"0"},
+				"X-RateLimit-Reset":     []string{"1785459600"},
+			}), nil
+		}
+		return jsonResponse(http.StatusOK, `{"value":7}`, nil), nil
+	}), func() time.Time { return now })
+
+	var first, second struct {
+		Value int `json:"value"`
+	}
+	const endpoint = "https://api.github.com/repos/daeuniverse/dae/releases"
+	if err := client.getJSON(context.Background(), endpoint, &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.getJSON(context.Background(), endpoint, &second); err != nil {
+		t.Fatal(err)
+	}
+	if first.Value != 7 || second.Value != 7 || requests.Load() != 1 {
+		t.Fatalf("缓存结果 = %d/%d，请求数 = %d", first.Value, second.Value, requests.Load())
+	}
+
+	// 缓存到期后的第一次请求遇到限流，返回旧结果并重新进入退避窗口；
+	// 紧接着的页面刷新不应再打 GitHub。
+	now = now.Add(jsonCacheTTL + time.Second)
+	limited = true
+	for range 2 {
+		var stale struct {
+			Value int `json:"value"`
+		}
+		if err := client.getJSON(context.Background(), endpoint, &stale); err != nil {
+			t.Fatal(err)
+		}
+		if stale.Value != 7 {
+			t.Fatalf("旧结果 = %d，期望 7", stale.Value)
+		}
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("限流后的请求数 = %d，期望 2", requests.Load())
+	}
+}
+
+func TestCachedJSONCoalescesConcurrentRequests(t *testing.T) {
+	gate := make(chan struct{})
+	var requests atomic.Int32
+	client := testHTTPClient(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		<-gate
+		return jsonResponse(http.StatusOK, `{"ok":true}`, nil), nil
+	}), time.Now)
+
+	const workers = 12
+	errorsSeen := make(chan error, workers)
+	for range workers {
+		go func() {
+			var payload struct {
+				OK bool `json:"ok"`
+			}
+			if err := client.getJSON(context.Background(), "https://api.github.com/meta", &payload); err != nil {
+				errorsSeen <- err
+				return
+			}
+			if !payload.OK {
+				errorsSeen <- errors.New("响应内容错误")
+				return
+			}
+			errorsSeen <- nil
+		}()
+	}
+	for requests.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	close(gate)
+	for range workers {
+		if err := <-errorsSeen; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("并发请求数 = %d，期望 1", requests.Load())
+	}
+}
+
+func TestGitHubTokenIsOnlySentToAPI(t *testing.T) {
+	client := &httpClient{githubTokenSource: staticGitHubToken("secret-token")}
+	for _, item := range []struct {
+		target string
+		want   bool
+	}{
+		{"https://api.github.com/repos/daeuniverse/dae/releases", true},
+		{"https://github.com/daeuniverse/dae/releases/download/v1/dae.zip", false},
+		{"https://nightly.link/olicesx/dae/actions/runs/1/dae.zip", false},
+	} {
+		request, err := http.NewRequest(http.MethodGet, item.target, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client.authorizeGitHubAPI(request)
+		got := request.Header.Get("Authorization") != ""
+		if got != item.want {
+			t.Fatalf("%s Authorization 存在 = %t，期望 %t", item.target, got, item.want)
+		}
+		if item.want && request.Header.Get("Authorization") != "Bearer secret-token" {
+			t.Fatalf("Authorization = %q", request.Header.Get("Authorization"))
+		}
+	}
+}
 
 func TestPublicAddressRejectsInternalTargets(t *testing.T) {
 	// 重定向终点不做域名白名单，因此这一层是防 SSRF 的实际关口。

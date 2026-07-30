@@ -24,6 +24,7 @@ import (
 	"github.com/tuoro/kdae-panel/internal/dae"
 	"github.com/tuoro/kdae-panel/internal/daeinstall"
 	"github.com/tuoro/kdae-panel/internal/geodata"
+	"github.com/tuoro/kdae-panel/internal/githubauth"
 	"github.com/tuoro/kdae-panel/internal/host"
 	"github.com/tuoro/kdae-panel/internal/netprobe"
 	"github.com/tuoro/kdae-panel/internal/panelupdate"
@@ -66,6 +67,7 @@ type Dependencies struct {
 	Geo            GeoService
 	PanelRelease   PanelReleaseChecker
 	PanelUpdate    PanelUpdateService
+	GitHub         GitHubCredentialService
 }
 
 type AuthenticationService interface {
@@ -99,6 +101,11 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("初始化认证服务: %w", err)
 	}
+	githubCredentials, err := githubauth.Open(cfg.GitHubTokenPath, os.Getenv("KDAE_PANEL_GITHUB_TOKEN"))
+	if err != nil {
+		_ = authStore.Close()
+		return nil, fmt.Errorf("初始化 GitHub API 凭据: %w", err)
+	}
 	initialized, err := authStore.Initialized(context.Background())
 	if err != nil {
 		_ = authStore.Close()
@@ -121,6 +128,7 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		Host:           hostManager,
 		Authentication: authStore,
 		Probe:          netprobe.New(),
+		GitHub:         githubCredentials,
 	}
 	if cfg.EnableDaeInstall {
 		installer, err := daeinstall.New(daeinstall.Options{
@@ -128,7 +136,7 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 			ConfigPath:  cfg.DaeConfigPath,
 			StatePath:   cfg.InstallStatePath,
 			ServiceName: cfg.ServiceName,
-			Fetcher:     upstream.NewDefaultRegistry(),
+			Fetcher:     upstream.NewDefaultRegistryWithGitHubToken(githubCredentials),
 			Service:     hostManager,
 			Logger:      logger,
 		})
@@ -142,7 +150,7 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		manager, err := geodata.New(geodata.Options{
 			ConfigPath: cfg.DaeConfigPath,
 			StatePath:  cfg.GeoStatePath,
-			Fetcher:    upstream.NewGeoRegistry(),
+			Fetcher:    upstream.NewGeoRegistryWithGitHubToken(githubCredentials),
 			Service:    hostManager,
 			Reloader:   daeClient,
 			Logger:     logger,
@@ -153,11 +161,12 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		}
 		dependencies.Geo = manager
 	}
+	panelFetcher := upstream.NewPanelFetcherWithGitHubToken(githubCredentials)
 	updater, err := panelupdate.New(panelupdate.Options{
 		Version:    cfg.Version,
 		BackupPath: cfg.PanelBackupPath,
 		Enabled:    cfg.EnableSelfUpdate,
-		Fetcher:    upstream.NewPanelFetcher(),
+		Fetcher:    panelFetcher,
 		Service:    hostManager,
 		Logger:     logger,
 	})
@@ -166,6 +175,9 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		return nil, fmt.Errorf("初始化面板自升级: %w", err)
 	}
 	dependencies.PanelUpdate = updater
+	if !cfg.DisableUpdateCheck {
+		dependencies.PanelRelease = panelFetcher.LatestVersion
+	}
 	application, err := NewWithDependencies(cfg, logger, dependencies)
 	if err != nil {
 		_ = authStore.Close()
@@ -252,6 +264,7 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 		}
 	}
 	registerPanelUpdateRoutes(router, cfg.Version, panelRelease, dependencies.PanelUpdate, operations, logger)
+	registerGitHubCredentialRoutes(router, dependencies.GitHub)
 	router.HandleFunc("GET /api/v1/dae/capabilities", func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, http.StatusOK, dependencies.Dae.Inspect(request.Context()))
 	})

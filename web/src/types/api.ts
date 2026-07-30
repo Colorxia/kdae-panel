@@ -220,6 +220,12 @@ export interface PanelUpdatePayload {
   job?: InstallJob
 }
 
+/** GitHub Token 永不回传；前端只知道是否配置以及由谁管理。 */
+export interface GitHubCredentialStatus {
+  configured: boolean
+  source?: 'environment' | 'panel'
+}
+
 /** 定时任务（订阅自动刷新 / geo 自动更新）的设置与执行状态，两个端点同构。 */
 export interface ScheduleStatus {
   enabled: boolean

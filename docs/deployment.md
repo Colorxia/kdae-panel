@@ -91,6 +91,8 @@ sudo systemctl restart kdae-panel
 | `KDAE_PANEL_BACKUP_DIR` | `/var/lib/kdae-panel/backups` | 配置备份目录 |
 | `KDAE_PANEL_SCHEDULE_FILE` | `/var/lib/kdae-panel/schedule.json` | 订阅自动刷新的设置与上次执行时间 |
 | `KDAE_PANEL_INSTALL_STATE_FILE` | `/var/lib/kdae-panel/dae-install.json` | dae 版本安装记录，同目录还存放回滚点与 `dae-versions/` 本地版本库 |
+| `KDAE_PANEL_GITHUB_TOKEN_FILE` | `/var/lib/kdae-panel/github-token` | 设置页保存 GitHub API Token 的独立文件，权限 `0600` |
+| `KDAE_PANEL_GITHUB_TOKEN` | 空 | 可选 GitHub API Token；非空时优先于设置页文件且不能从 UI 修改，只需公开仓库只读权限 |
 | `KDAE_PANEL_ENABLE_DAE_INSTALL` | `true` | 允许通过面板首次安装、升级与切换 dae 版本 |
 | `KDAE_PANEL_GEO_STATE_FILE` | `/var/lib/kdae-panel/geo-update.json` | geo 数据更新记录 |
 | `KDAE_PANEL_GEO_SCHEDULE_FILE` | `/var/lib/kdae-panel/geo-schedule.json` | geo 自动更新的设置与上次执行时间 |
@@ -104,6 +106,8 @@ sudo systemctl restart kdae-panel
 ### dae 版本管理
 
 新安装默认开启，发行单元已经允许写入默认二进制目录 `/usr/bin` 和服务单元目录 `/etc/systemd/system`，因此可以直接完成首次安装、升级与版本切换。dae 若实际位于其他目录，先用 `systemctl show dae --property=ExecStart` 确认路径，再通过 `systemctl edit kdae-panel` 把该目录加入 `ReadWritePaths`。
+
+版本列表、官方 Release 元数据和 kdae Actions 产物摘要依赖 GitHub API。面板会将 JSON 元数据缓存 10 分钟、合并相同的并发请求，并在上游短暂限流时沿用最近一次成功结果；从列表直接安装时还会复用已经核验过的 Release/run 信息。匿名调用仍受同一出口 IP 每小时 60 次限制，共享公网 IP 或频繁管理多台机器时，建议在「面板设置 → GitHub API」填写只读 Token，认证额度通常为每用户每小时 5000 次。Token 只保存于服务器，不会回传前端；也可以通过 `KDAE_PANEL_GITHUB_TOKEN` 交给部署系统管理。
 
 不需要版本管理的部署可以把 `KDAE_PANEL_ENABLE_DAE_INSTALL` 改为 `false`，并用 systemd drop-in 收紧上述写目录。允许写 root 的可执行文件和服务单元意味着面板缺陷可能升级为任意代码执行，这是默认便利性所接受的权限代价。
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onBeforeUnmount, onMounted, ref, type VNode } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   NAlert,
   NButton,
@@ -29,6 +30,7 @@ import type {
   InstallJob,
   InstallProvision,
   InstallStatus,
+  GitHubCredentialStatus,
   UpstreamSource,
   UpstreamVersion,
 } from '../types/api'
@@ -40,6 +42,7 @@ import GeoCard from '../components/versions/GeoCard.vue'
 
 const message = useMessage()
 const dialog = useDialog()
+const router = useRouter()
 const loading = ref(true)
 const listing = ref(false)
 // loading 只在首屏为真，之后再也不会回到 true，因此它挡不住刷新按钮被连点。
@@ -53,6 +56,7 @@ const source = ref<UpstreamSource>('official')
 const loadError = ref('')
 const listError = ref('')
 const cacheDeleting = ref('')
+const githubStatus = ref<GitHubCredentialStatus | null>(null)
 
 let unmounted = false
 
@@ -71,6 +75,8 @@ const installPolling = useJobPolling({
 const activeSource = computed(() => SOURCES.find((item) => item.value === source.value)!)
 const busy = computed(() => job.value?.phase === 'downloading' || job.value?.phase === 'applying')
 const installedRef = computed(() => status.value?.managed?.ref || '')
+const showGitHubNotice = computed(() =>
+  githubStatus.value?.configured === false || listError.value.includes('GitHub 接口调用频率已达上限'))
 function isInstalled(version: UpstreamVersion): boolean {
   return version.ref === installedRef.value && version.source === status.value?.managed?.source
 }
@@ -137,6 +143,15 @@ async function loadVersions() {
     listError.value = error instanceof Error ? error.message : '读取版本列表失败'
   } finally {
     if (ticket === versionRequest) listing.value = false
+  }
+}
+
+async function loadGitHubStatus() {
+  try {
+    const payload = await getJSON<{ status: GitHubCredentialStatus }>('/api/v1/settings/github')
+    if (!unmounted) githubStatus.value = payload.status
+  } catch {
+    // 凭据状态只是辅助提示；版本列表本身的错误仍由 loadVersions 如实显示。
   }
 }
 
@@ -419,6 +434,7 @@ const columns = computed<DataTableColumns<UpstreamVersion>>(() => [
 ])
 
 onMounted(async () => {
+  void loadGitHubStatus()
   await loadStatus()
   if (unmounted) return
   await loadVersions()
@@ -474,6 +490,12 @@ onBeforeUnmount(() => {
     <NAlert v-else-if="loadError" type="error" :bordered="false">{{ loadError }}</NAlert>
 
     <template v-if="!disabled">
+      <NAlert v-if="showGitHubNotice" type="warning" :bordered="false">
+        <div class="github-token-notice">
+          <span>当前使用 GitHub 匿名 API；共享出口或频繁刷新可能达到每小时 60 次限制，并影响版本列表与新版本安装。</span>
+          <NButton size="small" secondary @click="router.push({ name: 'settings' })">去设置 Token</NButton>
+        </div>
+      </NAlert>
       <NAlert v-if="job?.phase === 'downloading'" type="info" :bordered="false">
         正在下载并校验 {{ job.label || job.ref }}…
       </NAlert>

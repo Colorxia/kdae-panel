@@ -20,8 +20,11 @@ type Config struct {
 	SchedulePath   string
 	// InstallStatePath 记录面板装了哪个 dae 版本，并存放回滚用的上一版二进制。
 	InstallStatePath string
-	SessionTTL       time.Duration
-	SecureCookie     bool
+	// GitHubTokenPath 保存管理员在设置页填写的 GitHub API Token。
+	// Token 本身不进入数据库、配置历史或 API 响应。
+	GitHubTokenPath string
+	SessionTTL      time.Duration
+	SecureCookie    bool
 	// EnableDaeInstall 打开通过面板安装与切换 dae 版本的能力。
 	// 默认开启，发行单元同时开放默认二进制与 systemd 单元目录；不需要版本管理的
 	// 部署仍可显式关闭开关并收紧 ReadWritePaths。
@@ -68,6 +71,7 @@ func DefaultConfig() Config {
 		SchedulePath:   "/var/lib/kdae-panel/schedule.json",
 		// 上一版二进制也放在这个前缀下，因此目录必须在 ReadWritePaths 内。
 		InstallStatePath: "/var/lib/kdae-panel/dae-install.json",
+		GitHubTokenPath:  "/var/lib/kdae-panel/github-token",
 		GeoStatePath:     "/var/lib/kdae-panel/geo-update.json",
 		GeoSchedulePath:  "/var/lib/kdae-panel/geo-schedule.json",
 		PanelBackupPath:  "/var/lib/kdae-panel/kdae-panel.previous",
@@ -123,6 +127,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.InstallStatePath == "" {
 		c.InstallStatePath = defaults.InstallStatePath
+	}
+	if c.GitHubTokenPath == "" {
+		c.GitHubTokenPath = defaults.GitHubTokenPath
 	}
 	if c.SessionTTL <= 0 {
 		c.SessionTTL = defaults.SessionTTL

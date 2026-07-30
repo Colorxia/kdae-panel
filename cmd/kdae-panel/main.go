@@ -64,6 +64,7 @@ func run() error {
 	databasePath := flag.String("database", envOr("KDAE_PANEL_DATABASE", cfg.DatabasePath), "面板 SQLite 数据库路径")
 	schedulePath := flag.String("schedule-file", envOr("KDAE_PANEL_SCHEDULE_FILE", cfg.SchedulePath), "订阅自动刷新设置文件路径")
 	installStatePath := flag.String("install-state-file", envOr("KDAE_PANEL_INSTALL_STATE_FILE", cfg.InstallStatePath), "dae 版本安装状态文件路径")
+	githubTokenPath := flag.String("github-token-file", envOr("KDAE_PANEL_GITHUB_TOKEN_FILE", cfg.GitHubTokenPath), "GitHub API Token 持久化文件路径")
 	geoStatePath := flag.String("geo-state-file", envOr("KDAE_PANEL_GEO_STATE_FILE", cfg.GeoStatePath), "geo 数据更新状态文件路径")
 	geoSchedulePath := flag.String("geo-schedule-file", envOr("KDAE_PANEL_GEO_SCHEDULE_FILE", cfg.GeoSchedulePath), "geo 数据自动更新设置文件路径")
 	enableDaeInstall := flag.Bool("enable-dae-install", enableDaeInstallDefault, "允许通过面板安装与切换 dae 版本")
@@ -93,6 +94,7 @@ func run() error {
 	cfg.DatabasePath = *databasePath
 	cfg.SchedulePath = *schedulePath
 	cfg.InstallStatePath = *installStatePath
+	cfg.GitHubTokenPath = *githubTokenPath
 	cfg.GeoStatePath = *geoStatePath
 	cfg.GeoSchedulePath = *geoSchedulePath
 	cfg.EnableDaeInstall = *enableDaeInstall

@@ -22,6 +22,10 @@ const (
 	downloadTimeout = 5 * time.Minute
 	// GitHub 的 JSON 响应远小于此,超过即视为异常。
 	maxAPIBytes = 8 << 20
+	// GitHub 匿名额度只有每个出口 IP 每小时 60 次。版本列表变化不频繁，
+	// 短时缓存可以避免多人反复打开页面时把额度耗在相同响应上。
+	jsonCacheTTL        = 10 * time.Minute
+	maxJSONCacheEntries = 32
 	// dae 各架构的发布包目前在 20MB 上下,留足余量同时挡住无限响应体。
 	MaxAssetBytes = 128 << 20
 	userAgent     = "kdae-panel"
@@ -29,7 +33,34 @@ const (
 
 // httpClient 收敛所有出站请求的超时与重定向策略。
 type httpClient struct {
-	client *http.Client
+	client            *http.Client
+	githubTokenSource GitHubTokenSource
+	now               func() time.Time
+
+	cacheMu   sync.Mutex
+	jsonCache map[string]jsonCacheEntry
+	inflight  map[string]*jsonCall
+}
+
+// GitHubTokenSource 让凭据可以由设置页即时更新，而不需要重启面板。
+// 实现只需返回当前值；httpClient 不接触持久化细节。
+type GitHubTokenSource interface {
+	GitHubToken() string
+}
+
+type emptyGitHubTokenSource struct{}
+
+func (emptyGitHubTokenSource) GitHubToken() string { return "" }
+
+type jsonCacheEntry struct {
+	body      []byte
+	fetchedAt time.Time
+}
+
+type jsonCall struct {
+	done chan struct{}
+	body []byte
+	err  error
 }
 
 // allowedHosts 只约束由面板主动发起的第一跳。
@@ -45,6 +76,13 @@ var allowedHosts = map[string]bool{
 }
 
 func newHTTPClient() *httpClient {
+	return newHTTPClientWithTokenSource(emptyGitHubTokenSource{})
+}
+
+func newHTTPClientWithTokenSource(source GitHubTokenSource) *httpClient {
+	if source == nil {
+		source = emptyGitHubTokenSource{}
+	}
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	// 代理地址常常就是本机(在 GitHub 不可直连的网络里，代理往往正是 dae 自己)，
 	// 因此内网地址检查必须放过管理员显式配置的代理，只约束直连的最终目标。
@@ -82,6 +120,10 @@ func newHTTPClient() *httpClient {
 				return nil
 			},
 		},
+		githubTokenSource: source,
+		now:               time.Now,
+		jsonCache:         make(map[string]jsonCacheEntry),
+		inflight:          make(map[string]*jsonCall),
 	}
 }
 
@@ -200,10 +242,7 @@ func publicAddress(ip netip.Addr) bool {
 }
 
 func (c *httpClient) getJSON(ctx context.Context, url string, destination any) error {
-	requestCtx, cancel := context.WithTimeout(ctx, apiTimeout)
-	defer cancel()
-
-	body, err := c.get(requestCtx, url, maxAPIBytes, "application/vnd.github+json", false)
+	body, err := c.cachedJSON(ctx, url)
 	if err != nil {
 		return err
 	}
@@ -211,6 +250,70 @@ func (c *httpClient) getJSON(ctx context.Context, url string, destination any) e
 		return fmt.Errorf("解析上游响应: %w", err)
 	}
 	return nil
+}
+
+// cachedJSON 缓存 GitHub JSON 元数据，并合并相同 URL 的并发请求。
+//
+// 列表、Release 与 Actions 元数据都远比二进制稳定。上游暂时限流或不可达时，
+// 最近一次成功结果仍比把版本管理整页打断更有用；安装阶段还有摘要校验与来源复核，
+// 不会因为这层短时缓存而放宽信任边界。
+func (c *httpClient) cachedJSON(ctx context.Context, target string) ([]byte, error) {
+	now := c.now()
+	c.cacheMu.Lock()
+	if cached, ok := c.jsonCache[target]; ok && now.Sub(cached.fetchedAt) < jsonCacheTTL {
+		body := append([]byte(nil), cached.body...)
+		c.cacheMu.Unlock()
+		return body, nil
+	}
+	if call, ok := c.inflight[target]; ok {
+		c.cacheMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-call.done:
+			return append([]byte(nil), call.body...), call.err
+		}
+	}
+	call := &jsonCall{done: make(chan struct{})}
+	c.inflight[target] = call
+	stale, hasStale := c.jsonCache[target]
+	c.cacheMu.Unlock()
+
+	requestCtx, cancel := context.WithTimeout(ctx, apiTimeout)
+	body, err := c.get(requestCtx, target, maxAPIBytes, "application/vnd.github+json", false)
+	cancel()
+	if err == nil && !json.Valid(body) {
+		err = errors.New("解析上游响应: JSON 格式无效")
+	}
+	if err != nil && hasStale {
+		// 失败后同样延长缓存窗口，避免每个页面请求都立即重试一个已限流的接口。
+		body, err = append([]byte(nil), stale.body...), nil
+	}
+
+	c.cacheMu.Lock()
+	if err == nil {
+		c.storeJSON(target, body, now)
+	}
+	call.body, call.err = append([]byte(nil), body...), err
+	delete(c.inflight, target)
+	close(call.done)
+	c.cacheMu.Unlock()
+	return append([]byte(nil), body...), err
+}
+
+// storeJSON 保持缓存有界。容量很小时线性寻找最旧项比再维护一套 LRU 更精简。
+func (c *httpClient) storeJSON(target string, body []byte, fetchedAt time.Time) {
+	if _, exists := c.jsonCache[target]; !exists && len(c.jsonCache) >= maxJSONCacheEntries {
+		var oldestTarget string
+		var oldest time.Time
+		for key, entry := range c.jsonCache {
+			if oldestTarget == "" || entry.fetchedAt.Before(oldest) {
+				oldestTarget, oldest = key, entry.fetchedAt
+			}
+		}
+		delete(c.jsonCache, oldestTarget)
+	}
+	c.jsonCache[target] = jsonCacheEntry{body: append([]byte(nil), body...), fetchedAt: fetchedAt}
 }
 
 func (c *httpClient) getText(ctx context.Context, url string) (string, error) {
@@ -249,6 +352,7 @@ func (c *httpClient) get(ctx context.Context, target string, limit int64, accept
 	if accept != "" {
 		request.Header.Set("Accept", accept)
 	}
+	c.authorizeGitHubAPI(request)
 
 	response, err := c.client.Do(request)
 	if err != nil {
@@ -275,6 +379,20 @@ func (c *httpClient) get(ctx context.Context, target string, limit int64, accept
 	return body, nil
 }
 
+// authorizeGitHubAPI 只把令牌发给 API 首跳。发布资产和 nightly.link 不需要令牌，
+// CheckRedirect 还会再次清除 Authorization，避免凭据跟随重定向外泄。
+func (c *httpClient) authorizeGitHubAPI(request *http.Request) {
+	if !strings.EqualFold(request.URL.Hostname(), "api.github.com") {
+		return
+	}
+	token := strings.TrimSpace(c.githubTokenSource.GitHubToken())
+	if token == "" {
+		return
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+}
+
 func describeHTTPError(response *http.Response, target string) error {
 	switch response.StatusCode {
 	case http.StatusNotFound:
@@ -283,7 +401,7 @@ func describeHTTPError(response *http.Response, target string) error {
 		// 匿名调用 GitHub API 是每 IP 每小时 60 次，触顶时这里给出可读提示。
 		if response.Header.Get("X-RateLimit-Remaining") == "0" {
 			reset := response.Header.Get("X-RateLimit-Reset")
-			return fmt.Errorf("GitHub 接口调用频率已达上限，请稍后重试（重置时间戳 %s）", reset)
+			return fmt.Errorf("GitHub 接口调用频率已达上限，请稍后重试或配置 KDAE_PANEL_GITHUB_TOKEN（重置时间戳 %s）", reset)
 		}
 		return fmt.Errorf("上游拒绝访问（HTTP %d）", response.StatusCode)
 	default:

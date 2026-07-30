@@ -500,6 +500,42 @@ pre,
   min-height: auto;
 }
 
+.settings-github {
+  min-height: auto;
+}
+
+.settings-github-heading,
+.github-token-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.settings-github-heading > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.settings-github-note {
+  display: block;
+  margin-top: 16px;
+}
+
+.settings-github-actions {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.settings-github-actions .n-input {
+  width: min(520px, 100%);
+}
+
+.github-token-notice > span {
+  min-width: 0;
+}
+
 .settings-toggle-row {
   display: flex;
   align-items: center;
@@ -1103,6 +1139,13 @@ pre,
 
   .settings-update-buttons .n-button {
     width: 100%;
+  }
+
+  .settings-github-heading,
+  .github-token-notice {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
   }
 }
 

@@ -86,6 +86,14 @@ X-CSRF-Token: <csrfToken>
 
 版本响应在上游字段之外附带 `cached`、`cachedAt`、`cachedBytes`；只存在于本机、不在当前上游清单中的版本还会带 `cachedOnly`。已过期的 kdae 构建只要本地缓存完整仍然可切换；上游暂时不可访问时，只要存在缓存也会返回本地版本。缓存按来源、版本与本机 CPU 平台隔离，真正安装前会重新计算二进制 SHA-256，而不是只信任缓存索引。
 
+GitHub JSON 元数据另有 10 分钟进程内缓存；同 URL 的并发请求只访问上游一次，刷新失败时继续使用最近成功结果。凭据管理端点如下，任何响应都只返回 `configured` 与 `source`，不会返回 Token：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/settings/github` | 查询是否配置 GitHub Token 及来源（`panel` / `environment`） |
+| `PUT` | `/settings/github` | 保存 `{"token":"..."}`，写入 `0600` 独立文件并立即生效 |
+| `DELETE` | `/settings/github` | 清除面板保存的 Token；环境变量管理时返回 `409` |
+
 删除缓存请求体：
 
 ```json
