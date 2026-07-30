@@ -1,1 +1,0 @@
-import{En as e,wt as t}from"./client-BNTVmNnN.js";import{f as n}from"./index-DwxMOWIr.js";function r(){let r=e(n,null);return r===null&&t(`use-dialog`,`No outer <n-dialog-provider /> founded.`),r}export{r as t};

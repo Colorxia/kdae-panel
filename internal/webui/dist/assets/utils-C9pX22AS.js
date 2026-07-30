@@ -1,0 +1,1 @@
+import{wn as e}from"./client-DVlvm8qj.js";function t(){return e()!==null}var n=typeof window<`u`;export{n,t};
