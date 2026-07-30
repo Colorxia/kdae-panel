@@ -16,8 +16,8 @@ import {
   type FormInst,
   type FormRules,
 } from 'naive-ui'
-import { CloudDownloadOutline, DownloadOutline, KeyOutline } from '@vicons/ionicons5'
-import { getDownload, getJSON, putJSON } from '../api/client'
+import { CloudDownloadOutline, DownloadOutline, KeyOutline, RefreshOutline } from '@vicons/ionicons5'
+import { getDownload, getJSON, postJSON, putJSON } from '../api/client'
 import type { PanelUpdatePayload, PanelUpdateStatus } from '../types/api'
 import { useAuthStore } from '../stores/auth'
 import { formatDateTime } from '../utils/format'
@@ -28,6 +28,7 @@ const form = ref<FormInst | null>(null)
 const passwordLoading = ref(false)
 const dumpLoading = ref(false)
 const updateLoading = ref(true)
+const updateChecking = ref(false)
 const updateSaving = ref(false)
 const panelUpdate = ref<PanelUpdatePayload | null>(null)
 const updateError = ref('')
@@ -87,6 +88,26 @@ async function loadPanelUpdate() {
     updateError.value = error instanceof Error ? error.message : '读取面板更新设置失败'
   } finally {
     updateLoading.value = false
+  }
+}
+
+async function checkPanelUpdate() {
+  updateChecking.value = true
+  try {
+    panelUpdate.value = await postJSON<PanelUpdatePayload>('/api/v1/panel/update/check')
+    updateError.value = ''
+    const check = panelUpdate.value.check
+    if (check.error) {
+      message.warning(`检查失败：${check.error}`)
+    } else if (check.updateAvailable) {
+      message.success(`发现新版本 ${check.latest}`)
+    } else {
+      message.success('当前已经是最新版本')
+    }
+  } catch (error) {
+    updateError.value = error instanceof Error ? error.message : '检查面板更新失败'
+  } finally {
+    updateChecking.value = false
   }
 }
 
@@ -159,7 +180,20 @@ onMounted(() => void loadPanelUpdate())
     </NGrid>
 
     <NCard title="面板更新" class="panel-card settings-update">
-      <template #header-extra><NIcon size="20"><CloudDownloadOutline /></NIcon></template>
+      <template #header-extra>
+        <NSpace size="small" align="center">
+          <NButton
+            size="small"
+            secondary
+            :loading="updateChecking"
+            :disabled="updateLoading || updateChecking"
+            @click="checkPanelUpdate"
+          >
+            <template #icon><NIcon><RefreshOutline /></NIcon></template>立即检查
+          </NButton>
+          <NIcon size="20"><CloudDownloadOutline /></NIcon>
+        </NSpace>
+      </template>
       <NAlert v-if="updateError" type="error" :bordered="false" class="card-alert">{{ updateError }}</NAlert>
       <template v-else>
         <div class="settings-toggle-row">

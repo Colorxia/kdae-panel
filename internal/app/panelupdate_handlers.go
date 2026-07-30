@@ -44,6 +44,8 @@ const (
 	// 这是给人看的提醒，不追求新鲜度；但绝不能把 GitHub 接口打成限流。
 	panelUpdateCacheOK   = 6 * time.Hour
 	panelUpdateCacheFail = 15 * time.Minute
+	// 手动检查用于发布后立即确认，短时间内重复点击不应再次请求 GitHub。
+	panelUpdateForceCooldown = time.Minute
 	// 自升级要下载几兆的发布包，给得比接口超时宽裕。
 	panelUpdateTimeout = 10 * time.Minute
 )
@@ -58,14 +60,21 @@ func registerPanelUpdateRoutes(router *http.ServeMux, current string, checker Pa
 	var mu sync.Mutex
 	var cached panelUpdate
 	var expiresAt time.Time
+	var lastForcedCheck time.Time
 	jobs := &installJobs{job: Job{Phase: PhaseIdle}}
 
-	check := func(ctx context.Context) panelUpdate {
+	check := func(ctx context.Context, force bool) panelUpdate {
 		mu.Lock()
 		defer mu.Unlock()
 		now := time.Now()
-		if now.Before(expiresAt) {
+		if !force && now.Before(expiresAt) {
 			return cached
+		}
+		if force && !lastForcedCheck.IsZero() && now.Sub(lastForcedCheck) < panelUpdateForceCooldown {
+			return cached
+		}
+		if force {
+			lastForcedCheck = now
 		}
 		result := panelUpdate{Current: current, CheckedAt: now.UTC()}
 		ttl := panelUpdateCacheOK
@@ -85,13 +94,21 @@ func registerPanelUpdateRoutes(router *http.ServeMux, current string, checker Pa
 		return cached
 	}
 
-	router.HandleFunc("GET /api/v1/panel/update", func(writer http.ResponseWriter, request *http.Request) {
-		payload := map[string]any{"check": check(request.Context())}
+	payload := func(ctx context.Context, force bool) map[string]any {
+		result := map[string]any{"check": check(ctx, force)}
 		if service != nil {
-			payload["status"] = service.Status(request.Context())
-			payload["job"] = jobs.snapshot()
+			result["status"] = service.Status(ctx)
+			result["job"] = jobs.snapshot()
 		}
-		writeJSON(writer, http.StatusOK, payload)
+		return result
+	}
+
+	router.HandleFunc("GET /api/v1/panel/update", func(writer http.ResponseWriter, request *http.Request) {
+		writeJSON(writer, http.StatusOK, payload(request.Context(), false))
+	})
+
+	router.HandleFunc("POST /api/v1/panel/update/check", func(writer http.ResponseWriter, request *http.Request) {
+		writeJSON(writer, http.StatusOK, payload(request.Context(), true))
 	})
 
 	router.HandleFunc("PUT /api/v1/panel/update/preference", func(writer http.ResponseWriter, request *http.Request) {

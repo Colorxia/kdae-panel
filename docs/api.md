@@ -169,12 +169,14 @@ dae 只在重载时重新拉取 `subscription` 链接，因此"订阅定时刷�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/panel/update` | 新版本检查结果与自升级状态 |
+| `POST` | `/panel/update/check` | 立即绕过缓存检查面板新版本 |
 | `PUT` | `/panel/update/preference` | 在 UI 中持久化一键升级开关 |
 | `POST` | `/panel/update` | 触发一键自升级 |
 
 `GET` 响应里的 `check` 含 `current`、`latest`、`updateAvailable`、`checkedAt`，检查失败时带 `error`；
 结果按 TTL 缓存（成功 6 小时、失败 15 分钟），dev 构建不发起检查，
 `KDAE_PANEL_DISABLE_UPDATE_CHECK=true` 时不再联网、恒不提示。
+手动检查接口返回同样的 `check`、`status` 与 `job` 结构，会绕过成功缓存；同一面板在 1 分钟冷却期内重复调用直接返回上次结果。
 
 正式部署的响应始终带 `status`（`enabled`、是否可升级、二进制路径、上一版副本位置）
 与 `job`（任务进度）。`PUT /panel/update/preference` 接受 `{"enabled":true|false}`，

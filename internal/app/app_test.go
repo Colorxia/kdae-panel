@@ -929,6 +929,22 @@ func fetchPanelUpdate(t *testing.T, application *App) map[string]any {
 	return payload.Check
 }
 
+func forcePanelUpdateCheck(t *testing.T, application *App) map[string]any {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/panel/update/check", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("强制检查状态码 = %d，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Check map[string]any `json:"check"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload.Check
+}
+
 type stubPanelUpdateService struct {
 	status    panelupdate.Status
 	mu        sync.Mutex
@@ -1112,6 +1128,29 @@ func TestPanelUpdateCheck(t *testing.T) {
 	fetchPanelUpdate(t, application)
 	if calls.Load() != 1 {
 		t.Fatalf("检查函数被调用 %d 次，期望缓存后只有 1 次", calls.Load())
+	}
+}
+
+func TestPanelUpdateManualCheckBypassesCache(t *testing.T) {
+	var calls atomic.Int64
+	application := newUpdateCheckApp(t, "v0.1.2", func(context.Context) (string, error) {
+		if calls.Add(1) == 1 {
+			return "v0.2.0", nil
+		}
+		return "v0.3.0", nil
+	})
+
+	first := fetchPanelUpdate(t, application)
+	if first["latest"] != "v0.2.0" {
+		t.Fatalf("初次检查版本 = %v", first["latest"])
+	}
+	manual := forcePanelUpdateCheck(t, application)
+	if manual["latest"] != "v0.3.0" || manual["updateAvailable"] != true {
+		t.Fatalf("手动检查未绕过缓存: %v", manual)
+	}
+	forcePanelUpdateCheck(t, application)
+	if calls.Load() != 2 {
+		t.Fatalf("冷却期内重复检查调用了 %d 次，期望 2 次", calls.Load())
 	}
 }
 

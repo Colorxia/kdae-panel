@@ -163,6 +163,11 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expect(page.getByRole('heading', { name: '面板设置', level: 2 })).toBeVisible()
     await expectColumnsAligned(page.locator('.settings-page .equal-height-grid > *'))
 
+    const forcedPanelCheck = page.waitForResponse((response) =>
+      response.url().endsWith('/api/v1/panel/update/check') && response.request().method() === 'POST')
+    await page.getByRole('button', { name: '立即检查' }).click()
+    expect((await forcedPanelCheck).status()).toBe(200)
+
     const selfUpdate = page.getByRole('switch', { name: '允许面板一键升级' })
     await expect(selfUpdate).toBeChecked()
     await expect(selfUpdate).toBeEnabled()
