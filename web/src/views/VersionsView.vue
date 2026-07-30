@@ -38,7 +38,6 @@ import { formatBytes, formatDateTime } from '../utils/format'
 import { useJobPolling } from '../composables/useJobPolling'
 import { SOURCES } from '../components/versions/sources'
 import InstallStatusCard from '../components/versions/InstallStatusCard.vue'
-import GeoCard from '../components/versions/GeoCard.vue'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -540,8 +539,5 @@ onBeforeUnmount(() => {
       </NCard>
     </template>
 
-    <!-- geo 数据是独立开关，因此不放在 dae 版本管理的 v-if 里：
-         只开其中一个的部署是正常情况 -->
-    <GeoCard />
   </div>
 </template>

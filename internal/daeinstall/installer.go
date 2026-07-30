@@ -26,6 +26,7 @@ import (
 
 	"github.com/tuoro/kdae-panel/internal/atomicfile"
 	"github.com/tuoro/kdae-panel/internal/dae"
+	"github.com/tuoro/kdae-panel/internal/daediag"
 	"github.com/tuoro/kdae-panel/internal/geodata"
 	"github.com/tuoro/kdae-panel/internal/host"
 	"github.com/tuoro/kdae-panel/internal/upstream"
@@ -697,10 +698,11 @@ func (i *Installer) restorePrevious(ctx context.Context, target string) restoreO
 // restart 重启服务并在一个观察窗口内反复确认它稳住了。
 // 替换二进制后必须整体重启：dae 的 eBPF 程序要重新挂载，reload 不足以生效。
 func (i *Installer) restart(ctx context.Context) error {
+	startedAt := time.Now().UTC()
 	restartCtx, cancel := context.WithTimeout(ctx, restartTimeout)
 	defer cancel()
 	if err := i.service.Action(restartCtx, host.ActionRestart); err != nil {
-		return err
+		return i.explainRestartFailure(ctx, startedAt, err)
 	}
 
 	deadline := time.Now().Add(i.health)
@@ -710,16 +712,17 @@ func (i *Installer) restart(ctx context.Context) error {
 		select {
 		case <-time.After(i.interval):
 		case <-restartCtx.Done():
-			return restartCtx.Err()
+			return i.explainRestartFailure(ctx, startedAt, restartCtx.Err())
 		}
 		status, err := i.service.Status(restartCtx)
 		if err != nil {
-			return fmt.Errorf("重启后无法读取服务状态: %w", err)
+			return i.explainRestartFailure(ctx, startedAt, fmt.Errorf("重启后无法读取服务状态: %w", err))
 		}
 		// 崩溃重启循环里 ActiveState 会在 activating/failed 之间跳，
 		// 任何一次不是 active 都判定失败，而不是等到窗口结束再看最后一眼。
 		if status.ActiveState != "active" {
-			return fmt.Errorf("重启后服务状态为 %s/%s", status.ActiveState, status.SubState)
+			return i.explainRestartFailure(ctx, startedAt,
+				fmt.Errorf("重启后服务状态为 %s/%s", status.ActiveState, status.SubState))
 		}
 		// 只看 ActiveState 会漏掉采样间隔内跑完的崩溃-重启循环：
 		// 两次采样都是 active，中间其实已经挂掉并被 systemd 拉起来过。
@@ -730,13 +733,32 @@ func (i *Installer) restart(ctx context.Context) error {
 			// 至少再采一次，才能判断观察期间有没有发生崩溃重启。
 			continue
 		} else if status.Restarts > baseline {
-			return fmt.Errorf("重启后服务在观察窗口内又重启了 %d 次，新版本很可能起不稳",
-				status.Restarts-baseline)
+			return i.explainRestartFailure(ctx, startedAt,
+				fmt.Errorf("重启后服务在观察窗口内又重启了 %d 次，新版本很可能起不稳",
+					status.Restarts-baseline))
 		}
 		if !time.Now().Before(deadline) {
 			return nil
 		}
 	}
+}
+
+type serviceLogReader interface {
+	Logs(context.Context, int) ([]host.LogEntry, error)
+}
+
+func (i *Installer) explainRestartFailure(ctx context.Context, startedAt time.Time, cause error) error {
+	reader, ok := i.service.(serviceLogReader)
+	if !ok {
+		return cause
+	}
+	logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	entries, err := reader.Logs(logCtx, 80)
+	if err != nil {
+		return cause
+	}
+	return daediag.ExplainGeoFailure(cause, entries, startedAt)
 }
 
 func (i *Installer) previousStatePath() string {

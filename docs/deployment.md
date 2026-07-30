@@ -96,7 +96,8 @@ sudo systemctl restart kdae-panel
 | `KDAE_PANEL_ENABLE_DAE_INSTALL` | `true` | 允许通过面板首次安装、升级与切换 dae 版本 |
 | `KDAE_PANEL_GEO_STATE_FILE` | `/var/lib/kdae-panel/geo-update.json` | geo 数据更新记录 |
 | `KDAE_PANEL_GEO_SCHEDULE_FILE` | `/var/lib/kdae-panel/geo-schedule.json` | geo 自动更新的设置与上次执行时间 |
-| `KDAE_PANEL_ENABLE_GEO_UPDATE` | `false` | 允许一键更新 geo 数据，与上一项相互独立 |
+| `KDAE_PANEL_GEO_SOURCES_FILE` | `/var/lib/kdae-panel/geo-sources.json` | 自定义 geo 来源，权限 `0600` |
+| `KDAE_PANEL_ENABLE_GEO_UPDATE` | `true` | 旧版启动参数兼容项；Geo 管理现已始终可用 |
 | `KDAE_PANEL_DISABLE_UPDATE_CHECK` | `false` | 关闭面板自身的新版本检查（检查只读取本仓库 releases/latest 的 tag，结果缓存 6 小时） |
 | `KDAE_PANEL_ENABLE_SELF_UPDATE` | `true` | 面板一键升级的初始值；设置页保存过选择后以 UI 偏好为准 |
 | `KDAE_PANEL_BACKUP_FILE` | `/var/lib/kdae-panel/kdae-panel.previous` | 自升级保留的上一版面板二进制 |
@@ -144,23 +145,13 @@ sudo systemctl restart kdae-panel
 systemd 单元或 env 模板；这些配套文件仍属于最近一次完整安装的版本。Release notes 若注明单元或
 脚本有变更，请重跑一键部署完成整包升级。卸载时优先使用上面的联网命令获取最新脚本。
 
-### 启用 geo 数据更新
+### Geo 数据管理
 
-这是**另一个独立开关**，不需要开启上面的 dae 版本管理：
-
-```bash
-env_file=/etc/kdae-panel/kdae-panel.env
-if grep -q '^KDAE_PANEL_ENABLE_GEO_UPDATE=' "$env_file"; then
-  sed -i 's/^KDAE_PANEL_ENABLE_GEO_UPDATE=.*/KDAE_PANEL_ENABLE_GEO_UPDATE=true/' "$env_file"
-else
-  echo 'KDAE_PANEL_ENABLE_GEO_UPDATE=true' >> "$env_file"
-fi
-systemctl restart kdae-panel
-```
+侧栏的「Geo 数据」是独立入口，不需要开启 dae 版本管理，也不再要求修改环境文件。旧部署残留的 `KDAE_PANEL_ENABLE_GEO_UPDATE=false` 只作为兼容参数接受，不会隐藏页面。
 
 通常不需要额外放宽 `ReadWritePaths`：面板更新的是 dae **当前实际读取**的那份 geo，而它多半就在配置目录（已经可写）。若你的 geo 在 `/usr/local/share/dae`（例如用 `dae-installer` 装的），界面会明确提示该目录不可写以及要追加哪一条。
 
-界面上可以在两个来源之间切换：
+界面内置两个来源：
 
 | 来源 | 仓库 | 适合谁 |
 |---|---|---|
@@ -171,6 +162,10 @@ systemctl restart kdae-panel
 
 - **切换来源会改变路由行为。** 两套规则集里同名分类所含的域名不同，切换后 `geosite:` 开头的路由规则匹配的范围会变，而 dae 不会因此报错。界面只在切换时警告，沿用同一来源不会反复打扰。
 - **更新会触发 `dae reload`。** 新连接不受影响，但进行中的长连接（大文件下载、SSH、串流）最多约 10 秒后可能被断开。若 dae 不接受新数据，面板会自动还原旧文件并重新加载。
+
+「来源管理」可以添加多组自定义来源，分别填写 `geoip.dat`、`geosite.dat` 与各自的 SHA-256 校验文件直链。只接受公网 HTTPS；每次重定向都重新检查解析地址，自定义下载不携带 GitHub Token，也不能关闭校验。链接可能带查询参数，因此配置单独保存在权限 `0600` 的 `KDAE_PANEL_GEO_SOURCES_FILE`，不会进入配置历史或普通日志。
+
+若路由规则引用当前数据里不存在的分类，dae 会在启动时报类似 `country code ... not found in .../geoip.dat`，但 `dae validate` 仍然成功。面板会从 Geo 更新的 reload 输出，或启动、重启和版本切换后的近期日志中直接指出缺失的 `geoip:` / `geosite:` 分类；此时应在 Geo 数据页更新或切换到包含该分类的来源，或者修改路由规则。切换二进制本身不能修复数据分类缺失。
 
 ## HTTPS
 

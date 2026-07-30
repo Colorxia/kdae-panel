@@ -164,7 +164,7 @@ export interface GeoFile {
   shadowed?: string[]
 }
 
-export type GeoSource = 'loyalsoldier' | 'v2fly'
+export type GeoSource = 'loyalsoldier' | 'v2fly' | `custom:${string}`
 
 export interface GeoSourceInfo {
   source: GeoSource
@@ -172,7 +172,20 @@ export interface GeoSourceInfo {
   /** 如实列出全部信任根；同一来源可能横跨多个仓库。 */
   repositories: string[]
   note: string
+  custom?: boolean
 }
+
+export interface CustomGeoSource {
+  id: string
+  source: `custom:${string}`
+  label: string
+  geoipUrl: string
+  geoipSha256Url: string
+  geositeUrl: string
+  geositeSha256Url: string
+}
+
+export type CustomGeoSourceInput = Omit<CustomGeoSource, 'id' | 'source'>
 
 export interface GeoState {
   source: GeoSource

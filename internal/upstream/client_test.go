@@ -280,6 +280,39 @@ func TestCheckFirstHopRestrictsSchemeAndHost(t *testing.T) {
 	}
 }
 
+func TestRedirectValidationKeepsGitHubCDNOpenButRejectsPrivateTargets(t *testing.T) {
+	if err := checkHTTPSRedirectTarget(context.Background(),
+		"https://release-assets.githubusercontent.com/github-production-release-asset/file.zip?sig=secret"); err != nil {
+		t.Fatalf("内置下载必须允许 GitHub 变动的 CDN 终点：%v", err)
+	}
+	for _, target := range []string{
+		"http://release-assets.githubusercontent.com/file.zip",
+		"https://127.0.0.1/file.zip",
+		"https://user:secret@example.com/file.zip",
+	} {
+		if err := checkHTTPSRedirectTarget(context.Background(), target); err == nil {
+			t.Fatalf("不安全重定向 %q 应被拒绝", target)
+		}
+	}
+}
+
+func TestCustomTargetRejectsHostnameResolvingInternally(t *testing.T) {
+	err := checkPublicHTTPSTarget(context.Background(), "https://localhost/geoip.dat")
+	if err == nil || !strings.Contains(err.Error(), "非公网地址") {
+		t.Fatalf("localhost 应在请求前被拒绝：%v", err)
+	}
+}
+
+func TestCustomTargetParseErrorDoesNotExposeQuerySecret(t *testing.T) {
+	_, err := parsePublicHTTPSURL("https://example.com/%zz?token=should-not-leak")
+	if err == nil {
+		t.Fatal("无效 URL 应被拒绝")
+	}
+	if strings.Contains(err.Error(), "should-not-leak") {
+		t.Fatalf("解析错误泄露了查询凭据：%v", err)
+	}
+}
+
 func TestKdaeProviderRejectsUntrustedRuns(t *testing.T) {
 	provider := NewKdaeProvider(nil, "olicesx", "dae", "kdae", "build.yml")
 	trusted := workflowRun{

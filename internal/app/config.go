@@ -33,6 +33,8 @@ type Config struct {
 	GeoStatePath string
 	// GeoSchedulePath 持久化 geo 数据自动更新的设置与上次执行时间。
 	GeoSchedulePath string
+	// GeoSourcesPath 保存管理员添加的自定义 geo 数据直链。
+	GeoSourcesPath string
 	// PanelBackupPath 存放自升级时被替换掉的上一版面板二进制。
 	PanelBackupPath string
 	// EnableSelfUpdate 是尚未在界面保存偏好时采用的初始值。
@@ -44,15 +46,8 @@ type Config struct {
 	// 但"完全不开安装与 geo 功能的部署从不外联"曾是可以宣称的性质，
 	// 这个开关把决定权留给在意这件事的人。
 	DisableUpdateCheck bool
-	// EnableGeoUpdate 打开一键更新 geo 数据的能力，与 EnableDaeInstall 相互独立。
-	//
-	// 分成两个开关是有意为之：更新 geo 只写 dae 的数据目录（通常就是已经可写的
-	// 配置目录），既不碰可执行文件也不碰 systemd 单元，不具备"面板缺陷升级为
-	// 任意代码执行"的性质。把它并进 EnableDaeInstall，等于逼着只想刷新 geo 的
-	// 人把 dae 二进制目录也交出去——那反而更不安全。
-	//
-	// 仍然默认关闭：它给部署新增了一条常态化的"联网取字节→以 root 写系统目录"
-	// 路径，而这条路径在默认部署里本来并不存在。
+	// EnableGeoUpdate 是为旧部署保留的兼容字段。Geo 管理现在始终在认证后可用；
+	// 下载仍受公网 HTTPS、体积与 SHA-256 三重约束。
 	EnableGeoUpdate bool
 }
 
@@ -74,9 +69,11 @@ func DefaultConfig() Config {
 		GitHubTokenPath:  "/var/lib/kdae-panel/github-token",
 		GeoStatePath:     "/var/lib/kdae-panel/geo-update.json",
 		GeoSchedulePath:  "/var/lib/kdae-panel/geo-schedule.json",
+		GeoSourcesPath:   "/var/lib/kdae-panel/geo-sources.json",
 		PanelBackupPath:  "/var/lib/kdae-panel/kdae-panel.previous",
 		SessionTTL:       12 * time.Hour,
 		EnableDaeInstall: true,
+		EnableGeoUpdate:  true,
 		EnableSelfUpdate: true,
 	}
 }
@@ -121,6 +118,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.GeoSchedulePath == "" {
 		c.GeoSchedulePath = defaults.GeoSchedulePath
+	}
+	if c.GeoSourcesPath == "" {
+		c.GeoSourcesPath = defaults.GeoSourcesPath
 	}
 	if c.PanelBackupPath == "" {
 		c.PanelBackupPath = defaults.PanelBackupPath

@@ -79,6 +79,7 @@ type fakeService struct {
 	activeState  string
 	statusErr    error
 	actionErr    error
+	logs         []host.LogEntry
 }
 
 func (s *fakeService) Action(_ context.Context, action host.Action) error {
@@ -117,6 +118,10 @@ func (s *fakeService) Status(context.Context) (host.Status, error) {
 		UnitFileState: s.unitFileState,
 		Restarts:      s.restartsAt,
 	}, nil
+}
+
+func (s *fakeService) Logs(context.Context, int) ([]host.LogEntry, error) {
+	return append([]host.LogEntry(nil), s.logs...), nil
 }
 
 func newTestInstaller(t *testing.T, fetcher *fakeFetcher, service *fakeService) (*Installer, string) {
@@ -326,7 +331,10 @@ func TestInstallRejectsBinaryThatRejectsConfig(t *testing.T) {
 func TestInstallRollsBackWhenServiceFailsToStart(t *testing.T) {
 	fetcher := &fakeFetcher{}
 	// 装上去的那次重启起不来；随后的回滚重启能起来
-	service := &fakeService{failRestart: 1}
+	service := &fakeService{
+		failRestart: 1,
+		logs:        []host.LogEntry{{Message: "country code twitter not found in /etc/dae/geoip.dat"}},
+	}
 	installer, binaryPath := newTestInstaller(t, fetcher, service)
 	seed(t, binaryPath, "v1")
 
@@ -345,6 +353,9 @@ func TestInstallRollsBackWhenServiceFailsToStart(t *testing.T) {
 	}
 	if strings.Contains(applyErr.Error(), "服务仍未恢复") {
 		t.Fatalf("服务已恢复，错误描述不应说仍未恢复: %v", applyErr)
+	}
+	if !strings.Contains(applyErr.Error(), "geoip:twitter") || !strings.Contains(applyErr.Error(), "Geo 数据") {
+		t.Fatalf("版本切换失败应指出 Geo 分类根因：%v", applyErr)
 	}
 	if content, _ := os.ReadFile(binaryPath); string(content) != string(elf("v1")) {
 		t.Fatalf("回滚后磁盘内容 = %q，应恢复为旧版本", content)

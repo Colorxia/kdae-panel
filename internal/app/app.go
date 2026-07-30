@@ -146,21 +146,24 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		}
 		dependencies.Install = installer
 	}
-	if cfg.EnableGeoUpdate {
-		manager, err := geodata.New(geodata.Options{
-			ConfigPath: cfg.DaeConfigPath,
-			StatePath:  cfg.GeoStatePath,
-			Fetcher:    upstream.NewGeoRegistryWithGitHubToken(githubCredentials),
-			Service:    hostManager,
-			Reloader:   daeClient,
-			Logger:     logger,
-		})
-		if err != nil {
-			_ = authStore.Close()
-			return nil, fmt.Errorf("初始化 geo 数据更新: %w", err)
-		}
-		dependencies.Geo = manager
+	geoRegistry, err := upstream.OpenGeoRegistryWithGitHubToken(githubCredentials, cfg.GeoSourcesPath)
+	if err != nil {
+		_ = authStore.Close()
+		return nil, fmt.Errorf("初始化 geo 数据来源: %w", err)
 	}
+	manager, err := geodata.New(geodata.Options{
+		ConfigPath: cfg.DaeConfigPath,
+		StatePath:  cfg.GeoStatePath,
+		Fetcher:    geoRegistry,
+		Service:    hostManager,
+		Reloader:   daeClient,
+		Logger:     logger,
+	})
+	if err != nil {
+		_ = authStore.Close()
+		return nil, fmt.Errorf("初始化 geo 数据更新: %w", err)
+	}
+	dependencies.Geo = manager
 	panelFetcher := upstream.NewPanelFetcherWithGitHubToken(githubCredentials)
 	updater, err := panelupdate.New(panelupdate.Options{
 		Version:    cfg.Version,
@@ -233,8 +236,10 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 
 	// geo 更新器同时服务手动端点与定时任务，任务追踪器只有一份。
 	var geo *geoUpdater
+	var geoSources GeoSourceService
 	if dependencies.Geo != nil {
 		geo = newGeoUpdater(dependencies.Geo, operations, logger)
+		geoSources, _ = dependencies.Geo.(GeoSourceService)
 	}
 	geoScheduleService := dependencies.GeoSchedule
 	if geoScheduleService == nil && geo != nil && cfg.GeoSchedulePath != "" {
@@ -282,7 +287,7 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 	registerScheduleRoutes(router, "/api/v1/schedule/reload", scheduleService)
 	registerScheduleRoutes(router, "/api/v1/schedule/geo", geoScheduleService)
 	registerUpstreamRoutes(router, dependencies.Install, operations, logger)
-	registerGeoRoutes(router, geo)
+	registerGeoRoutes(router, geo, geoSources)
 	registerAuthenticationRoutes(router, dependencies.Authentication, cfg.SecureCookie, cfg.BootstrapToken, cfg.SetupURLFile, proxyTrust, logger)
 	apiNotFound := func(writer http.ResponseWriter, _ *http.Request) {
 		writeAPIError(writer, http.StatusNotFound, "api_not_found", "API 路径不存在")

@@ -35,6 +35,7 @@ const (
 type httpClient struct {
 	client            *http.Client
 	githubTokenSource GitHubTokenSource
+	validateTarget    func(context.Context, string) error
 	now               func() time.Time
 
 	cacheMu   sync.Mutex
@@ -80,8 +81,28 @@ func newHTTPClient() *httpClient {
 }
 
 func newHTTPClientWithTokenSource(source GitHubTokenSource) *httpClient {
+	return newHTTPClientWithValidators(source, checkFirstHopContext, checkHTTPSRedirectTarget)
+}
+
+// newCustomHTTPClient 供管理员配置的自定义来源使用。它不携带 GitHub Token，
+// 且首跳和每次重定向都必须解析到公网 HTTPS 地址。
+func newCustomHTTPClient() *httpClient {
+	return newHTTPClientWithValidators(emptyGitHubTokenSource{}, checkPublicHTTPSTarget, checkPublicHTTPSTarget)
+}
+
+func newHTTPClientWithValidators(
+	source GitHubTokenSource,
+	validateTarget func(context.Context, string) error,
+	validateRedirect func(context.Context, string) error,
+) *httpClient {
 	if source == nil {
 		source = emptyGitHubTokenSource{}
+	}
+	if validateTarget == nil {
+		validateTarget = checkFirstHopContext
+	}
+	if validateRedirect == nil {
+		validateRedirect = checkHTTPSRedirectTarget
 	}
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	// 代理地址常常就是本机(在 GitHub 不可直连的网络里，代理往往正是 dae 自己)，
@@ -110,8 +131,8 @@ func newHTTPClientWithTokenSource(source GitHubTokenSource) *httpClient {
 				if len(via) >= 5 {
 					return fmt.Errorf("重定向次数过多")
 				}
-				if request.URL.Scheme != "https" {
-					return fmt.Errorf("拒绝重定向到非 HTTPS 地址")
+				if err := validateRedirect(request.Context(), request.URL.String()); err != nil {
+					return fmt.Errorf("拒绝重定向：%w", err)
 				}
 				// Go 只在跨站时剥离部分请求头，这里显式清干净，
 				// 免得将来给请求加上凭据后被重定向带去第三方。
@@ -121,6 +142,7 @@ func newHTTPClientWithTokenSource(source GitHubTokenSource) *httpClient {
 			},
 		},
 		githubTokenSource: source,
+		validateTarget:    validateTarget,
 		now:               time.Now,
 		jsonCache:         make(map[string]jsonCacheEntry),
 		inflight:          make(map[string]*jsonCall),
@@ -335,7 +357,11 @@ func (c *httpClient) download(ctx context.Context, url string, limit int64) ([]b
 // get 取回 target 的响应体，长度上限为 limit。
 // identity 为真时禁用传输层压缩，用于必须逐字节比对校验和的资产下载。
 func (c *httpClient) get(ctx context.Context, target string, limit int64, accept string, identity bool) ([]byte, error) {
-	if err := checkFirstHop(target); err != nil {
+	validateTarget := c.validateTarget
+	if validateTarget == nil {
+		validateTarget = checkFirstHopContext
+	}
+	if err := validateTarget(ctx, target); err != nil {
 		return nil, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -411,6 +437,10 @@ func describeHTTPError(response *http.Response, target string) error {
 
 // checkFirstHop 确认面板主动发起的请求指向已知主机。
 // 这些地址全部由本包自己拼装，校验只是防止将来有人把外部字符串接进来。
+func checkFirstHopContext(_ context.Context, target string) error {
+	return checkFirstHop(target)
+}
+
 func checkFirstHop(target string) error {
 	parsed, err := url.Parse(target)
 	if err != nil {
@@ -423,6 +453,66 @@ func checkFirstHop(target string) error {
 		return fmt.Errorf("上游主机 %s 不在允许列表内", parsed.Hostname())
 	}
 	return nil
+}
+
+func checkHTTPSRedirectTarget(_ context.Context, target string) error {
+	_, err := parsePublicHTTPSURL(target)
+	return err
+}
+
+// checkPublicHTTPSTarget 校验自定义来源。保存配置时只做语法检查；真正请求前和
+// 每次重定向都会在这里重新解析 DNS，并拒绝任一非公网结果。随后 guardedDial 还会
+// 在 connect 前检查实际地址，堵住检查与连接之间的 DNS 重绑定窗口。
+func checkPublicHTTPSTarget(ctx context.Context, target string) error {
+	parsed, err := parsePublicHTTPSURL(target)
+	if err != nil {
+		return err
+	}
+	host := parsed.Hostname()
+	if address, err := netip.ParseAddr(host); err == nil {
+		if !publicAddress(address) {
+			return fmt.Errorf("拒绝连接到非公网地址 %s", address)
+		}
+		return nil
+	}
+	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return fmt.Errorf("解析自定义来源主机 %s: %w", host, err)
+	}
+	if len(addresses) == 0 {
+		return fmt.Errorf("自定义来源主机 %s 没有可用地址", host)
+	}
+	for _, address := range addresses {
+		if !publicAddress(address) {
+			return fmt.Errorf("自定义来源主机 %s 解析到非公网地址 %s", host, address)
+		}
+	}
+	return nil
+}
+
+func parsePublicHTTPSURL(target string) (*url.URL, error) {
+	parsed, err := url.Parse(target)
+	if err != nil {
+		// url.ParseError 会带回完整原文，而自定义链接的查询串可能含临时凭据。
+		// 对外只说明格式问题，不能把原始链接送进 API 错误或 journald。
+		return nil, errors.New("下载地址格式无效")
+	}
+	if parsed.Scheme != "https" {
+		return nil, errors.New("下载地址必须使用 HTTPS")
+	}
+	if parsed.Hostname() == "" {
+		return nil, errors.New("下载地址缺少主机名")
+	}
+	if parsed.User != nil {
+		return nil, errors.New("下载地址不能包含用户名或密码")
+	}
+	if parsed.Fragment != "" {
+		return nil, errors.New("下载地址不能包含片段")
+	}
+	if address, err := netip.ParseAddr(parsed.Hostname()); err == nil && !publicAddress(address) {
+		return nil, fmt.Errorf("下载地址不能指向非公网地址 %s", address)
+	}
+	return parsed, nil
 }
 
 // redact 去掉签名下载地址里的查询串，避免把临时凭据写进日志或错误消息。

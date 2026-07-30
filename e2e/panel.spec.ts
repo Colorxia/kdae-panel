@@ -85,6 +85,58 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expectCardsAligned(page.locator('.equal-height-grid .panel-card'))
   })
 
+  await test.step('Geo 数据是独立入口并可持久化自定义来源', async () => {
+    await page.goto('/geo')
+    await expect(page.getByRole('heading', { name: 'Geo 数据', level: 2 })).toBeVisible()
+    await expect(page.getByText('geoip.dat', { exact: true })).toBeVisible()
+    await expect(page.getByText('geosite.dat', { exact: true })).toBeVisible()
+
+    await page.getByRole('button', { name: '来源管理' }).click()
+    const manager = page.locator('.n-modal', { hasText: 'Geo 数据来源' })
+    await manager.getByRole('button', { name: '添加来源' }).click()
+    const editor = page.locator('.n-modal', { hasText: '添加自定义来源' })
+    await editor.getByPlaceholder('例如：自建规则集').fill('E2E 自建规则')
+    await editor.getByPlaceholder('https://…/geoip.dat', { exact: true }).fill('https://assets.example.com/geoip.dat')
+    await editor.getByPlaceholder('https://…/geoip.dat.sha256sum', { exact: true }).fill('https://checks.example.com/geoip.dat.sha256sum')
+    await editor.getByPlaceholder('https://…/geosite.dat', { exact: true }).fill('https://assets.example.com/geosite.dat')
+    await editor.getByPlaceholder('https://…/geosite.dat.sha256sum', { exact: true }).fill('https://checks.example.com/geosite.dat.sha256sum')
+    await editor.getByRole('button', { name: '保存来源' }).click()
+    await expect(manager.getByText('E2E 自建规则')).toBeVisible()
+    await manager.locator('.n-base-close').click()
+
+    await page.reload()
+    await page.getByRole('button', { name: '来源管理' }).click()
+    const reopenedManager = page.locator('.n-modal', { hasText: 'Geo 数据来源' })
+    const sourceRow = reopenedManager.locator('.geo-custom-source-row', { hasText: 'E2E 自建规则' })
+    await expect(sourceRow).toContainText('assets.example.com')
+    await reopenedManager.locator('.n-base-close').click()
+    await expect(reopenedManager).toBeHidden()
+
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.getByRole('button', { name: '来源管理' }).click()
+    const mobileManager = page.locator('.n-modal', { hasText: 'Geo 数据来源' })
+    await expect(mobileManager.getByText('E2E 自建规则')).toBeVisible()
+    const modalBox = await mobileManager.boundingBox()
+    expect(modalBox).not.toBeNull()
+    expect(modalBox!.x).toBeGreaterThanOrEqual(0)
+    expect(modalBox!.x + modalBox!.width).toBeLessThanOrEqual(390)
+    expect(await mobileManager.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1)
+    await mobileManager.locator('.n-base-close').click()
+    await expect(mobileManager).toBeHidden()
+
+    await page.setViewportSize({ width: 1600, height: 900 })
+    await page.getByRole('button', { name: '来源管理' }).click()
+    const cleanupManager = page.locator('.n-modal', { hasText: 'Geo 数据来源' })
+    const cleanupRow = cleanupManager.locator('.geo-custom-source-row', { hasText: 'E2E 自建规则' })
+    await expect(cleanupRow).toBeVisible()
+    await cleanupRow.getByRole('button', { name: '删除来源' }).click()
+    await page.locator('.n-dialog').getByRole('button', { name: '删除来源' }).click()
+    await expect(cleanupRow).toHaveCount(0)
+    await expect(cleanupManager.getByText('尚未添加自定义来源')).toBeVisible()
+    await cleanupManager.locator('.n-base-close').click()
+  })
+
   await test.step('导入节点并保存重载，改动落到磁盘', async () => {
     await page.route('**/api/v1/host/interfaces', (route) => route.fulfill({
       contentType: 'application/json',

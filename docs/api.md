@@ -126,8 +126,12 @@ GitHub JSON 元数据另有 10 分钟进程内缓存；同 URL 的并发请求�
 |---|---|---|
 | `GET` | `/dae/geo` | geo 数据现状、可选来源与正在进行的任务 |
 | `POST` | `/dae/geo` | 更新到指定来源的最新版 |
+| `GET` | `/dae/geo/sources` | 列出管理员保存的自定义来源 |
+| `POST` | `/dae/geo/sources` | 添加自定义来源 |
+| `PUT` | `/dae/geo/sources/{id}` | 修改自定义来源 |
+| `DELETE` | `/dae/geo/sources/{id}` | 删除未在使用的自定义来源 |
 
-独立开关 `KDAE_PANEL_ENABLE_GEO_UPDATE`，与 dae 版本管理互不影响；未启用时返回 `503 geo_update_disabled`。
+Geo 数据管理在登录后始终可用，与 dae 版本管理互不影响；旧版环境文件里的 `KDAE_PANEL_ENABLE_GEO_UPDATE` 仅为启动参数兼容保留，不再隐藏功能。
 
 更新请求体（可省略，此时沿用 `status.defaultSource`）：
 
@@ -135,13 +139,17 @@ GitHub JSON 元数据另有 10 分钟进程内缓存；同 URL 的并发请求�
 { "source": "loyalsoldier" }
 ```
 
-`source` 只接受 `loyalsoldier` 与 `v2fly` 两个枚举值，仓库地址在代码中写死，不接受外部指定；未知值返回 `400 invalid_geo_source`。**两个来源的规则集不是同一套**，切换会改变 `geosite:` 规则匹配的域名集合。
+`source` 接受内置的 `loyalsoldier`、`v2fly`，或由来源管理接口生成的 `custom:<id>`；未知或已经删除的来源返回 `400 invalid_geo_source`。不同来源的规则集可能不同，切换会改变 `geosite:` 规则匹配的域名集合。
+
+自定义来源请求体包含 `label`、`geoipUrl`、`geoipSha256Url`、`geositeUrl`、`geositeSha256Url`。四条地址都必须是公网 HTTPS；保存时拒绝 userinfo、内网字面地址与 URL 片段，下载首跳和每次重定向会重新解析 DNS，并在实际连接前再次拒绝非公网地址。自定义请求使用独立客户端，不携带 GitHub Token。每个数据文件上限 64 MiB，校验文件上限 64 KiB，没有跳过 SHA-256 的开关。来源保存在权限 `0600` 的 `KDAE_PANEL_GEO_SOURCES_FILE`；当前更新记录正在引用的来源不能直接删除，需先用另一个来源成功更新。
 
 `GET` 返回 `status.sources`（每个来源的标识、展示名、全部信任根仓库与说明）、`status.defaultSource`（界面该预选哪个——用过就是上次那个）、`status.targetDir`（本次会写入哪个目录）、`status.searchPath`（dae 的完整查找顺序）、每个文件的实际路径与大小，以及 `files[].shadowed`——被优先级更高的副本遮蔽、因而不会生效的同名文件。
 
 `POST` 立即返回 `202` 与任务快照，进度靠轮询 `GET /dae/geo`，阶段与安装任务一致（`downloading` → `applying` → `done`/`failed`）。同一时刻只允许一个 geo 任务，重复提交返回 `409 geo_update_in_progress`；它与安装任务各有各的任务槽，但落盘阶段共用全局控制门。
 
 更新只触发 `dae reload`，不重启服务。若 dae 不接受新数据，面板会自动还原旧文件并再 reload 一次，任务标记为 `failed`。
+
+dae 的 `validate` 不检查 `geoip:` / `geosite:` 分类是否真实存在。Geo 更新重载、启动、重启或版本切换因分类缺失失败时，面板会从 dae 命令输出或本次操作后的 journald 日志明确指出缺失分类并引导到 Geo 数据页；版本切换仍按原事务回滚二进制。
 
 ## 定时任务（订阅自动刷新 / geo 自动更新）
 
