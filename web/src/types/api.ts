@@ -58,6 +58,7 @@ export interface ServiceStatus {
   tasks?: number
   restarts?: number
   unitPath?: string
+  suspended?: boolean
 }
 
 export interface NetworkInterface {

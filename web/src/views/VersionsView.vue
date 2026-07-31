@@ -201,12 +201,16 @@ async function confirmInstall(version: UpstreamVersion) {
     return
   }
   const local = version.cached === true
+  const serviceState = status.value?.serviceActive
   dialog.warning({
     title: `安装 ${version.label}`,
     content: (local
-      ? '面板会读取并重新校验本地版本，用它验证当前配置，然后替换二进制并重启 dae。'
-      : '面板会下载并校验该版本，用它验证当前配置，然后替换二进制并重启 dae。')
-      + '重启会中断现有连接；若新版本起不来，会自动回滚到当前版本。',
+      ? '面板会读取并重新校验本地版本，用它验证当前配置，然后替换二进制。'
+      : '面板会从 GitHub/CDN 下载并校验该版本，成功后保存为本地版本，再用它验证当前配置并替换二进制。')
+      + (serviceState
+        ? '当前 dae 正在运行，切换时会重启它并短暂中断现有连接。'
+        : '当前 dae 未运行，切换后会保持未运行，不会自动启动。')
+      + '若运行中的新版本起不来，会自动回滚到当前版本。',
     positiveText: local ? '使用本地版本' : '下载并安装',
     negativeText: '取消',
     onPositiveClick: () => install(version),
@@ -263,7 +267,7 @@ async function deleteCached(version: UpstreamVersion) {
 function confirmRollback() {
   dialog.warning({
     title: '回滚到上一版本',
-    content: '面板会把安装前备份的二进制换回去并重启 dae。',
+    content: '面板会把安装前备份的二进制换回去；dae 当前正在运行时会重启，未运行时则保持未运行。',
     positiveText: '回滚',
     negativeText: '取消',
     onPositiveClick: rollback,
@@ -500,12 +504,15 @@ onBeforeUnmount(() => {
         </div>
       </NAlert>
       <NAlert v-if="job?.phase === 'downloading'" type="info" :bordered="false">
-        正在下载并校验 {{ job.label || job.ref }}…
+        <div class="version-download-copy">
+          <strong>正在下载并校验 {{ job.label || job.ref }}…</strong>
+          <span>首次下载速度取决于 GitHub/CDN 和服务器网络；成功后会保存为本地版本，再次切换无需下载。</span>
+        </div>
       </NAlert>
       <NAlert v-else-if="job?.phase === 'applying'" type="warning" :bordered="false">
         <template v-if="job.label === '卸载 dae'">正在停止服务并卸载 dae，数据将按确认时的选择处理…</template>
-        <template v-else-if="job.cached">正在使用本地版本替换二进制并重启 dae，期间连接会短暂中断…</template>
-        <template v-else>正在替换二进制并重启 dae，期间连接会短暂中断…</template>
+        <template v-else-if="status?.serviceActive">正在验证配置并替换二进制，随后会重启 dae，期间连接会短暂中断…</template>
+        <template v-else>正在验证配置并替换二进制；dae 当前未运行，完成后仍会保持未运行…</template>
       </NAlert>
       <NAlert v-else-if="job?.phase === 'failed'" type="error" :bordered="false">
         上次操作失败：{{ job.error }}
