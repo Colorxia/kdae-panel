@@ -612,12 +612,23 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await page.unroute('**/api/v1/dae/cache')
   })
 
-  await test.step('移动端代理编排与弹窗没有横向溢出', async () => {
+  await test.step('移动端导航、核心列表与编辑器使用独立布局', async () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/proxy')
     await expect(page.getByRole('heading', { name: '代理编排', level: 2 })).toBeVisible()
+    await expect(page.locator('.n-layout-sider')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '打开导航' })).toBeVisible()
+    await page.getByRole('button', { name: '打开导航' }).click()
+    const drawer = page.locator('.n-drawer')
+    await expect(drawer.getByText('kdae-panel')).toBeVisible()
+    await drawer.getByText('代理编排', { exact: true }).click()
+    await expect(drawer).not.toBeVisible()
+
     let overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
     expect(overflow).toBeLessThanOrEqual(1)
+    await expect(page.getByTestId('mobile-node-list')).toBeVisible()
+    await expect(page.getByTestId('mobile-subscription-list')).toBeVisible()
+    await expect(page.locator('.mobile-save-bar')).toBeVisible()
 
     await page.getByTestId('global-card').getByRole('button', { name: '编辑设置' }).click()
     const globalModal = page.getByTestId('global-editor-modal')
@@ -625,6 +636,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     expect(globalModalBox).not.toBeNull()
     expect(globalModalBox!.x).toBeGreaterThanOrEqual(0)
     expect(globalModalBox!.x + globalModalBox!.width).toBeLessThanOrEqual(390)
+    await expect(globalModal).toHaveCSS('height', '844px')
     expect(await globalModal.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1)
     await globalModal.getByRole('button', { name: '取消' }).click()
 
@@ -634,6 +646,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     expect(dnsModalBox).not.toBeNull()
     expect(dnsModalBox!.x).toBeGreaterThanOrEqual(0)
     expect(dnsModalBox!.x + dnsModalBox!.width).toBeLessThanOrEqual(390)
+    await expect(dnsModal).toHaveCSS('height', '844px')
     expect(await dnsModal.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1)
     await dnsModal.getByRole('button', { name: '取消' }).click()
 
@@ -643,8 +656,67 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     expect(modalBox).not.toBeNull()
     expect(modalBox!.x).toBeGreaterThanOrEqual(0)
     expect(modalBox!.x + modalBox!.width).toBeLessThanOrEqual(390)
+    await expect(routingModal).toHaveCSS('height', '844px')
     expect(await routingModal.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1)
     await routingModal.getByRole('button', { name: '取消' }).click()
+
+    await page.route('**/api/v1/dae/install', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: {
+            binaryPath: '/usr/bin/dae', platform: 'linux-amd64', ready: true, present: true,
+            version: 'dae version v2.0.0',
+            managed: { source: 'official', ref: 'v2.0.0', label: 'v2.0.0', installedAt: '2026-07-30T00:00:00Z', sha256: 'e2e' },
+            rollbackAvailable: false, serviceActive: true,
+          },
+          job: { phase: 'idle' },
+        }),
+      })
+    })
+    await page.route('**/api/v1/dae/versions**', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ versions: [{
+        source: 'official', ref: 'v2.0.0', label: 'v2.0.0', description: '稳定版本',
+        publishedAt: '2026-07-30T00:00:00Z', installable: true, cached: true,
+        cachedBytes: 33554432, cachedAt: '2026-07-30T00:00:00Z',
+      }] }),
+    }))
+    await page.goto('/versions')
+    const mobileVersions = page.getByTestId('mobile-version-list')
+    await expect(mobileVersions).toBeVisible()
+    await expect(mobileVersions.getByText('已下载', { exact: true })).toBeVisible()
+    overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+    expect(overflow).toBeLessThanOrEqual(1)
+    await page.unroute('**/api/v1/dae/install')
+    await page.unroute('**/api/v1/dae/versions**')
+
+    await page.route('**/api/v1/config/backups', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        id: 'mobile-e2e', name: '手机端存档', note: '验证长备注在窄屏内正常换行',
+        createdAt: '2026-07-30T00:00:00Z', hash: '0123456789abcdef', size: 4096,
+      }]),
+    }))
+    await page.goto('/backups')
+    const mobileBackups = page.getByTestId('mobile-backup-list')
+    await expect(mobileBackups).toBeVisible()
+    await expect(mobileBackups.getByText('手机端存档')).toBeVisible()
+    overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+    expect(overflow).toBeLessThanOrEqual(1)
+    await page.unroute('**/api/v1/config/backups')
+
+    await page.goto('/logs')
+    await expect(page.getByRole('heading', { name: 'journald 日志', level: 2 })).toBeVisible()
+    overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+    expect(overflow).toBeLessThanOrEqual(1)
+
+    await page.setViewportSize({ width: 430, height: 932 })
+    await page.goto('/config')
+    await expect(page.locator('.mobile-save-bar')).toBeVisible()
+    overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+    expect(overflow).toBeLessThanOrEqual(1)
 
     await page.goto('/')
     await expect(page.getByRole('heading', { name: '运行状态' })).toBeVisible()

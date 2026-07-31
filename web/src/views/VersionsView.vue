@@ -7,10 +7,12 @@ import {
   NCard,
   NCheckbox,
   NDataTable,
+  NEmpty,
   NIcon,
   NRadioButton,
   NRadioGroup,
   NSpace,
+  NSpin,
   NTag,
   NText,
   NTooltip,
@@ -36,12 +38,14 @@ import type {
 } from '../types/api'
 import { formatBytes, formatDateTime } from '../utils/format'
 import { useJobPolling } from '../composables/useJobPolling'
+import { useMobileViewport } from '../composables/useMobileViewport'
 import { SOURCES } from '../components/versions/sources'
 import InstallStatusCard from '../components/versions/InstallStatusCard.vue'
 
 const message = useMessage()
 const dialog = useDialog()
 const router = useRouter()
+const mobile = useMobileViewport()
 const loading = ref(true)
 const listing = ref(false)
 // loading 只在首屏为真，之后再也不会回到 true，因此它挡不住刷新按钮被连点。
@@ -522,6 +526,7 @@ onBeforeUnmount(() => {
         </div>
         <NAlert v-if="listError" type="error" :bordered="false" class="source-hint">{{ listError }}</NAlert>
         <NDataTable
+          v-if="!mobile"
           :columns="columns"
           :data="versions"
           :loading="listing"
@@ -536,6 +541,51 @@ onBeforeUnmount(() => {
             </div>
           </template>
         </NDataTable>
+        <NSpin v-else :show="listing">
+          <div v-if="versions.length" class="mobile-record-list" data-testid="mobile-version-list">
+            <article v-for="version in versions" :key="versionKey(version)" class="mobile-record">
+              <div class="mobile-record-head">
+                <div class="mobile-record-title">
+                  <span class="mono">{{ version.label }}</span>
+                  <NTag v-if="isInstalled(version)" size="tiny" type="success" :bordered="false">当前</NTag>
+                  <NTag v-if="version.cached" size="tiny" type="info" :bordered="false">已下载</NTag>
+                  <NTag v-if="version.prerelease" size="tiny" type="warning" :bordered="false">预发布</NTag>
+                </div>
+              </div>
+              <p class="mobile-record-description">{{ version.description || '没有发布说明' }}</p>
+              <div class="mobile-record-meta">
+                <span>{{ source === 'kdae' ? '构建' : '发布' }}<strong>{{ formatDateTime(version.publishedAt) }}</strong></span>
+                <span v-if="version.cached">缓存<strong>{{ formatBytes(version.cachedBytes) }}</strong></span>
+              </div>
+              <div class="mobile-action-row">
+                <NTag v-if="!version.installable" size="small" type="error" :bordered="false">已过期</NTag>
+                <NText v-else-if="isInstalled(version) && !status?.drifted" depth="3">已安装</NText>
+                <NButton
+                  v-else
+                  secondary
+                  type="primary"
+                  :disabled="busy || !(status?.ready || firstInstall)"
+                  @click="confirmInstall(version)"
+                >
+                  <template #icon><NIcon><component :is="version.cached && !firstInstall ? SwapHorizontalOutline : CloudDownloadOutline" /></NIcon></template>
+                  {{ firstInstall ? '安装' : '切换到此版本' }}
+                </NButton>
+                <NButton
+                  v-if="version.cached"
+                  secondary
+                  type="error"
+                  :aria-label="`删除 ${version.label} 的本地缓存`"
+                  :loading="cacheDeleting === versionKey(version)"
+                  :disabled="busy || cacheDeleting !== ''"
+                  @click="confirmDeleteCached(version)"
+                >
+                  <template #icon><NIcon><TrashOutline /></NIcon></template>删除缓存
+                </NButton>
+              </div>
+            </article>
+          </div>
+          <NEmpty v-else description="没有可用版本" class="mobile-empty" />
+        </NSpin>
       </NCard>
     </template>
 
