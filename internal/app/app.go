@@ -52,6 +52,9 @@ type ConfigurationService interface {
 	Validate(ctx context.Context, content string) error
 	Save(ctx context.Context, content, expectedHash string, apply bool) (configstore.SaveResult, error)
 	ListBackups(ctx context.Context) ([]configstore.Backup, error)
+	CreateBackup(ctx context.Context, name, note string) (configstore.Backup, error)
+	UpdateBackup(ctx context.Context, backupID, name, note string) (configstore.Backup, error)
+	DeleteBackup(ctx context.Context, backupID string) error
 	Restore(ctx context.Context, backupID, expectedHash string, apply bool) (configstore.SaveResult, error)
 }
 

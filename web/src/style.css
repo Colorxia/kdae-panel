@@ -311,6 +311,20 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.backup-editor-form {
+  display: grid;
+  gap: 16px;
+}
+
+.backup-editor-modal {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.backup-editor-form label {
+  display: grid;
+  gap: 8px;
+}
+
 .mono,
 code,
 pre,
@@ -1257,6 +1271,11 @@ pre,
 
   .page-toolbar > .n-space {
     width: 100%;
+  }
+
+  .backups-page .page-toolbar > .n-space {
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .schema-loading,

@@ -289,6 +289,33 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     }
   })
 
+  await test.step('配置存档可以命名、恢复并删除', async () => {
+    await page.goto('/backups')
+    await expect(page.getByRole('heading', { name: '配置历史', level: 2 })).toBeVisible()
+    await page.getByRole('button', { name: '保存当前配置' }).click()
+    const editor = page.locator('.n-modal', { hasText: '保存当前配置' })
+    await editor.getByPlaceholder('例如：稳定线路').fill('E2E 稳定配置')
+    await editor.getByPlaceholder('记录这份配置的用途或适用场景').fill('E2E 回档测试')
+    await editor.getByRole('button', { name: '保存存档' }).click()
+    const row = page.locator('tr', { hasText: 'E2E 稳定配置' })
+    await expect(row).toContainText('E2E 回档测试')
+
+    await row.getByTitle('编辑名称和备注').click()
+    const editModal = page.locator('.n-modal', { hasText: '编辑配置存档' })
+    await editModal.getByPlaceholder('例如：稳定线路').fill('E2E 已命名配置')
+    await editModal.getByRole('button', { name: '保存修改' }).click()
+    const renamedRow = page.locator('tr', { hasText: 'E2E 已命名配置' })
+    await expect(renamedRow).toContainText('E2E 回档测试')
+
+    await renamedRow.getByRole('button', { name: '恢复' }).click()
+    await page.locator('.n-dialog').getByRole('button', { name: '恢复并重载' }).click()
+    await expect(page.getByText('配置已恢复并完成无损重载')).toBeVisible()
+
+    await renamedRow.getByTitle('删除配置存档').click()
+    await page.locator('.n-dialog').getByRole('button', { name: '删除存档' }).click()
+    await expect(page.locator('tr', { hasText: 'E2E 已命名配置' })).toHaveCount(0)
+  })
+
   await test.step('设置页左右列保持同一底边', async () => {
     const targetPanelVersion = 'v0.8.1'
     let upgradeStarted = false

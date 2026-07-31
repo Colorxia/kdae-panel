@@ -88,6 +88,8 @@ export interface ConfigBackup {
   size: number
   createdAt: string
   sourcePath: string
+  name?: string
+  note?: string
 }
 
 export type UpstreamSource = 'official' | 'kdae'

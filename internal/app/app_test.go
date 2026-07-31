@@ -61,6 +61,18 @@ func (s stubConfigurationService) ListBackups(_ context.Context) ([]configstore.
 	return []configstore.Backup{}, nil
 }
 
+func (s stubConfigurationService) CreateBackup(_ context.Context, name, note string) (configstore.Backup, error) {
+	return configstore.Backup{Name: name, Note: note}, nil
+}
+
+func (s stubConfigurationService) UpdateBackup(_ context.Context, id, name, note string) (configstore.Backup, error) {
+	return configstore.Backup{ID: id, Name: name, Note: note}, nil
+}
+
+func (s stubConfigurationService) DeleteBackup(_ context.Context, _ string) error {
+	return nil
+}
+
 func (s stubConfigurationService) Restore(_ context.Context, _, _ string, _ bool) (configstore.SaveResult, error) {
 	return configstore.SaveResult{}, nil
 }
@@ -71,6 +83,10 @@ func (s stubDaeService) Inspect(_ context.Context) dae.Report {
 
 func (s stubDaeService) Outline(_ context.Context) (dae.Outline, error) {
 	return s.outline, s.err
+}
+
+func (s stubDaeService) Validate(_ context.Context, _ string) error {
+	return s.err
 }
 
 func (s stubDaeService) Reload(_ context.Context) error {
@@ -263,6 +279,61 @@ func TestConfigurationConflictResponse(t *testing.T) {
 	}
 	if response.Error.Code != "configuration_conflict" {
 		t.Fatalf("错误码 = %q", response.Error.Code)
+	}
+}
+
+func TestConfigurationBackupMetadataRoutes(t *testing.T) {
+	dir := t.TempDir()
+	entryPath := filepath.Join(dir, "config.dae")
+	if err := os.WriteFile(entryPath, []byte("global {}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := configstore.NewManager(entryPath, filepath.Join(dir, "backups"), stubDaeService{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{Dae: stubDaeService{}, Configuration: configuration},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	create := httptest.NewRequest(http.MethodPost, "/api/v1/config/backups", strings.NewReader(`{"name":"稳定配置","note":"切换前"}`))
+	create.Header.Set("Content-Type", "application/json")
+	created := httptest.NewRecorder()
+	application.Handler().ServeHTTP(created, create)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("创建存档状态码 = %d，响应 = %s", created.Code, created.Body.String())
+	}
+	var backup configstore.Backup
+	if err := json.NewDecoder(created.Body).Decode(&backup); err != nil {
+		t.Fatal(err)
+	}
+	if backup.Name != "稳定配置" || backup.Note != "切换前" || backup.ID == "" {
+		t.Fatalf("创建存档响应异常: %+v", backup)
+	}
+
+	update := httptest.NewRequest(http.MethodPut, "/api/v1/config/backups/"+url.PathEscape(backup.ID), strings.NewReader(`{"name":"日常配置","note":"已验证"}`))
+	update.Header.Set("Content-Type", "application/json")
+	updated := httptest.NewRecorder()
+	application.Handler().ServeHTTP(updated, update)
+	if updated.Code != http.StatusOK || !strings.Contains(updated.Body.String(), "日常配置") {
+		t.Fatalf("编辑存档响应异常: status=%d body=%s", updated.Code, updated.Body.String())
+	}
+
+	deleted := httptest.NewRecorder()
+	application.Handler().ServeHTTP(deleted, httptest.NewRequest(
+		http.MethodDelete, "/api/v1/config/backups/"+url.PathEscape(backup.ID), nil))
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("删除存档状态码 = %d，响应 = %s", deleted.Code, deleted.Body.String())
+	}
+	listed := httptest.NewRecorder()
+	application.Handler().ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/api/v1/config/backups", nil))
+	if listed.Code != http.StatusOK || listed.Body.String() != "[]\n" {
+		t.Fatalf("删除后列表异常: status=%d body=%s", listed.Code, listed.Body.String())
 	}
 }
 

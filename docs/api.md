@@ -38,8 +38,22 @@ X-CSRF-Token: <csrfToken>
 | `GET` | `/config` | 入口配置文本、SHA-256 和文件元数据 |
 | `POST` | `/config/validate` | 只校验候选内容 |
 | `PUT` | `/config` | 保存候选内容，可选择立即重载 |
-| `GET` | `/config/backups` | 列出自动备份 |
-| `POST` | `/config/backups/{id}/restore` | 恢复指定备份 |
+| `GET` | `/config/backups` | 列出自动备份和手动配置存档 |
+| `POST` | `/config/backups` | 将当前入口配置保存为带名称、备注的手动存档 |
+| `PUT` | `/config/backups/{id}` | 修改存档名称和备注 |
+| `DELETE` | `/config/backups/{id}` | 删除存档内容及其元数据 |
+| `POST` | `/config/backups/{id}/restore` | 恢复指定备份或存档 |
+
+创建和编辑存档请求体：
+
+```json
+{
+  "name": "稳定线路",
+  "note": "家庭网络使用"
+}
+```
+
+`name` 必填，去除首尾空白后最多 80 个字符；`note` 可选，最多 500 个字符。没有名称和备注的旧备份在前端显示为“自动备份”，也可以通过编辑接口补充。备份内容仍是独立的 `.dae` 文件，名称和备注保存在同编号的 `.meta.json` 文件中；删除存档会同时删除两者。
 
 保存示例：
 
@@ -55,10 +69,13 @@ X-CSRF-Token: <csrfToken>
 
 配置保存、备份恢复和服务控制操作会共享串行门；已有操作执行时返回 `409 operation_in_progress`，避免多个控制动作交叉执行。
 
+所有备份（包括手动存档）共用最多 50 份、总大小 256 MiB 的保留上限。达到上限时按文件创建时间清理最旧的备份，手动存档的元数据会随对应内容一起清理。
+
 常见错误码：
 
 | HTTP | code | 含义 |
 |---|---|---|
+| `400` | `configuration_backup_invalid` | 存档名称或备注不符合长度要求 |
 | `409` | `configuration_conflict` | 磁盘内容已经变化 |
 | `422` | `configuration_invalid` | dae 拒绝候选配置 |
 | `502` | `configuration_apply_failed` | 保存后重载失败，响应包含回滚状态 |

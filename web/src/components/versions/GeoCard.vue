@@ -336,14 +336,6 @@ onMounted(async () => {
     </template>
 
     <NAlert v-if="geoError" type="error" :bordered="false" class="card-alert">{{ geoError }}</NAlert>
-    <NAlert
-      v-if="geoStatus?.serviceState === 'inactive'"
-      type="info"
-      :bordered="false"
-      class="card-alert"
-    >
-      dae 当前未运行；一键更新会正常写入 Geo 文件，不执行 reload，dae 下次启动时会自动读取。
-    </NAlert>
     <NAlert v-if="geoJob?.phase === 'downloading'" type="info" :bordered="false" class="card-alert">
       正在下载并校验 geo 数据…
     </NAlert>
