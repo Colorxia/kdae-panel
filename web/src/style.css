@@ -595,6 +595,13 @@ pre,
   background: var(--bg-raised);
 }
 
+.outline-node,
+.outline-heading,
+.outline-description,
+.outline-default {
+  min-width: 0;
+}
+
 .outline-heading {
   display: flex;
   align-items: center;
@@ -603,24 +610,32 @@ pre,
 }
 
 .outline-heading code {
+  min-width: 0;
   color: var(--accent);
   font-size: 13px;
   font-weight: 700;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .outline-description {
   display: block;
   margin-top: 7px;
   line-height: 1.55;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .outline-default {
   margin-top: 6px;
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .outline-default code {
   color: var(--ok);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .outline-children {
@@ -1878,6 +1893,14 @@ pre,
   .schema-loading,
   .schema-sections {
     grid-template-columns: 1fr;
+  }
+
+  .outline-node.root {
+    padding: 14px;
+  }
+
+  .outline-children {
+    padding-left: 10px;
   }
 
   .config-editor,

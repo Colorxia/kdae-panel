@@ -712,6 +712,36 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
     expect(overflow).toBeLessThanOrEqual(1)
 
+    const longDescription = '用于验证移动端能够完整展示由当前 dae 导出的具体字段说明，即使说明包含连续地址 https://resolver.example.com/dns-query?client=mobile-with-a-very-long-identifier 也不能被裁掉。'
+    await page.route('**/api/v1/dae/outline', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        version: 'mobile-e2e',
+        leaves: ['string', 'map[string]string'],
+        structure: [{
+          name: 'Routing', mapping: 'routing', desc: '路由设置',
+          structure: [{
+            name: 'DomainResolver',
+            mapping: 'routing_domain_resolver_with_a_very_long_mapping_name',
+            type: 'map[string]string',
+            desc: longDescription,
+            defaultValue: 'https://resolver.example.com/dns-query?client=mobile-with-a-very-long-identifier',
+          }],
+        }],
+      }),
+    }))
+    await page.goto('/schema')
+    const schemaDescription = page.locator('.outline-description').filter({ hasText: longDescription })
+    await expect(schemaDescription).toHaveText(longDescription)
+    expect(await schemaDescription.evaluate((element) => {
+      const style = getComputedStyle(element)
+      return element.getBoundingClientRect().height / Number.parseFloat(style.lineHeight)
+    })).toBeGreaterThan(2)
+    expect(await page.locator('.outline-node.root').evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1)
+    overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+    expect(overflow).toBeLessThanOrEqual(1)
+    await page.unroute('**/api/v1/dae/outline')
+
     await page.setViewportSize({ width: 430, height: 932 })
     await page.goto('/config')
     await expect(page.locator('.mobile-save-bar')).toBeVisible()
