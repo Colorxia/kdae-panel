@@ -754,11 +754,24 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
     expect(overflow).toBeLessThanOrEqual(1)
 
+    let mobileSuspended = true
+    await page.route('**/api/v1/service', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        name: 'dae.service', activeState: 'active', subState: 'running', mainPid: 1487,
+        suspended: mobileSuspended,
+      }),
+    }))
+    await page.route('**/api/v1/service/actions/reload', (route) => {
+      mobileSuspended = false
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'ok', action: 'reload', suspended: false }),
+      })
+    })
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/')
     await expect(page.getByRole('heading', { name: '运行状态' })).toBeVisible()
-    await page.getByRole('button', { name: '暂停' }).click()
-    await page.getByRole('button', { name: '确认暂停' }).click()
     const suspendedAlert = page.locator('.service-suspended-alert')
     await expect(suspendedAlert).toBeVisible()
     await expect(suspendedAlert.getByText('代理流量处理已停止，但 dae 进程仍在运行；点击“无损重载”即可恢复。')).toBeVisible()
@@ -769,6 +782,8 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expect(suspendedAlert).toHaveCount(0)
     overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
     expect(overflow).toBeLessThanOrEqual(1)
+    await page.unroute('**/api/v1/service/actions/reload')
+    await page.unroute('**/api/v1/service')
   })
 
   await test.step('退出后凭密码重新登录', async () => {
