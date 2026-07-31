@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -50,17 +51,24 @@ func (f *fakeFetcher) Fetch(_ context.Context, release upstream.GeoRelease) (ups
 type fakeService struct {
 	environment map[string]string
 	err         error
+	activeState string
+	mainPID     int
 }
 
 func (s *fakeService) Status(context.Context) (host.Status, error) {
 	if s.err != nil {
 		return host.Status{}, s.err
 	}
-	return host.Status{Environment: s.environment}, nil
+	return host.Status{
+		Environment: s.environment,
+		ActiveState: s.activeState,
+		MainPID:     s.mainPID,
+	}, nil
 }
 
 type fakeReloader struct {
 	calls int
+	pids  []int
 	// failFirst 让第一次 reload 失败，模拟 dae 不接受新 geo 数据。
 	failFirst bool
 }
@@ -71,6 +79,11 @@ func (r *fakeReloader) Reload(context.Context) error {
 		return errors.New("code twitter not found in /etc/dae/geosite.dat")
 	}
 	return nil
+}
+
+func (r *fakeReloader) ReloadPID(_ context.Context, pid int) error {
+	r.pids = append(r.pids, pid)
+	return r.Reload(context.Background())
 }
 
 // testDirectory 在 Windows 上给刚关闭文件的过滤驱动一个短暂释放窗口。
@@ -123,7 +136,7 @@ func newTestManager(t *testing.T) (*Manager, *fakeFetcher, *fakeReloader, string
 		ConfigPath: filepath.Join(directory, "config.dae"),
 		StatePath:  filepath.Join(directory, "state", "geo-update.json"),
 		Fetcher:    fetcher,
-		Service:    &fakeService{},
+		Service:    &fakeService{activeState: "active", mainPID: 4321},
 		Reloader:   reloader,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
@@ -172,8 +185,41 @@ func TestUpdateWritesBothFilesAndReloads(t *testing.T) {
 	if reloader.calls != 1 {
 		t.Fatalf("应恰好 reload 一次，实际 %d 次", reloader.calls)
 	}
+	if !slices.Equal(reloader.pids, []int{4321}) {
+		t.Fatalf("应使用 systemd MainPID reload，实际 PID = %v", reloader.pids)
+	}
 	if status.Managed == nil || status.Managed.Tag != "202607252248" {
 		t.Fatalf("应记录更新到哪一版: %+v", status.Managed)
+	}
+}
+
+func TestUpdateWhileServiceStoppedWaitsForNextStart(t *testing.T) {
+	manager, _, reloader, directory := newTestManager(t)
+	manager.service = &fakeService{activeState: "failed"}
+	seedGeo(t, directory, upstream.GeoIPName, "old-geoip")
+	seedGeo(t, directory, upstream.GeoSiteName, "old-geosite")
+
+	data, err := manager.Download(context.Background(), upstream.GeoSourceLoyalsoldier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := manager.Apply(context.Background(), data)
+	if err != nil {
+		t.Fatalf("dae 未运行时仍应完成文件更新: %v", err)
+	}
+	if reloader.calls != 0 {
+		t.Fatalf("dae 未运行时不应调用 reload，实际 %d 次", reloader.calls)
+	}
+	if status.ServiceState != ServiceStateInactive {
+		t.Fatalf("服务状态 = %q，期望 %q", status.ServiceState, ServiceStateInactive)
+	}
+	for name, want := range map[string]string{
+		upstream.GeoIPName: "new-geoip", upstream.GeoSiteName: "new-geosite",
+	} {
+		content, readErr := os.ReadFile(filepath.Join(directory, name))
+		if readErr != nil || string(content) != want {
+			t.Fatalf("%s 未保留新数据: content=%q err=%v", name, content, readErr)
+		}
 	}
 }
 
@@ -209,6 +255,9 @@ func TestUpdateRestoresPreviousDataWhenReloadFails(t *testing.T) {
 	// 还原之后要再 reload 一次，让 dae 读回旧数据
 	if reloader.calls != 2 {
 		t.Fatalf("应在还原后再 reload 一次，实际共 %d 次", reloader.calls)
+	}
+	if !slices.Equal(reloader.pids, []int{4321, 4321}) {
+		t.Fatalf("新旧数据都应使用 systemd MainPID reload，实际 PID = %v", reloader.pids)
 	}
 	// 回滚点是临时的，不该留在磁盘上白占几十兆
 	leftovers, _ := filepath.Glob(filepath.Join(directory, "*.kdae-panel-previous"))

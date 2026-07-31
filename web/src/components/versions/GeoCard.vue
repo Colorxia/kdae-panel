@@ -51,7 +51,11 @@ const geoPolling = useJobPolling({
   refresh: () => loadGeo(),
   phase: () => geoJob.value?.phase,
   onSettled: (phase) => {
-    if (phase === 'done') message.success('geo 数据已更新并生效')
+    if (phase === 'done') {
+      message.success(geoStatus.value?.serviceState === 'inactive'
+        ? 'geo 数据已更新，dae 启动后生效'
+        : 'geo 数据已更新')
+    }
     else if (phase === 'failed') message.error(geoJob.value?.error || 'geo 更新失败')
   },
 })
@@ -83,17 +87,29 @@ function confirmUpdateGeo() {
   // 沿用同一个来源只是把数据往前推，把警告一并甩出去反而稀释了真正的风险。
   const previous = geoStatus.value?.managed?.source
   const switching = previous !== undefined && previous !== geoSource.value
+  const serviceState = geoStatus.value?.serviceState
+  const activation = serviceState === 'inactive'
+    ? '当前 dae 未运行，因此不会执行 reload；文件会在 dae 下次启动时读取。面板此时无法检查配置引用的 Geo 分类是否存在，若新数据仍缺少分类，dae 下次启动仍会失败。'
+    : serviceState === 'active'
+      ? '随后会使用 systemd MainPID 执行 dae reload 让它立即生效。'
+      : '面板暂时无法确认 dae 是否运行，将尝试使用 dae 默认 PID 文件执行 reload。'
   dialog.warning({
     title: `更新 geo 数据（${chosen?.label || geoSource.value}）`,
     content: `面板会从 ${repositories} 下载 geoip.dat 与 geosite.dat，逐个比对 sha256，`
-      + `写入 ${geoStatus.value?.targetDir}，然后执行 dae reload 让它生效。`
+      + `写入 ${geoStatus.value?.targetDir}。${activation}`
       + (switching
         ? '⚠ 这次会切换到另一套规则集：geosite: 开头的路由规则所匹配的域名集合会随之改变，'
-          + '同名分类内容变化时 dae 不会报错；若新来源完全没有配置引用的分类，reload 会失败，'
-          + '面板会还原旧数据并指出缺失分类。请确认你的路由规则在新规则集下仍然成立。'
+          + (serviceState === 'inactive'
+            ? '同名分类内容变化时 dae 不会报错；请确认你的路由规则在新规则集下仍然成立。'
+            : '同名分类内容变化时 dae 不会报错；若新来源完全没有配置引用的分类，reload 会失败，'
+              + '面板会还原旧数据并指出缺失分类。请确认你的路由规则在新规则集下仍然成立。')
         : '')
-      + 'reload 不会中断新连接，但进行中的长连接（大文件下载、SSH、串流）最多约 10 秒后可能被断开；'
-      + '若 dae 不接受新数据，面板会自动还原成原来的 geo 并重新加载。',
+      + (serviceState === 'active'
+        ? 'reload 不会中断新连接，但进行中的长连接（大文件下载、SSH、串流）最多约 10 秒后可能被断开；'
+        : '')
+      + (serviceState === 'inactive'
+        ? ''
+        : '若 dae 不接受新数据，面板会自动还原成原来的 geo 并重新加载。'),
     positiveText: '下载并更新',
     negativeText: '取消',
     onPositiveClick: updateGeo,
@@ -320,11 +336,19 @@ onMounted(async () => {
     </template>
 
     <NAlert v-if="geoError" type="error" :bordered="false" class="card-alert">{{ geoError }}</NAlert>
+    <NAlert
+      v-if="geoStatus?.serviceState === 'inactive'"
+      type="info"
+      :bordered="false"
+      class="card-alert"
+    >
+      dae 当前未运行；一键更新会正常写入 Geo 文件，不执行 reload，dae 下次启动时会自动读取。
+    </NAlert>
     <NAlert v-if="geoJob?.phase === 'downloading'" type="info" :bordered="false" class="card-alert">
       正在下载并校验 geo 数据…
     </NAlert>
     <NAlert v-else-if="geoJob?.phase === 'applying'" type="warning" :bordered="false" class="card-alert">
-      正在写入并重新加载 dae…
+      {{ geoStatus?.serviceState === 'inactive' ? '正在写入 Geo 文件…' : '正在写入并重新加载 dae…' }}
     </NAlert>
     <NAlert v-else-if="geoJob?.phase === 'failed'" type="error" :bordered="false" class="card-alert">
       上次更新失败：{{ geoJob.error }}
@@ -394,14 +418,16 @@ onMounted(async () => {
     </div>
 
     <NText depth="3" class="geo-hint">
-      更新只需 dae reload，不必重启：新连接不受影响，但进行中的长连接最多约 10 秒后可能被断开。
+      dae 运行时只 reload、不重启；未运行时只更新文件并在下次启动时读取。
+      reload 不影响新连接，但进行中的长连接最多约 10 秒后可能被断开。
       不同来源的规则集不一定相同，切换会改变 <code class="mono">geosite:</code>
-      规则匹配的域名集合；同名分类内容变化不会报错，分类完全不存在则会回滚并明确提示。
+      规则匹配的域名集合；同名分类内容变化不会报错。运行中的 dae 会在分类不存在时回滚并明确提示，
+      未运行时只能等下次启动检查。
     </NText>
 
     <NModal v-model:show="scheduleVisible" preset="card" title="geo 数据自动更新" class="orchestrate-modal">
       <NText depth="3">
-        到点后面板会重新下载校验并只 reload 不重启。来源沿用当前面板记录的那一个，
+        到点后面板会重新下载校验；dae 运行时只 reload 不重启，未运行时留待下次启动读取。来源沿用当前面板记录的那一个，
         绝不会自动切换规则集；若有其他控制操作正在执行，本轮跳过并在几分钟后重试。
       </NText>
       <NAlert v-if="scheduleError" type="error" :bordered="false" class="card-alert schedule-alert">

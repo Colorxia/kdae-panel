@@ -147,7 +147,7 @@ Geo 数据管理在登录后始终可用，与 dae 版本管理互不影响；�
 
 `POST` 立即返回 `202` 与任务快照，进度靠轮询 `GET /dae/geo`，阶段与安装任务一致（`downloading` → `applying` → `done`/`failed`）。同一时刻只允许一个 geo 任务，重复提交返回 `409 geo_update_in_progress`；它与安装任务各有各的任务槽，但落盘阶段共用全局控制门。
 
-更新只触发 `dae reload`，不重启服务。若 dae 不接受新数据，面板会自动还原旧文件并再 reload 一次，任务标记为 `failed`。
+dae 正在运行时，更新会把 systemd 的 `MainPID` 显式传给 `dae reload`，不依赖 `/var/run/dae.pid`，也不重启服务。dae 未运行时只更新文件并成功结束，下一次启动会直接读取新数据；此时无法借助 reload 检查配置引用的 Geo 分类是否存在，若新数据仍缺少分类，下一次启动仍会失败。若运行中的 dae 不接受新数据，面板会自动还原旧文件并再 reload 一次，任务标记为 `failed`。
 
 dae 的 `validate` 不检查 `geoip:` / `geosite:` 分类是否真实存在。Geo 更新重载、启动、重启或版本切换因分类缺失失败时，面板会从 dae 命令输出或本次操作后的 journald 日志明确指出缺失分类并引导到 Geo 数据页；版本切换仍按原事务回滚二进制。
 

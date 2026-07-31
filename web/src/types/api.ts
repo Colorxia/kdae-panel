@@ -205,6 +205,8 @@ export interface GeoStatus {
   problem?: string
   managed?: GeoState
   warnings?: string[]
+  /** active 时立即 reload；inactive 时文件在 dae 下次启动时读取。 */
+  serviceState: 'active' | 'inactive' | 'unknown'
 }
 
 /** 面板自身的新版本检查结果；dev 构建或检查被关闭时 latest 为空。 */
