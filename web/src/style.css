@@ -1169,6 +1169,16 @@ pre,
   margin-top: 14px;
 }
 
+.node-import-groups {
+  display: grid;
+  gap: 6px;
+  margin-top: 18px;
+}
+
+.node-import-groups .n-select {
+  margin-top: 0;
+}
+
 .routing-rule-form,
 .group-filter-editor,
 .routing-simple-settings {

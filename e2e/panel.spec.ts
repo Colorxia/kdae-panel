@@ -249,8 +249,13 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await reopenedDNSModal.getByRole('button', { name: '应用到编排' }).click()
     await expect(page.getByText('DNS 设置已应用到编排，保存并重载后生效')).toBeVisible()
 
+    const groups = page.getByTestId('groups-card')
+    await groups.getByPlaceholder('新分组名，如 proxy').fill('proxy')
+    await groups.getByRole('button', { name: '新建' }).click()
+
     await page.getByRole('button', { name: '导入节点' }).click()
     await page.getByPlaceholder(/vmess/).fill(NODE_LINKS)
+    await expect(page.getByTestId('import-node-groups')).toContainText('proxy')
     await page.getByRole('button', { name: '加入编排' }).click()
     await expect(page.getByText('e2e-node.example.com').first()).toBeVisible()
     await page.getByTestId('nodes-card').getByRole('button', { name: '编辑原文' }).click()
@@ -271,9 +276,6 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await subscriptionModal.getByRole('button', { name: '确定' }).click()
     await expect(subscriptionRow).toContainText('e2e-updated')
 
-    const groups = page.getByTestId('groups-card')
-    await groups.getByPlaceholder('新分组名，如 proxy').fill('proxy')
-    await groups.getByRole('button', { name: '新建' }).click()
     const groupItem = groups.locator('.group-item', { hasText: 'proxy' })
     await groupItem.getByRole('button', { name: '编辑' }).click()
     const groupModal = page.getByTestId('group-editor-modal')
@@ -324,6 +326,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     // 面板宣称保存成功，磁盘上必须真的有这一行——这是配置事务的最终断言
     const saved = readFileSync(configPath, 'utf8')
     expect(saved).toContain(NODE_LINK)
+    expect(saved).toContain(`E2E-01: '${NODE_LINK}'`)
     expect(saved).toContain("e2e_sub: 'https://example.com/e2e-updated'")
     expect(saved).toContain('filter: name(E2E-01)')
     expect(saved).toContain('filter: subtag(e2e_sub)')
