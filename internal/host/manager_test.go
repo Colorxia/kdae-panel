@@ -218,6 +218,36 @@ func TestLogsRejectInvalidPriorityValue(t *testing.T) {
 	}
 }
 
+func TestLogsPreferDaeMessageLevel(t *testing.T) {
+	entries, err := parseJournal(
+		"{\"PRIORITY\":\"6\",\"MESSAGE\":\"level=debug msg=\\\"dialing node\\\"\"}\n" +
+			"{\"PRIORITY\":\"6\",\"MESSAGE\":\"level=warning msg=\\\"slow request\\\"\"}\n" +
+			"{\"PRIORITY\":\"6\",\"MESSAGE\":\"level=trace msg=\\\"packet detail\\\"\"}\n" +
+			"{\"PRIORITY\":\"6\",\"MESSAGE\":\"ordinary output containing level=debug\"}\n" +
+			"{\"PRIORITY\":\"6\",\"MESSAGE\":\"level=\"}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 5 {
+		t.Fatalf("日志数量 = %d，期望 5", len(entries))
+	}
+	if entries[0].Priority != 7 || entries[0].Level != "debug" {
+		t.Fatalf("debug 日志解析异常: %+v", entries[0])
+	}
+	if entries[1].Priority != 4 || entries[1].Level != "warning" {
+		t.Fatalf("warning 日志解析异常: %+v", entries[1])
+	}
+	if entries[2].Priority != 7 || entries[2].Level != "trace" {
+		t.Fatalf("trace 日志解析异常: %+v", entries[2])
+	}
+	if entries[3].Priority != 6 || entries[3].Level != "info" {
+		t.Fatalf("正文中间的 level 字样不应覆盖 journald 级别: %+v", entries[3])
+	}
+	if entries[4].Priority != 6 || entries[4].Level != "info" {
+		t.Fatalf("空 level 不应引发异常或覆盖 journald 级别: %+v", entries[4])
+	}
+}
+
 func TestCommandError(t *testing.T) {
 	runner := &fakeRunner{
 		results: map[string]command.Result{"systemctl start dae": {Stderr: "permission denied"}},

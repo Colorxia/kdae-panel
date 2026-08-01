@@ -743,10 +743,30 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     expect(overflow).toBeLessThanOrEqual(1)
     await page.unroute('**/api/v1/config/backups')
 
+    await page.route('**/api/v1/logs?*', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify([
+        { timestamp: '2026-07-30T10:00:00Z', priority: 3, level: 'error', message: '较早的错误', pid: '101' },
+        { timestamp: '2026-07-30T10:01:00Z', priority: 6, level: 'info', message: '中间的信息', pid: '101' },
+        { timestamp: '2026-07-30T10:02:00Z', priority: 7, level: 'debug', message: '最新的调试', pid: '101' },
+      ]),
+    }))
     await page.goto('/logs')
     await expect(page.getByRole('heading', { name: 'journald 日志', level: 2 })).toBeVisible()
+    const logRows = page.locator('.log-row')
+    await expect(logRows).toHaveCount(3)
+    await expect(logRows.nth(0)).toContainText('最新的调试')
+    await page.locator('.log-select .n-base-selection').click()
+    await clickVisibleOption(page, '调试')
+    await expect(logRows).toHaveCount(1)
+    await expect(logRows.nth(0)).toContainText('最新的调试')
+    await page.goto('/dashboard')
+    await page.goto('/logs')
+    await expect(page.locator('.log-select .n-base-selection')).toContainText('调试')
+    await expect(logRows).toHaveCount(1)
     overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
     expect(overflow).toBeLessThanOrEqual(1)
+    await page.unroute('**/api/v1/logs?*')
 
     const longDescription = '用于验证移动端能够完整展示由当前 dae 导出的具体字段说明，即使说明包含连续地址 https://resolver.example.com/dns-query?client=mobile-with-a-very-long-identifier 也不能被裁掉。'
     await page.route('**/api/v1/dae/outline', (route) => route.fulfill({
