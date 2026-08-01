@@ -331,6 +331,8 @@ export interface LatencyResult {
   port: number
   reachable: boolean
   latencyMs?: number
+  resolvedIp?: string
+  method?: 'tcp' | 'icmp'
   error?: string
 }
 

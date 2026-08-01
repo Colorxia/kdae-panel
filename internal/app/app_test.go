@@ -680,7 +680,10 @@ func (s *stubProbeService) Probe(_ context.Context, targets []netprobe.Target) (
 }
 
 func TestLatencyProbeEndpoint(t *testing.T) {
-	prober := &stubProbeService{results: []netprobe.Result{{Host: "example.com", Port: 443, Reachable: true, LatencyMs: 12.5}}}
+	prober := &stubProbeService{results: []netprobe.Result{{
+		Host: "example.com", Port: 443, Reachable: true, LatencyMs: 12.5,
+		ResolvedIP: "203.0.113.8", Method: "icmp",
+	}}}
 	application, err := NewWithDependencies(
 		Config{Version: "test-panel"},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -702,7 +705,8 @@ func TestLatencyProbeEndpoint(t *testing.T) {
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatalf("解析响应失败: %v", err)
 	}
-	if len(response.Results) != 1 || !response.Results[0].Reachable || response.Results[0].LatencyMs != 12.5 {
+	if len(response.Results) != 1 || !response.Results[0].Reachable || response.Results[0].LatencyMs != 12.5 ||
+		response.Results[0].ResolvedIP != "203.0.113.8" || response.Results[0].Method != "icmp" {
 		t.Fatalf("响应内容异常: %+v", response.Results)
 	}
 	if len(prober.targets) != 1 || prober.targets[0].Host != "example.com" {

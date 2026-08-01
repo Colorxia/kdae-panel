@@ -1,4 +1,4 @@
-// Package netprobe 从面板主机直连节点服务器,测量 TCP 握手延迟。
+// Package netprobe 从面板主机直连节点服务器,测量网络入口延迟。
 // 它不依赖 dae 的内部健康检查,也不进行代理协议握手。
 //
 // 目标地址来自管理员自己的 dae 配置,可能合法地指向内网或回环地址
@@ -31,16 +31,19 @@ type Target struct {
 }
 
 type Result struct {
-	Host      string  `json:"host"`
-	Port      int     `json:"port"`
-	Reachable bool    `json:"reachable"`
-	LatencyMs float64 `json:"latencyMs,omitempty"`
-	Error     string  `json:"error,omitempty"`
+	Host       string  `json:"host"`
+	Port       int     `json:"port"`
+	Reachable  bool    `json:"reachable"`
+	LatencyMs  float64 `json:"latencyMs,omitempty"`
+	ResolvedIP string  `json:"resolvedIp,omitempty"`
+	Method     string  `json:"method,omitempty"`
+	Error      string  `json:"error,omitempty"`
 }
 
 type Prober struct {
 	dial      func(ctx context.Context, network, address string) (net.Conn, error)
 	resolve   func(ctx context.Context, host string) ([]net.IPAddr, error)
+	ping      func(ctx context.Context, address net.IP) (float64, error)
 	timeout   time.Duration
 	semaphore chan struct{}
 }
@@ -60,6 +63,7 @@ func newWithLimits(dial func(context.Context, string, string) (net.Conn, error),
 	return &Prober{
 		dial:      dial,
 		resolve:   resolveHost,
+		ping:      probeICMP,
 		timeout:   timeout,
 		semaphore: make(chan struct{}, concurrency),
 	}
@@ -129,54 +133,62 @@ func (p *Prober) probeOne(ctx context.Context, target Target) Result {
 		return addresses[left].IP.To4() != nil && addresses[right].IP.To4() == nil
 	})
 
-	var samples []float64
-	selectedAddress := ""
-	for attempt := 0; attempt < probeAttempts; attempt++ {
-		if err := probeCtx.Err(); err != nil {
-			if len(samples) == 0 {
-				result.Error = describeDialError(err)
-			}
-			break
-		}
-		if selectedAddress != "" {
-			latency, err := p.dialOnce(probeCtx, selectedAddress, target.Port)
-			if err != nil {
-				if len(samples) == 0 {
-					result.Error = describeDialError(err)
-				}
-				break
-			}
-			samples = append(samples, latency)
-			continue
-		}
-
-		var lastErr error
-		for _, address := range addresses {
-			candidate := address.String()
-			latency, err := p.dialOnce(probeCtx, candidate, target.Port)
+	var lastErr error
+	for _, address := range addresses {
+		candidate := address.String()
+		result.ResolvedIP = candidate
+		if isPublicAddress(address.IP) {
+			result.Method = "icmp"
+			latency, err := p.ping(probeCtx, address.IP)
 			if err != nil {
 				lastErr = err
 				continue
 			}
-			selectedAddress = candidate
-			samples = append(samples, latency)
-			break
+			result.Reachable = true
+			result.LatencyMs = latency
+			return result
 		}
-		if selectedAddress == "" {
-			result.Error = describeDialError(lastErr)
-			break
+
+		result.Method = "tcp"
+		samples, err := p.probeTCP(probeCtx, candidate, target.Port)
+		if err != nil {
+			lastErr = err
+			continue
 		}
-	}
-	if len(samples) == 0 {
-		if result.Error == "" {
-			result.Error = "节点没有可连接的 IP 地址"
-		}
+		result.Reachable = true
+		result.LatencyMs = samples[len(samples)/2]
 		return result
 	}
-	sort.Float64s(samples)
-	result.Reachable = true
-	result.LatencyMs = samples[len(samples)/2]
+	if result.Method == "icmp" {
+		result.Error = "公网节点未响应 ICMP，无法得到可信的网络延迟: " + describeDialError(lastErr)
+	} else if lastErr != nil {
+		result.Error = describeDialError(lastErr)
+	} else {
+		result.Error = "节点没有可探测的 IP 地址"
+	}
 	return result
+}
+
+func (p *Prober) probeTCP(ctx context.Context, host string, port int) ([]float64, error) {
+	samples := make([]float64, 0, probeAttempts)
+	var lastErr error
+	for range probeAttempts {
+		latency, err := p.dialOnce(ctx, host, port)
+		if err != nil {
+			lastErr = err
+			break
+		}
+		samples = append(samples, latency)
+	}
+	if len(samples) == 0 {
+		return nil, lastErr
+	}
+	sort.Float64s(samples)
+	return samples, nil
+}
+
+func isPublicAddress(ip net.IP) bool {
+	return ip != nil && ip.IsGlobalUnicast() && !ip.IsPrivate()
 }
 
 func (p *Prober) dialOnce(ctx context.Context, host string, port int) (float64, error) {

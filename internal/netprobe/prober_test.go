@@ -2,6 +2,7 @@ package netprobe
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strconv"
 	"strings"
@@ -60,7 +61,7 @@ func TestProbeReportsTimeout(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}, 10*time.Millisecond, defaultConcurrency)
-	results, err := prober.Probe(context.Background(), []Target{{Host: "192.0.2.1", Port: 443}})
+	results, err := prober.Probe(context.Background(), []Target{{Host: "10.0.0.1", Port: 443}})
 	if err != nil {
 		t.Fatalf("探测失败: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestProbeIsolatesInvalidTargets(t *testing.T) {
 		{Host: strings.Repeat("a", 254), Port: 443},
 		{Host: " example.com", Port: 443},
 	}
-	targets := append([]Target{{Host: "192.0.2.1", Port: 443}}, invalid...)
+	targets := append([]Target{{Host: "10.0.0.1", Port: 443}}, invalid...)
 	results, err := prober.Probe(context.Background(), targets)
 	if err != nil {
 		t.Fatalf("单个非法目标不应让整批失败: %v", err)
@@ -132,7 +133,7 @@ func TestProbeExcludesResolutionTimeAndSamplesThreeTimes(t *testing.T) {
 	}, time.Second, defaultConcurrency)
 	prober.resolve = func(_ context.Context, _ string) ([]net.IPAddr, error) {
 		time.Sleep(100 * time.Millisecond)
-		return []net.IPAddr{{IP: net.ParseIP("192.0.2.1")}}, nil
+		return []net.IPAddr{{IP: net.ParseIP("10.0.0.1")}}, nil
 	}
 
 	results, err := prober.Probe(context.Background(), []Target{{Host: "node.example", Port: 443}})
@@ -145,6 +146,69 @@ func TestProbeExcludesResolutionTimeAndSamplesThreeTimes(t *testing.T) {
 	if dialed.Load() != probeAttempts {
 		t.Fatalf("成功节点拨号次数 = %d,期望 %d", dialed.Load(), probeAttempts)
 	}
+	if results[0].Method != "tcp" || results[0].ResolvedIP != "10.0.0.1" {
+		t.Fatalf("TCP 探测元数据异常: %+v", results[0])
+	}
+}
+
+func TestProbeUsesICMPForEveryPublicAddress(t *testing.T) {
+	prober := newWithLimits(func(context.Context, string, string) (net.Conn, error) {
+		t.Fatal("公网节点不应先发起可能被 dae 接管的 TCP 探测")
+		return nil, nil
+	}, time.Second, defaultConcurrency)
+	prober.resolve = staticResolution("203.0.113.8")
+	prober.ping = func(_ context.Context, address net.IP) (float64, error) {
+		if address.String() != "203.0.113.8" {
+			t.Fatalf("ICMP 探测地址 = %s", address)
+		}
+		return 131.4, nil
+	}
+
+	results, err := prober.Probe(context.Background(), []Target{{Host: "node.example", Port: 443}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := results[0]
+	if !result.Reachable || result.Method != "icmp" || result.LatencyMs != 131.4 {
+		t.Fatalf("公网节点未使用 ICMP: %+v", result)
+	}
+}
+
+func TestProbeDoesNotFallBackToTCPWhenPublicICMPUnavailable(t *testing.T) {
+	prober := newWithLimits(func(context.Context, string, string) (net.Conn, error) {
+		t.Fatal("ICMP 失败后不应回退到可能被 dae 接管的 TCP")
+		return nil, nil
+	}, time.Second, defaultConcurrency)
+	prober.resolve = staticResolution("203.0.113.9")
+	prober.ping = func(context.Context, net.IP) (float64, error) {
+		return 0, errors.New("permission denied")
+	}
+
+	results, err := prober.Probe(context.Background(), []Target{{Host: "node.example", Port: 443}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := results[0]
+	if result.Reachable || result.LatencyMs != 0 || !strings.Contains(result.Error, "无法得到可信的网络延迟") {
+		t.Fatalf("ICMP 探测失败后仍返回了假延迟: %+v", result)
+	}
+}
+
+func TestProbeKeepsLegitimatePrivateSubMillisecondLatency(t *testing.T) {
+	prober := newWithLimits(immediateConnection, time.Second, defaultConcurrency)
+	prober.resolve = staticResolution("192.168.31.2")
+	prober.ping = func(context.Context, net.IP) (float64, error) {
+		t.Fatal("内网亚毫秒延迟不应触发 ICMP 探测")
+		return 0, nil
+	}
+
+	results, err := prober.Probe(context.Background(), []Target{{Host: "lan-node", Port: 443}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !results[0].Reachable || results[0].Method != "tcp" {
+		t.Fatalf("内网延迟被误判: %+v", results[0])
+	}
 }
 
 func TestProbeRunsTargetsConcurrently(t *testing.T) {
@@ -154,7 +218,7 @@ func TestProbeRunsTargetsConcurrently(t *testing.T) {
 	}, time.Second, defaultConcurrency)
 	targets := make([]Target, MaxTargets)
 	for index := range targets {
-		targets[index] = Target{Host: "192.0.2." + strconv.Itoa(index+1), Port: 443}
+		targets[index] = Target{Host: "10.0.0." + strconv.Itoa(index+1), Port: 443}
 	}
 	startedAt := time.Now()
 	results, err := prober.Probe(context.Background(), targets)
@@ -188,7 +252,7 @@ func TestProbeSharesConcurrencyLimitAcrossCalls(t *testing.T) {
 
 	targets := make([]Target, 8)
 	for index := range targets {
-		targets[index] = Target{Host: "192.0.2." + strconv.Itoa(index+1), Port: 443}
+		targets[index] = Target{Host: "10.0.1." + strconv.Itoa(index+1), Port: 443}
 	}
 	done := make(chan struct{}, 3)
 	for range 3 {
@@ -215,7 +279,7 @@ func TestProbeStopsWhenContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	targets := make([]Target, 8)
 	for index := range targets {
-		targets[index] = Target{Host: "192.0.2." + strconv.Itoa(index+1), Port: 443}
+		targets[index] = Target{Host: "10.0.2." + strconv.Itoa(index+1), Port: 443}
 	}
 	finished := make(chan []Result, 1)
 	go func() {
@@ -247,3 +311,15 @@ func TestProberFallsBackToSafeLimits(t *testing.T) {
 type errRefused string
 
 func (e errRefused) Error() string { return "connection refused: " + string(e) }
+
+func immediateConnection(context.Context, string, string) (net.Conn, error) {
+	client, server := net.Pipe()
+	_ = server.Close()
+	return client, nil
+}
+
+func staticResolution(address string) func(context.Context, string) ([]net.IPAddr, error) {
+	return func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP(address)}}, nil
+	}
+}
