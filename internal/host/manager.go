@@ -226,15 +226,20 @@ func normalizeSystemdTimestamp(value string) string {
 		return ""
 	}
 	for _, layout := range []string{
-		"Mon 2006-01-02 15:04:05 MST",
 		"Mon 2006-01-02 15:04:05 -07",
 		"Mon 2006-01-02 15:04:05 -0700",
 		"Mon 2006-01-02 15:04:05 -07:00",
 	} {
-		parsed, err := time.ParseInLocation(layout, value, time.Local)
+		// MST 布局也会接受 "+08"，但会把它当作未知名称并赋予零偏移。
+		// 数字时区必须先按偏移解析，结果才不依赖宿主机的本地时区。
+		parsed, err := time.Parse(layout, value)
 		if err == nil {
 			return parsed.Format(time.RFC3339)
 		}
+	}
+	parsed, err := time.ParseInLocation("Mon 2006-01-02 15:04:05 MST", value, time.Local)
+	if err == nil {
+		return parsed.Format(time.RFC3339)
 	}
 	return ""
 }
