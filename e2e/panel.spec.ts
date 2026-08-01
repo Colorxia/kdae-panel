@@ -51,6 +51,7 @@ async function mockInstalledGeoForScreenshot(route: import('@playwright/test').R
     ...file,
     present: true,
     path: `/etc/dae/${file.name}`,
+    targetPath: `/etc/dae/${file.name}`,
     size: file.name === 'geoip.dat' ? 24_371_200 : 47_923_712,
     modTime: '2026-08-01T08:00:00Z',
     shadowed: [],
@@ -200,6 +201,50 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expect(cleanupRow).toHaveCount(0)
     await expect(cleanupManager.getByText('尚未添加自定义来源')).toBeVisible()
     await cleanupManager.locator('.n-base-close').click()
+
+    const residualRoute = async (route: import('@playwright/test').Route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      const response = await route.fetch()
+      const body = await response.json()
+      await route.fulfill({
+        response,
+        json: {
+          ...body,
+          status: {
+            ...body.status,
+            updatable: false,
+            problem: '发现上次 Geo 更新遗留的回滚点',
+            residuals: [
+              {
+                path: '/etc/dae/geosite.dat.kdae-panel-previous',
+                kind: 'rollback',
+                size: 47_923_712,
+                modTime: '2026-08-01T07:00:00Z',
+                targetPath: '/etc/dae/geosite.dat',
+                restorable: true,
+                deletable: false,
+              },
+              {
+                path: '/etc/dae/.kdae-panel-geo-abandoned-transaction-file-with-a-long-name',
+                kind: 'temporary',
+                size: 24_371_200,
+                modTime: '2026-08-01T06:00:00Z',
+                restorable: false,
+                deletable: true,
+              },
+            ],
+          },
+        },
+      })
+    }
+    await page.route('**/api/v1/dae/geo', residualRoute)
+    await page.reload()
+    await expect(page.getByRole('button', { name: '恢复缺失文件' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '清理安全残留' })).toBeVisible()
+    await page.setViewportSize({ width: 390, height: 844 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1)
+    await page.unroute('**/api/v1/dae/geo', residualRoute)
+    await page.setViewportSize({ width: 1600, height: 900 })
   })
 
   await test.step('导入节点并保存重载，改动落到磁盘', async () => {

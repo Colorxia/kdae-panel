@@ -220,6 +220,18 @@ export interface GeoFile {
   modTime?: string
   /** 被 path 遮蔽的同名副本；dae 只读优先级最高的那一份。 */
   shadowed?: string[]
+  /** 下一次更新时该文件的落盘位置。 */
+  targetPath: string
+}
+
+export interface GeoResidual {
+  path: string
+  kind: 'temporary' | 'rollback'
+  size: number
+  modTime: string
+  targetPath?: string
+  restorable: boolean
+  deletable: boolean
 }
 
 export type GeoSource = 'loyalsoldier' | 'v2fly' | `custom:${string}`
@@ -259,6 +271,7 @@ export interface GeoStatus {
   targetDir: string
   searchPath: string[]
   files: GeoFile[]
+  residuals?: GeoResidual[]
   updatable: boolean
   problem?: string
   managed?: GeoState

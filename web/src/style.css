@@ -983,6 +983,44 @@ pre,
   overflow-wrap: anywhere;
 }
 
+.geo-target-path,
+.geo-residual-copy {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.geo-target-path .mono {
+  overflow-wrap: anywhere;
+}
+
+.geo-residual-head,
+.geo-residual-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.geo-residual-list {
+  margin-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.geo-residual-row {
+  min-height: 58px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.geo-residual-info {
+  min-width: 0;
+}
+
+.geo-residual-info .n-tag {
+  margin-right: 8px;
+}
+
 .geo-hint {
   display: block;
   margin-top: 12px;
@@ -2307,6 +2345,12 @@ pre,
   }
 
   .geo-source-manager-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .geo-residual-head,
+  .geo-residual-row {
     align-items: stretch;
     flex-direction: column;
   }

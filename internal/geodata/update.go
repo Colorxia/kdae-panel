@@ -50,14 +50,26 @@ func (m *Manager) Apply(ctx context.Context, data upstream.GeoData) (Status, err
 	}
 	service := m.inspectService(ctx)
 
-	transaction := &geoTransaction{directory: status.TargetDir}
+	if err := cleanupTemporaryResiduals(status.Residuals); err != nil {
+		return Status{}, fmt.Errorf("清理上次异常退出遗留的 Geo 暂存文件: %w", err)
+	}
+	targets := make(map[string]string, len(status.Files))
+	for _, file := range status.Files {
+		targets[file.Name] = file.TargetPath
+	}
+	transaction := &geoTransaction{}
 	defer transaction.cleanup()
 
-	for name, content := range data.Files {
+	for _, name := range Names {
+		content := data.Files[name]
 		if len(content) == 0 {
 			return Status{}, fmt.Errorf("%s 内容为空，拒绝写入", name)
 		}
-		if err := transaction.stage(name, content); err != nil {
+		target := targets[name]
+		if target == "" {
+			return Status{}, fmt.Errorf("无法确定 %s 的写入位置", name)
+		}
+		if err := transaction.stage(name, target, content); err != nil {
 			return Status{}, err
 		}
 	}
@@ -100,7 +112,7 @@ func (m *Manager) Apply(ctx context.Context, data upstream.GeoData) (Status, err
 		m.logger.Warn("记录 geo 更新状态失败", "error", stateErr)
 	}
 	m.logger.Info("已更新 geo 数据",
-		"source", state.Source, "tag", state.Tag, "directory", status.TargetDir,
+		"source", state.Source, "tag", state.Tag, "targets", targets,
 		"reloaded", reloaded)
 
 	updated := m.Status(ctx)
@@ -143,13 +155,13 @@ func repositoriesOf(release upstream.GeoRelease) []string {
 // 分开换是不行的：geoip 和 geosite 来自同一次发布，只换掉其中一个会让 dae
 // 拿着两个不同版本的规则集跑，而这种不一致既不会报错也无从察觉。
 type geoTransaction struct {
-	directory string
-	staged    []stagedFile
-	cleanups  []func()
+	staged   []stagedFile
+	cleanups []func()
 }
 
 type stagedFile struct {
-	name string
+	name  string
+	final string
 	// temp 是待启用的新文件；backup 是被顶掉的旧文件改名后的位置，旧文件不存在时为空。
 	temp   string
 	backup string
@@ -157,13 +169,13 @@ type stagedFile struct {
 	replaced bool
 }
 
-func (t *geoTransaction) stage(name string, content []byte) error {
-	path, cleanup, err := atomicfile.Stage(t.directory, content, geoMode)
+func (t *geoTransaction) stage(name, final string, content []byte) error {
+	path, cleanup, err := atomicfile.StagePattern(filepath.Dir(final), geoTempPattern, content, geoMode)
 	if err != nil {
 		return fmt.Errorf("暂存 %s: %w", name, err)
 	}
 	t.cleanups = append(t.cleanups, cleanup)
-	t.staged = append(t.staged, stagedFile{name: name, temp: path})
+	t.staged = append(t.staged, stagedFile{name: name, final: final, temp: path})
 	return nil
 }
 
@@ -171,12 +183,17 @@ func (t *geoTransaction) stage(name string, content []byte) error {
 func (t *geoTransaction) commit() error {
 	for index := range t.staged {
 		file := &t.staged[index]
-		final := filepath.Join(t.directory, file.name)
+		final := file.final
 
 		// 旧文件先改名留作回滚点，而不是读进内存：geo 有几十兆，
 		// 一次更新已经要在内存里放下两份新数据，再加两份旧的没有必要。
 		if _, err := os.Stat(final); err == nil {
-			backup := final + ".kdae-panel-previous"
+			backup := final + rollbackSuffix
+			if _, backupErr := os.Lstat(backup); backupErr == nil {
+				return t.abort(fmt.Errorf("%s 已存在未处理的回滚点 %s", file.name, backup))
+			} else if !os.IsNotExist(backupErr) {
+				return t.abort(fmt.Errorf("检查 %s 回滚点: %w", file.name, backupErr))
+			}
 			if err := os.Rename(final, backup); err != nil {
 				return t.abort(fmt.Errorf("备份 %s: %w", file.name, err))
 			}
@@ -198,8 +215,7 @@ func (t *geoTransaction) commit() error {
 // 这是必须让用户看见的信息，不能像原先那样吞掉。
 func (t *geoTransaction) abort(cause error) error {
 	if err := t.rollback(); err != nil {
-		return fmt.Errorf("%w；且旧数据未能还原（回滚点保留在 %s 下的 *.kdae-panel-previous）：%v",
-			cause, t.directory, err)
+		return fmt.Errorf("%w；且旧数据未能还原（*.kdae-panel-previous 回滚点已保留）：%v", cause, err)
 	}
 	return cause
 }
@@ -213,7 +229,7 @@ func (t *geoTransaction) rollback() error {
 	var failures []error
 	for index := range t.staged {
 		file := &t.staged[index]
-		final := filepath.Join(t.directory, file.name)
+		final := file.final
 
 		if file.backup == "" {
 			// 本来就没有这个文件，退回原样就是删掉新写的那份。

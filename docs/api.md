@@ -155,6 +155,8 @@ GitHub JSON 元数据另有 10 分钟进程内缓存；同 URL 的并发请求�
 |---|---|---|
 | `GET` | `/dae/geo` | geo 数据现状、可选来源与正在进行的任务 |
 | `POST` | `/dae/geo` | 更新到指定来源的最新版 |
+| `POST` | `/dae/geo/residuals/cleanup` | 清理不承载唯一旧数据的事务残留 |
+| `POST` | `/dae/geo/residuals/restore` | 恢复正式文件缺失时的旧数据回滚点 |
 | `GET` | `/dae/geo/sources` | 列出管理员保存的自定义来源 |
 | `POST` | `/dae/geo/sources` | 添加自定义来源 |
 | `PUT` | `/dae/geo/sources/{id}` | 修改自定义来源 |
@@ -172,7 +174,9 @@ Geo 数据管理在登录后始终可用，与 dae 版本管理互不影响；�
 
 自定义来源请求体包含 `label`、`geoipUrl`、`geoipSha256Url`、`geositeUrl`、`geositeSha256Url`。四条地址都必须是公网 HTTPS；保存时拒绝 userinfo、内网字面地址与 URL 片段，下载首跳和每次重定向会重新解析 DNS，并在实际连接前再次拒绝非公网地址。自定义请求使用独立客户端，不携带 GitHub Token。每个数据文件上限 64 MiB，校验文件上限 64 KiB，没有跳过 SHA-256 的开关。来源保存在权限 `0600` 的 `KDAE_PANEL_GEO_SOURCES_FILE`；当前更新记录正在引用的来源不能直接删除，需先用另一个来源成功更新。
 
-`GET` 返回 `status.sources`（每个来源的标识、展示名、全部信任根仓库与说明）、`status.defaultSource`（界面该预选哪个——用过就是上次那个）、`status.targetDir`（本次会写入哪个目录）、`status.searchPath`（dae 的完整查找顺序）、每个文件的实际路径与大小，以及 `files[].shadowed`——被优先级更高的副本遮蔽、因而不会生效的同名文件。
+`GET` 返回 `status.sources`（每个来源的标识、展示名、全部信任根仓库与说明）、`status.defaultSource`（界面该预选哪个——用过就是上次那个）、`status.searchPath`（dae 的完整查找顺序），以及每个文件的实际路径、大小、`targetPath` 和 `shadowed` 副本。两个文件可能分别在不同目录生效，因此写入位置以各自的 `targetPath` 为准；兼容字段 `status.targetDir` 仅在两者同目录时有值。
+
+异常退出可能留下 `status.residuals`。Geo 专属暂存文件超过一小时才会被认定为残留，可由清理端点删除，下一次更新也会自动清理；固定后缀 `.kdae-panel-previous` 是旧数据回滚点。正式文件缺失时只能调用恢复端点（请求体为 `{ "path": "..." }`），正式文件仍在时才允许清理。两个动作都会重新扫描并验证路径、使用全局控制门，客户端不能借此操作任意文件。
 
 `POST` 立即返回 `202` 与任务快照，进度靠轮询 `GET /dae/geo`，阶段与安装任务一致（`downloading` → `applying` → `done`/`failed`）。同一时刻只允许一个 geo 任务，重复提交返回 `409 geo_update_in_progress`；它与安装任务各有各的任务槽，但落盘阶段共用全局控制门。
 

@@ -1645,6 +1645,8 @@ type stubGeoService struct {
 	applied   int
 	requested upstream.GeoSource
 	custom    []upstream.CustomGeoSource
+	cleaned   int
+	restored  string
 }
 
 func (s *stubGeoService) Status(context.Context) geodata.Status { return s.status }
@@ -1672,6 +1674,20 @@ func (s *stubGeoService) Apply(context.Context, upstream.GeoData) (geodata.Statu
 	s.mu.Lock()
 	s.applied++
 	s.mu.Unlock()
+	return s.status, s.err
+}
+
+func (s *stubGeoService) CleanupResiduals(context.Context) (geodata.Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleaned++
+	return s.status, s.err
+}
+
+func (s *stubGeoService) RestoreResidual(_ context.Context, path string) (geodata.Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.restored = path
 	return s.status, s.err
 }
 
@@ -1957,6 +1973,29 @@ func TestGeoUpdateRejectsUnknownSource(t *testing.T) {
 	}
 	if service.requestedSource() != "" {
 		t.Fatal("来源非法时不该发起任何下载")
+	}
+}
+
+func TestGeoResidualRoutes(t *testing.T) {
+	service := &stubGeoService{status: geodata.Status{Residuals: []geodata.Residual{{
+		Path: "/etc/dae/geosite.dat.kdae-panel-previous", Kind: geodata.ResidualRollback,
+		TargetPath: "/etc/dae/geosite.dat", Restorable: true,
+	}}}}
+	application := newGeoApp(t, service)
+
+	cleanup := httptest.NewRecorder()
+	application.Handler().ServeHTTP(cleanup, httptest.NewRequest(http.MethodPost,
+		"/api/v1/dae/geo/residuals/cleanup", nil))
+	if cleanup.Code != http.StatusOK || service.cleaned != 1 {
+		t.Fatalf("清理残留失败：%d %s", cleanup.Code, cleanup.Body.String())
+	}
+
+	restore := httptest.NewRecorder()
+	application.Handler().ServeHTTP(restore, httptest.NewRequest(http.MethodPost,
+		"/api/v1/dae/geo/residuals/restore",
+		strings.NewReader(`{"path":"/etc/dae/geosite.dat.kdae-panel-previous"}`)))
+	if restore.Code != http.StatusOK || service.restored != "/etc/dae/geosite.dat.kdae-panel-previous" {
+		t.Fatalf("恢复残留失败：%d %s", restore.Code, restore.Body.String())
 	}
 }
 
