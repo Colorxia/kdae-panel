@@ -1928,6 +1928,16 @@ pre,
     min-height: auto;
   }
 
+  .diagnostics-footer-action {
+    width: 100%;
+    margin-top: 12px;
+  }
+
+  .diagnostics-footer-action .n-button {
+    width: 100%;
+    min-height: 42px;
+  }
+
   .version-toolbar-actions .n-button {
     min-width: 0;
     padding-inline: 6px;
