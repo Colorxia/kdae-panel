@@ -844,6 +844,16 @@ func (s *stubInstallService) DeleteCached(source upstream.Source, ref string) er
 	return s.err
 }
 
+func (s *stubInstallService) Preflight(_ context.Context, _ []byte) (daeinstall.Compatibility, error) {
+	s.record("preflight")
+	if s.err != nil {
+		return daeinstall.Compatibility{}, s.err
+	}
+	return daeinstall.Compatibility{
+		Compatible: true, Version: "dae test", OutlineSupported: true, ConfigPresent: true,
+	}, nil
+}
+
 func (s *stubInstallService) FirstInstall(_ context.Context, _ upstream.Bundle, source upstream.Source, ref, _ string) (daeinstall.Status, error) {
 	s.record("first:" + string(source) + ":" + ref)
 	return s.status, s.err
@@ -884,6 +894,8 @@ func TestDaeInstallDisabledByDefault(t *testing.T) {
 		httptest.NewRequest(http.MethodGet, "/api/v1/dae/install", nil),
 		httptest.NewRequest(http.MethodGet, "/api/v1/dae/versions?source=official", nil),
 		httptest.NewRequest(http.MethodPost, "/api/v1/dae/install", strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)),
+		httptest.NewRequest(http.MethodGet, "/api/v1/dae/compatibility", nil),
+		httptest.NewRequest(http.MethodPost, "/api/v1/dae/compatibility", strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)),
 		httptest.NewRequest(http.MethodDelete, "/api/v1/dae/cache", strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)),
 		httptest.NewRequest(http.MethodPost, "/api/v1/dae/rollback", nil),
 		httptest.NewRequest(http.MethodPost, "/api/v1/dae/uninstall", nil),
@@ -935,6 +947,36 @@ func TestDaeInstallRunsAsynchronously(t *testing.T) {
 	}
 	if job := awaitJobSettled(t, application); !job.Cached {
 		t.Fatalf("缓存命中应写进任务状态: %+v", job)
+	}
+}
+
+func TestDaeCompatibilityRunsAsynchronously(t *testing.T) {
+	service := &stubInstallService{
+		binary: []byte("v2"), cached: true, status: daeinstall.Status{Ready: true},
+	}
+	application := newInstallApp(t, service)
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost,
+		"/api/v1/dae/compatibility", strings.NewReader(`{"source":"official","ref":"v2.0.0","label":"v2.0.0"}`)))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("状态码 = %d，期望 202，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+	job := awaitCompatibilitySettled(t, application)
+	if job.Phase != PhaseDone || job.Result == nil || !job.Result.Compatible || !job.Cached {
+		t.Fatalf("兼容性预检结果异常: %+v", job)
+	}
+	if records := service.records(); len(records) != 1 || records[0] != "preflight" {
+		t.Fatalf("预检调用 = %v", records)
+	}
+}
+
+func TestDaeCompatibilityRequiresExistingInstall(t *testing.T) {
+	application := newInstallApp(t, &stubInstallService{status: daeinstall.Status{Ready: false}})
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost,
+		"/api/v1/dae/compatibility", strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)))
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "dae_not_installed") {
+		t.Fatalf("首次安装预检响应 = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -1174,6 +1216,29 @@ func awaitJobSettled(t *testing.T, application *App) Job {
 	}
 }
 
+func awaitCompatibilitySettled(t *testing.T, application *App) CompatibilityJob {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		recorder := httptest.NewRecorder()
+		application.Handler().ServeHTTP(recorder,
+			httptest.NewRequest(http.MethodGet, "/api/v1/dae/compatibility", nil))
+		var payload struct {
+			Job CompatibilityJob `json:"job"`
+		}
+		if err := json.NewDecoder(recorder.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Job.Phase != PhaseDownloading && payload.Job.Phase != PhaseApplying {
+			return payload.Job
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("预检任务迟迟没有结束: %+v", payload.Job)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestDaeInstallRejectsConcurrentJobs(t *testing.T) {
 	release := make(chan struct{})
 	service := &stubInstallService{binary: []byte("v2"), release: release}
@@ -1192,6 +1257,36 @@ func TestDaeInstallRejectsConcurrentJobs(t *testing.T) {
 	application.Handler().ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/api/v1/dae/install", body()))
 	if second.Code != http.StatusConflict {
 		t.Fatalf("并发任务状态码 = %d，期望 409", second.Code)
+	}
+	close(release)
+}
+
+func TestDaeCompatibilityAndInstallShareOneTaskGate(t *testing.T) {
+	release := make(chan struct{})
+	service := &stubInstallService{
+		binary: []byte("v2"), release: release, status: daeinstall.Status{Ready: true},
+	}
+	application := newInstallApp(t, service)
+
+	preflight := httptest.NewRecorder()
+	application.Handler().ServeHTTP(preflight, httptest.NewRequest(http.MethodPost,
+		"/api/v1/dae/compatibility", strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)))
+	if preflight.Code != http.StatusAccepted {
+		t.Fatalf("预检状态码 = %d，响应 = %s", preflight.Code, preflight.Body.String())
+	}
+
+	install := httptest.NewRecorder()
+	application.Handler().ServeHTTP(install, httptest.NewRequest(http.MethodPost,
+		"/api/v1/dae/install", strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)))
+	if install.Code != http.StatusConflict || !strings.Contains(install.Body.String(), "version_task_in_progress") {
+		t.Fatalf("预检期间安装响应 = %d %s", install.Code, install.Body.String())
+	}
+
+	remove := httptest.NewRecorder()
+	application.Handler().ServeHTTP(remove, httptest.NewRequest(http.MethodDelete,
+		"/api/v1/dae/cache", strings.NewReader(`{"source":"official","ref":"v2.0.0"}`)))
+	if remove.Code != http.StatusConflict || !strings.Contains(remove.Body.String(), "version_task_in_progress") {
+		t.Fatalf("预检期间删除缓存响应 = %d %s", remove.Code, remove.Body.String())
 	}
 	close(release)
 }

@@ -161,6 +161,19 @@ export interface InstallJob {
   error?: string
 }
 
+export interface DaeCompatibility {
+  compatible: boolean
+  version?: string
+  outlineSupported: boolean
+  configPresent: boolean
+  validationError?: string
+  problem?: string
+}
+
+export interface CompatibilityJob extends InstallJob {
+  result?: DaeCompatibility
+}
+
 export interface GeoFile {
   name: string
   path?: string
