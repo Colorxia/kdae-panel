@@ -10,11 +10,27 @@
 | :--: | :--: |
 | ![运行概览](docs/screenshots/dashboard.png) | ![代理编排](docs/screenshots/orchestration.png) |
 
-| dae 版本管理 | 登录 |
+| 配置管理 | 动态配置能力 |
 | :--: | :--: |
-| ![dae 版本管理](docs/screenshots/versions.png) | ![登录](docs/screenshots/login.png) |
+| ![配置管理](docs/screenshots/config.png) | ![动态配置能力](docs/screenshots/schema.png) |
 
-*截图来自本地演示环境，节点、订阅与延迟均为示例数据。*
+| dae 版本管理 | Geo 数据管理 |
+| :--: | :--: |
+| ![dae 版本管理](docs/screenshots/versions.png) | ![Geo 数据管理](docs/screenshots/geo.png) |
+
+| 运行日志 | 配置备份 |
+| :--: | :--: |
+| ![运行日志](docs/screenshots/logs.png) | ![配置备份](docs/screenshots/backups.png) |
+
+| 面板设置 |
+| :--: |
+| ![面板设置](docs/screenshots/settings.png) |
+
+| 首次设置 | 登录 |
+| :--: | :--: |
+| ![首次设置](docs/screenshots/setup.png) | ![登录](docs/screenshots/login.png) |
+
+*截图由 v0.9.7 当前代码的 Playwright 演示环境生成，页面状态、节点、订阅、日志与延迟均为示例数据。*
 
 ## 功能
 
