@@ -113,7 +113,7 @@ async function expectColumnsAligned(locator: import('@playwright/test').Locator)
 // 这是唯一同时压到路由守卫、CSRF、配置事务与 dae 校验桩的测试，
 // 步骤之间共享账号与磁盘状态，因此收在一个用例里按序执行。
 test('首次初始化到编排保存的完整链路', async ({ page }) => {
-  test.setTimeout(UPDATE_SCREENSHOTS ? 120_000 : 90_000)
+  test.setTimeout(UPDATE_SCREENSHOTS ? 150_000 : 120_000)
   await test.step('通过一次性链接初始化管理员', async () => {
     await page.goto('/setup#bootstrap=e2e-bootstrap')
     await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/favicon.svg')
@@ -534,6 +534,45 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expect(page.locator('tr', { hasText: 'E2E 批量配置' })).toBeVisible()
     await capture(page, 'backups.png', 1600, 900)
 
+    await page.setViewportSize({ width: 390, height: 844 })
+    const mobileBackupList = page.getByTestId('mobile-backup-list')
+    const mobileSelection = page.getByTestId('mobile-backup-selection')
+    await expect(mobileBackupList).toBeVisible()
+    await expect(mobileSelection).toBeVisible()
+
+    const toolbarButtons = page.locator('.backup-toolbar-actions .n-button')
+    await expect(toolbarButtons).toHaveCount(3)
+    const toolbarTops = await toolbarButtons.evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().top))
+    expect(Math.max(...toolbarTops) - Math.min(...toolbarTops)).toBeLessThanOrEqual(1)
+
+    const selectAll = mobileSelection.getByRole('checkbox', { name: '全选', exact: true })
+    await selectAll.check()
+    const mobileBackupCheckboxes = mobileBackupList.getByRole('checkbox')
+    const mobileBackupCount = await mobileBackupCheckboxes.count()
+    expect(mobileBackupCount).toBeGreaterThan(0)
+    for (let index = 0; index < mobileBackupCount; index += 1) {
+      await expect(mobileBackupCheckboxes.nth(index)).toBeChecked()
+    }
+    await expect(mobileSelection).toHaveText(/已选 (\d+) \/ 共 \1 项/)
+    await selectAll.uncheck()
+
+    const firstMobileActions = mobileBackupList.locator('.backup-mobile-actions').first()
+    const actionButtons = firstMobileActions.locator('.n-button')
+    await expect(actionButtons).toHaveCount(5)
+    const actionTops = await actionButtons.evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().top))
+    expect(Math.max(...actionTops) - Math.min(...actionTops)).toBeLessThanOrEqual(1)
+    await expect(firstMobileActions.getByRole('button', { name: /编辑/ })).toBeVisible()
+    await expect(firstMobileActions.getByRole('button', { name: /删除/ })).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1)
+
+    await page.setViewportSize({ width: 320, height: 720 })
+    const narrowActionTops = await actionButtons.evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().top))
+    expect(Math.max(...narrowActionTops) - Math.min(...narrowActionTops)).toBeLessThanOrEqual(1)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1)
+
+    await page.setViewportSize({ width: 1600, height: 900 })
+    await expect(page.locator('tr', { hasText: 'E2E 已命名配置' })).toBeVisible()
+
     await renamedRow.getByRole('button', { name: '恢复' }).click()
     const diffModal = page.locator('.n-modal', { hasText: '配置差异 · E2E 已命名配置' })
     await expect(diffModal.getByText('这份存档与当前配置内容相同，无需恢复。')).toBeVisible()
@@ -543,7 +582,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     // 先让当前配置与存档产生差异，再验证“预览 -> 恢复”的完整事务入口。
     await page.goto('/config')
     const configEditor = page.locator('.config-editor textarea')
-    await configEditor.fill((await configEditor.inputValue()).replace('log_level: debug', 'log_level: info'))
+    await configEditor.fill(`${(await configEditor.inputValue()).trimEnd()}\n\n# E2E 恢复差异\n`)
     await page.locator('.page-toolbar').getByRole('button', { name: '保存并重载' }).click()
     await page.locator('.n-dialog').getByRole('button', { name: '保存并重载' }).click()
     await expect(page.locator('.n-message').getByText('配置已保存并完成无损重载')).toBeVisible()

@@ -1,4 +1,4 @@
-import{C as e,En as t,Gt as n,Jt as r,Kn as i,Qt as a,S as o,Yt as s,an as c,en as l,ft as u,gn as d,j as f,pt as p,rr as m,w as h,wn as g}from"./client-DPAzEGwt.js";import{i as _}from"./text-BjOZAwdl.js";import{s as v}from"./index-BUJg8G-j.js";var y=r([r(`@keyframes spin-rotate`,`
+import{C as e,En as t,Gt as n,Jt as r,Kn as i,Qt as a,S as o,Yt as s,an as c,en as l,ft as u,gn as d,j as f,pt as p,rr as m,w as h,wn as g}from"./client-DPAzEGwt.js";import{i as _}from"./text-BjOZAwdl.js";import{s as v}from"./index-BKbiRp0B.js";var y=r([r(`@keyframes spin-rotate`,`
  from {
  transform: rotate(0);
  }
