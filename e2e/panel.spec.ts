@@ -492,7 +492,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
   })
 
   await test.step('设置页左右列保持同一底边', async () => {
-    const targetPanelVersion = 'v0.9.7'
+    const targetPanelVersion = 'v1.0.0'
     let upgradeStarted = false
     await page.route('**/api/v1/panel/update/check', (route) => route.fulfill({
       contentType: 'application/json',
@@ -775,6 +775,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expect(page.getByText('如果路由使用 geosite，请先到 Geo 数据页更新数据')).toBeVisible()
     await expect(page.locator('.diagnostic-item')).toHaveCount(6)
     await expectCardsAligned(page.locator('.diagnostic-item'))
+    await capture(page, 'diagnostics.png', 1600, 1120)
   })
 
   await test.step('移动端导航、核心列表与编辑器使用独立布局', async () => {
