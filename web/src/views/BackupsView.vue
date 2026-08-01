@@ -71,12 +71,6 @@ const columns: DataTableColumns<ConfigBackup> = [
     render: (row) => formatBytes(row.size),
   },
   {
-    title: '备份编号',
-    key: 'id',
-    minWidth: 320,
-    ellipsis: { tooltip: true },
-  },
-  {
     title: '操作',
     key: 'actions',
     width: 376,
@@ -341,7 +335,7 @@ onMounted(() => void load())
         :loading="loading"
         :row-key="(row: ConfigBackup) => row.id"
         :checked-row-keys="checkedRowKeys"
-        :scroll-x="1080"
+        :scroll-x="960"
         :bordered="false"
         @update:checked-row-keys="checkedRowKeys = $event"
       />

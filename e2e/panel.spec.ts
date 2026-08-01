@@ -451,6 +451,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
   await test.step('配置存档可以命名、恢复并删除', async () => {
     await page.goto('/backups')
     await expect(page.getByRole('heading', { name: '配置历史', level: 2 })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: '备份编号' })).toHaveCount(0)
     await page.getByRole('button', { name: '保存当前配置' }).click()
     const editor = page.locator('.n-modal', { hasText: '保存当前配置' })
     await editor.getByPlaceholder('例如：稳定线路').fill('E2E 稳定配置')
