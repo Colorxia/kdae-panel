@@ -67,6 +67,8 @@ X-CSRF-Token: <csrfToken>
 
 入口配置已经存在时，`expectedHash` 必填且不匹配时返回 HTTP `409`，防止覆盖外部修改；新建入口配置时必须为空。`apply` 默认为 `true`。
 
+`apply=true` 且 dae 正在运行时，面板读取 systemd `MainPID` 并执行 `dae reload <MainPID>`，不依赖默认 PID 文件。dae 未运行时配置仍会保存成功，响应包含 `"deferred": true`，表示下次启动时读取；真正的 reload 错误仍会恢复旧磁盘配置并返回 `configuration_apply_failed`。
+
 配置保存、备份恢复和服务控制操作会共享串行门；已有操作执行时返回 `409 operation_in_progress`，避免多个控制动作交叉执行。
 
 所有备份（包括手动存档）共用最多 50 份、总大小 256 MiB 的保留上限。达到上限时按文件创建时间清理最旧的备份，手动存档的元数据会随对应内容一起清理。
@@ -263,10 +265,10 @@ dae 只在重载时重新拉取 `subscription` 链接，因此"订阅定时刷�
 |---|---|---|
 | `GET` | `/host/interfaces` | 本机网络接口及其 IP/CIDR 地址，供 global 接口选择器使用 |
 | `GET` | `/service` | systemd 状态与资源数据 |
-| `POST` | `/service/actions/start` | 启动 dae |
-| `POST` | `/service/actions/stop` | 停止 dae |
+| `POST` | `/service/actions/start` | 启动 dae，并设为随系统启动 |
+| `POST` | `/service/actions/stop` | 停止 dae，并取消随系统启动 |
 | `POST` | `/service/actions/restart` | 重启 dae |
-| `POST` | `/service/actions/reload` | 执行 `dae reload` |
+| `POST` | `/service/actions/reload` | 运行中按 systemd MainPID 执行 `dae reload`；未运行则返回延后状态 |
 | `POST` | `/service/actions/suspend` | 执行 `dae suspend` |
 | `GET` | `/logs?limit=200` | 最近 1–500 条 journald 日志 |
 | `GET` | `/diagnostics/sysdump` | 执行 dae sysdump，并以 `application/gzip` 下载生成的归档 |

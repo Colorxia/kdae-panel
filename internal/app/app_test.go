@@ -360,6 +360,51 @@ func TestServiceRestartAction(t *testing.T) {
 	}
 }
 
+func TestServiceStartAndStopPersistBootState(t *testing.T) {
+	hostService := &stubHostService{}
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{Dae: stubDaeService{}, Host: hostService},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, action := range []string{"start", "stop"} {
+		response := httptest.NewRecorder()
+		application.Handler().ServeHTTP(response, httptest.NewRequest(
+			http.MethodPost, "/api/v1/service/actions/"+action, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s 状态码 = %d，响应 = %s", action, response.Code, response.Body.String())
+		}
+	}
+	want := []host.Action{host.ActionEnableNow, host.ActionDisableNow}
+	if !reflect.DeepEqual(hostService.actions, want) {
+		t.Fatalf("服务动作 = %v，期望 %v", hostService.actions, want)
+	}
+}
+
+func TestAdoptRunningServiceBootState(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	active := &stubHostService{status: host.Status{ActiveState: "active", UnitFileState: "disabled"}}
+	adoptRunningServiceBootState(active, logger)
+	if want := []host.Action{host.ActionEnable}; !reflect.DeepEqual(active.actions, want) {
+		t.Fatalf("运行中的旧服务迁移动作 = %v，期望 %v", active.actions, want)
+	}
+
+	for _, status := range []host.Status{
+		{ActiveState: "inactive", UnitFileState: "disabled"},
+		{ActiveState: "active", UnitFileState: "enabled"},
+	} {
+		service := &stubHostService{status: status}
+		adoptRunningServiceBootState(service, logger)
+		if len(service.actions) != 0 {
+			t.Fatalf("状态 %+v 不应被迁移，实际动作 %v", status, service.actions)
+		}
+	}
+}
+
 func TestServiceSuspendStateClearsAfterReload(t *testing.T) {
 	hostService := &stubHostService{status: host.Status{
 		Name:        "dae.service",
@@ -422,6 +467,28 @@ func TestServiceSuspendStateClearsAfterReload(t *testing.T) {
 		httptest.NewRequest(http.MethodPost, "/api/v1/service/actions/suspend", nil))
 	hostService.status.MainPID = 43
 	assertSuspended(false)
+}
+
+func TestServiceReloadDefersWhenDaeIsNotRunning(t *testing.T) {
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{
+			Dae:  stubDaeService{err: configstore.ErrReloadDeferred},
+			Host: &stubHostService{},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	application.Handler().ServeHTTP(response,
+		httptest.NewRequest(http.MethodPost, "/api/v1/service/actions/reload", nil))
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `"deferred":true`) ||
+		!strings.Contains(response.Body.String(), "下次启动") {
+		t.Fatalf("延后重载响应异常: status=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func TestServiceStartFailureExplainsMissingGeoClassification(t *testing.T) {

@@ -28,21 +28,20 @@ type Manager struct {
 }
 
 type Status struct {
-	Name                string `json:"name"`
-	Description         string `json:"description,omitempty"`
-	LoadState           string `json:"loadState,omitempty"`
-	ActiveState         string `json:"activeState,omitempty"`
-	SubState            string `json:"subState,omitempty"`
-	UnitFileState       string `json:"unitFileState,omitempty"`
-	MainPID             int    `json:"mainPid,omitempty"`
-	ExecMainStatus      int    `json:"execMainStatus,omitempty"`
-	ActiveSince         string `json:"activeSince,omitempty"`
-	StartedAt           string `json:"startedAt,omitempty"`
-	MemoryBytes         uint64 `json:"memoryBytes,omitempty"`
-	CPUUsageNanoseconds uint64 `json:"cpuUsageNanoseconds,omitempty"`
-	Tasks               uint64 `json:"tasks,omitempty"`
-	Restarts            uint64 `json:"restarts,omitempty"`
-	UnitPath            string `json:"unitPath,omitempty"`
+	Name           string `json:"name"`
+	Description    string `json:"description,omitempty"`
+	LoadState      string `json:"loadState,omitempty"`
+	ActiveState    string `json:"activeState,omitempty"`
+	SubState       string `json:"subState,omitempty"`
+	UnitFileState  string `json:"unitFileState,omitempty"`
+	MainPID        int    `json:"mainPid,omitempty"`
+	ExecMainStatus int    `json:"execMainStatus,omitempty"`
+	ActiveSince    string `json:"activeSince,omitempty"`
+	StartedAt      string `json:"startedAt,omitempty"`
+	MemoryBytes    uint64 `json:"memoryBytes,omitempty"`
+	Tasks          uint64 `json:"tasks,omitempty"`
+	Restarts       uint64 `json:"restarts,omitempty"`
+	UnitPath       string `json:"unitPath,omitempty"`
 	// ExecStartPath 是单元实际启动的可执行文件。安装新版本时必须替换这个路径，
 	// 否则会出现"替换成功但服务仍在跑旧二进制"的静默失败。
 	ExecStartPath string `json:"execStartPath,omitempty"`
@@ -71,6 +70,10 @@ const (
 	// 对外的服务控制 API 仍只开放 start/stop/restart。
 	ActionEnable  Action = "enable"
 	ActionDisable Action = "disable"
+	// EnableNow/DisableNow 只用于用户主动控制服务：把当前运行状态同步成
+	// systemd 的开机状态。安装与版本切换仍使用普通 start/stop，避免改写原策略。
+	ActionEnableNow  Action = "enable-now"
+	ActionDisableNow Action = "disable-now"
 	// ActionDaemonReload 让 systemd 重新读取单元文件。首次安装写入 dae.service
 	// 之后必须执行它，否则 systemd 看不到新单元。它不作用于具体服务，
 	// 因此不接受服务名参数。
@@ -122,7 +125,6 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 		"ActiveEnterTimestamp",
 		"ExecMainStartTimestamp",
 		"MemoryCurrent",
-		"CPUUsageNSec",
 		"TasksCurrent",
 		"NRestarts",
 		"FragmentPath",
@@ -135,23 +137,22 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	}
 	values := parseProperties(result.Stdout)
 	status := Status{
-		Name:                valueOr(values, "Id", m.serviceName),
-		Description:         values["Description"],
-		LoadState:           values["LoadState"],
-		ActiveState:         values["ActiveState"],
-		SubState:            values["SubState"],
-		UnitFileState:       values["UnitFileState"],
-		MainPID:             parseInt(values["MainPID"]),
-		ExecMainStatus:      parseInt(values["ExecMainStatus"]),
-		ActiveSince:         values["ActiveEnterTimestamp"],
-		StartedAt:           values["ExecMainStartTimestamp"],
-		MemoryBytes:         parseUint(values["MemoryCurrent"]),
-		CPUUsageNanoseconds: parseUint(values["CPUUsageNSec"]),
-		Tasks:               parseUint(values["TasksCurrent"]),
-		Restarts:            parseUint(values["NRestarts"]),
-		UnitPath:            values["FragmentPath"],
-		ExecStartPath:       parseExecStartPath(values["ExecStart"]),
-		Environment:         parseEnvironment(values["Environment"]),
+		Name:           valueOr(values, "Id", m.serviceName),
+		Description:    values["Description"],
+		LoadState:      values["LoadState"],
+		ActiveState:    values["ActiveState"],
+		SubState:       values["SubState"],
+		UnitFileState:  values["UnitFileState"],
+		MainPID:        parseInt(values["MainPID"]),
+		ExecMainStatus: parseInt(values["ExecMainStatus"]),
+		ActiveSince:    normalizeSystemdTimestamp(values["ActiveEnterTimestamp"]),
+		StartedAt:      normalizeSystemdTimestamp(values["ExecMainStartTimestamp"]),
+		MemoryBytes:    parseUint(values["MemoryCurrent"]),
+		Tasks:          parseUint(values["TasksCurrent"]),
+		Restarts:       parseUint(values["NRestarts"]),
+		UnitPath:       values["FragmentPath"],
+		ExecStartPath:  parseExecStartPath(values["ExecStart"]),
+		Environment:    parseEnvironment(values["Environment"]),
 	}
 	return status, nil
 }
@@ -192,8 +193,14 @@ func parseExecStartPath(value string) string {
 }
 
 func (m *Manager) Action(ctx context.Context, action Action) error {
+	var args []string
 	switch action {
 	case ActionStart, ActionStop, ActionRestart, ActionEnable, ActionDisable:
+		args = []string{string(action), m.serviceName}
+	case ActionEnableNow:
+		args = []string{"enable", "--now", m.serviceName}
+	case ActionDisableNow:
+		args = []string{"disable", "--now", m.serviceName}
 	case ActionDaemonReload:
 		// daemon-reload 是全局动作，不带服务名。
 		result, err := m.runFor(ctx, actionTimeout, m.systemctl, "daemon-reload")
@@ -204,11 +211,32 @@ func (m *Manager) Action(ctx context.Context, action Action) error {
 	default:
 		return fmt.Errorf("不支持的服务动作 %q", action)
 	}
-	result, err := m.runFor(ctx, actionTimeout, m.systemctl, string(action), m.serviceName)
+	result, err := m.runFor(ctx, actionTimeout, m.systemctl, args...)
 	if err != nil {
-		return fmt.Errorf("执行 systemd %s: %s", action, command.Describe(err, result))
+		return fmt.Errorf("执行 systemd %s: %s", strings.Join(args[:len(args)-1], " "), command.Describe(err, result))
 	}
 	return nil
+}
+
+// normalizeSystemdTimestamp 把 systemd 的本地化时间转成浏览器可可靠解析的 RFC 3339。
+// 直接把 "CST" 交给浏览器会产生歧义：它既可能指中国标准时间，也可能指北美中部时间。
+func normalizeSystemdTimestamp(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "n/a" {
+		return ""
+	}
+	for _, layout := range []string{
+		"Mon 2006-01-02 15:04:05 MST",
+		"Mon 2006-01-02 15:04:05 -07",
+		"Mon 2006-01-02 15:04:05 -0700",
+		"Mon 2006-01-02 15:04:05 -07:00",
+	} {
+		parsed, err := time.ParseInLocation(layout, value, time.Local)
+		if err == nil {
+			return parsed.Format(time.RFC3339)
+		}
+	}
+	return ""
 }
 
 // PanelUnit 是面板自身的 systemd 单元名。
