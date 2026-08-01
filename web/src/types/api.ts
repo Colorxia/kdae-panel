@@ -334,6 +334,21 @@ export interface LatencyResult {
   error?: string
 }
 
+export interface SubscriptionNode {
+  name: string
+  protocol?: string
+  host?: string
+  matches: number
+}
+
+export interface SubscriptionNodeSource {
+  tag: string
+  nodes: SubscriptionNode[]
+  cachedAt: string
+  skipped?: number
+  problem?: string
+}
+
 export interface LogEntry {
   timestamp: string
   priority: number

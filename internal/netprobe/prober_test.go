@@ -27,7 +27,8 @@ func TestProbeMeasuresReachableTarget(t *testing.T) {
 	}()
 
 	port := listener.Addr().(*net.TCPAddr).Port
-	results, err := New().Probe(context.Background(), []Target{{Host: "127.0.0.1", Port: port}})
+	prober := newWithLimits((&net.Dialer{}).DialContext, defaultTimeout, defaultConcurrency)
+	results, err := prober.Probe(context.Background(), []Target{{Host: "127.0.0.1", Port: port}})
 	if err != nil {
 		t.Fatalf("探测失败: %v", err)
 	}
@@ -44,7 +45,8 @@ func TestProbeReportsUnreachableTarget(t *testing.T) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	_ = listener.Close()
 
-	results, err := New().Probe(context.Background(), []Target{{Host: "127.0.0.1", Port: port}})
+	prober := newWithLimits((&net.Dialer{}).DialContext, defaultTimeout, defaultConcurrency)
+	results, err := prober.Probe(context.Background(), []Target{{Host: "127.0.0.1", Port: port}})
 	if err != nil {
 		t.Fatalf("探测失败: %v", err)
 	}
@@ -99,7 +101,7 @@ func TestProbeIsolatesInvalidTargets(t *testing.T) {
 		{Host: strings.Repeat("a", 254), Port: 443},
 		{Host: " example.com", Port: 443},
 	}
-	targets := append([]Target{{Host: "example.com", Port: 443}}, invalid...)
+	targets := append([]Target{{Host: "192.0.2.1", Port: 443}}, invalid...)
 	results, err := prober.Probe(context.Background(), targets)
 	if err != nil {
 		t.Fatalf("单个非法目标不应让整批失败: %v", err)
@@ -117,6 +119,31 @@ func TestProbeIsolatesInvalidTargets(t *testing.T) {
 	}
 	if dialed.Load() != 1 {
 		t.Fatalf("只应对合法目标发起拨号，实际 %d 次", dialed.Load())
+	}
+}
+
+func TestProbeExcludesResolutionTimeAndSamplesThreeTimes(t *testing.T) {
+	var dialed atomic.Int64
+	prober := newWithLimits(func(_ context.Context, _, _ string) (net.Conn, error) {
+		dialed.Add(1)
+		client, server := net.Pipe()
+		_ = server.Close()
+		return client, nil
+	}, time.Second, defaultConcurrency)
+	prober.resolve = func(_ context.Context, _ string) ([]net.IPAddr, error) {
+		time.Sleep(100 * time.Millisecond)
+		return []net.IPAddr{{IP: net.ParseIP("192.0.2.1")}}, nil
+	}
+
+	results, err := prober.Probe(context.Background(), []Target{{Host: "node.example", Port: 443}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !results[0].Reachable || results[0].LatencyMs >= 50 {
+		t.Fatalf("解析时间不应计入入口延迟: %+v", results[0])
+	}
+	if dialed.Load() != probeAttempts {
+		t.Fatalf("成功节点拨号次数 = %d,期望 %d", dialed.Load(), probeAttempts)
 	}
 }
 

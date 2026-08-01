@@ -1518,6 +1518,19 @@ pre,
   gap: 10px;
 }
 
+.group-subscription-node-picker {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.group-subscription-node-status {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .filter-exclude,
 .filter-exclude-placeholder {
   min-width: 72px;

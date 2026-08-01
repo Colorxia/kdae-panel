@@ -257,8 +257,8 @@ const nodeColumns: DataTableColumns<NodeRow> = [
   },
   {
     title: () => h(NTooltip, null, {
-      trigger: () => h('span', { class: 'column-hint' }, '直连延迟'),
-      default: () => '面板主机到该服务器的 TCP 握手耗时，域名目标包含解析时间。这不是 dae 的健康检查结果，也不是 dae 选路所用的延迟；dae 开启 wan_interface 时会劫持本机流量，此时该连接同样由 dae 按路由规则转发。',
+      trigger: () => h('span', { class: 'column-hint' }, '节点入口延迟'),
+      default: () => '面板先解析域名，再用 dae 绕行标记直连服务器端口；显示三次 TCP 握手的中位数。它不是代理协议握手，也不是 dae 选路使用的健康检查延迟。',
     }),
     key: 'latency',
     width: 110,
@@ -283,7 +283,7 @@ const nodeColumns: DataTableColumns<NodeRow> = [
       <NSpace size="small">
         <NTag size="small" :bordered="false">{{ nodes.length }} 个</NTag>
         <NButton size="small" secondary :loading="probing" :disabled="nodes.length === 0" @click="probeLatency">
-          <template #icon><NIcon><FlashOutline /></NIcon></template>测试直连延迟
+          <template #icon><NIcon><FlashOutline /></NIcon></template>测试入口延迟
         </NButton>
         <NButton v-if="anonymousNodes.length" size="small" secondary @click="labelAnonymousNodes">
           <template #icon><NIcon><PricetagOutline /></NIcon></template>补全标签

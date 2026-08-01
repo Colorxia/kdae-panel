@@ -1,11 +1,5 @@
-// Package netprobe 从面板主机对节点服务器做 TCP 握手延迟探测。
-// 它不依赖 dae 的任何内部接口,与 dae 依据 tcp_check_url/udp_check_dns
-// 得出的健康状态无关。
-//
-// 关于结果的含义有两点必须如实告知使用者:域名目标的耗时包含名称解析;
-// 且 dae 配置 wan_interface 时会劫持本机进程的出站流量,此时探测连接同样
-// 走 dae 的转发平面(只有 dae 自身的流量凭 so_mark_from_dae 豁免),测到的
-// 未必是物理直连。
+// Package netprobe 从面板主机直连节点服务器,测量 TCP 握手延迟。
+// 它不依赖 dae 的内部健康检查,也不进行代理协议握手。
 //
 // 目标地址来自管理员自己的 dae 配置,可能合法地指向内网或回环地址
 // (example.dae 就包含 socks5://localhost:1080),因此这里不按地址段过滤,
@@ -17,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +22,7 @@ const (
 	MaxTargets         = 64
 	defaultTimeout     = 4 * time.Second
 	defaultConcurrency = 16
+	probeAttempts      = 3
 )
 
 type Target struct {
@@ -44,12 +40,13 @@ type Result struct {
 
 type Prober struct {
 	dial      func(ctx context.Context, network, address string) (net.Conn, error)
+	resolve   func(ctx context.Context, host string) ([]net.IPAddr, error)
 	timeout   time.Duration
 	semaphore chan struct{}
 }
 
 func New() *Prober {
-	return newWithLimits((&net.Dialer{}).DialContext, defaultTimeout, defaultConcurrency)
+	return newWithLimits(markedDialContext, defaultTimeout, defaultConcurrency)
 }
 
 // newWithLimits 让测试可以收紧超时与并发,同时保证 semaphore 始终有容量。
@@ -60,7 +57,12 @@ func newWithLimits(dial func(context.Context, string, string) (net.Conn, error),
 	if concurrency <= 0 {
 		concurrency = defaultConcurrency
 	}
-	return &Prober{dial: dial, timeout: timeout, semaphore: make(chan struct{}, concurrency)}
+	return &Prober{
+		dial:      dial,
+		resolve:   resolveHost,
+		timeout:   timeout,
+		semaphore: make(chan struct{}, concurrency),
+	}
 }
 
 func (t Target) validate() error {
@@ -112,20 +114,94 @@ func (p *Prober) probeOne(ctx context.Context, target Target) Result {
 		return result
 	}
 
-	dialCtx, cancel := context.WithTimeout(ctx, p.timeout)
+	probeCtx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 
-	startedAt := time.Now()
-	conn, err := p.dial(dialCtx, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
-	elapsed := time.Since(startedAt)
+	addresses, err := p.resolve(probeCtx, target.Host)
 	if err != nil {
-		result.Error = describeDialError(err)
+		result.Error = "解析节点地址: " + describeDialError(err)
 		return result
 	}
-	_ = conn.Close()
+
+	// 很多旁路由没有 IPv6 默认路由。优先 IPv4 可避免一个不可达的 AAAA 记录
+	// 耗尽整次探测预算,同时仍为纯 IPv6 节点保留候选地址。
+	sort.SliceStable(addresses, func(left, right int) bool {
+		return addresses[left].IP.To4() != nil && addresses[right].IP.To4() == nil
+	})
+
+	var samples []float64
+	selectedAddress := ""
+	for attempt := 0; attempt < probeAttempts; attempt++ {
+		if err := probeCtx.Err(); err != nil {
+			if len(samples) == 0 {
+				result.Error = describeDialError(err)
+			}
+			break
+		}
+		if selectedAddress != "" {
+			latency, err := p.dialOnce(probeCtx, selectedAddress, target.Port)
+			if err != nil {
+				if len(samples) == 0 {
+					result.Error = describeDialError(err)
+				}
+				break
+			}
+			samples = append(samples, latency)
+			continue
+		}
+
+		var lastErr error
+		for _, address := range addresses {
+			candidate := address.String()
+			latency, err := p.dialOnce(probeCtx, candidate, target.Port)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			selectedAddress = candidate
+			samples = append(samples, latency)
+			break
+		}
+		if selectedAddress == "" {
+			result.Error = describeDialError(lastErr)
+			break
+		}
+	}
+	if len(samples) == 0 {
+		if result.Error == "" {
+			result.Error = "节点没有可连接的 IP 地址"
+		}
+		return result
+	}
+	sort.Float64s(samples)
 	result.Reachable = true
-	result.LatencyMs = float64(elapsed.Microseconds()) / 1000
+	result.LatencyMs = samples[len(samples)/2]
 	return result
+}
+
+func (p *Prober) dialOnce(ctx context.Context, host string, port int) (float64, error) {
+	startedAt := time.Now()
+	conn, err := p.dial(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	elapsed := time.Since(startedAt)
+	if err != nil {
+		return 0, err
+	}
+	_ = conn.Close()
+	return float64(elapsed.Microseconds()) / 1000, nil
+}
+
+func resolveHost(ctx context.Context, host string) ([]net.IPAddr, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		return []net.IPAddr{{IP: ip}}, nil
+	}
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	if len(addresses) == 0 {
+		return nil, errors.New("域名没有 IP 地址")
+	}
+	return addresses, nil
 }
 
 func describeDialError(err error) string {
