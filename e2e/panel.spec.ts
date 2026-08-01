@@ -690,7 +690,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
             binaryPath: '/usr/bin/dae', platform: 'linux-amd64', ready: true, present: true,
             version: 'dae version v2.0.0',
             managed: { source: 'official', ref: 'v2.0.0', label: 'v2.0.0', installedAt: '2026-07-30T00:00:00Z', sha256: 'e2e' },
-            rollbackAvailable: false, serviceActive: true,
+            rollbackAvailable: true, serviceActive: true,
           },
           job: { phase: 'idle' },
         }),
@@ -705,6 +705,21 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
       }] }),
     }))
     await page.goto('/versions')
+    const versionActions = page.locator('.version-toolbar-actions')
+    const refreshAction = versionActions.getByRole('button', { name: '刷新' })
+    const rollbackAction = versionActions.getByRole('button', { name: '回滚上一版' })
+    const uninstallAction = versionActions.getByRole('button', { name: '卸载 dae' })
+    await expect(refreshAction).toBeVisible()
+    await expect(rollbackAction).toBeVisible()
+    await expect(uninstallAction).toBeVisible()
+    const actionBoxes = await Promise.all([
+      refreshAction.boundingBox(),
+      rollbackAction.boundingBox(),
+      uninstallAction.boundingBox(),
+    ])
+    expect(actionBoxes.every((box) => box !== null)).toBe(true)
+    const actionRows = actionBoxes.map((box) => box!.y)
+    expect(Math.max(...actionRows) - Math.min(...actionRows)).toBeLessThanOrEqual(1)
     const mobileVersions = page.getByTestId('mobile-version-list')
     await expect(mobileVersions).toBeVisible()
     await expect(mobileVersions.getByText('已下载', { exact: true })).toBeVisible()

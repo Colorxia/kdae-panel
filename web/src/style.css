@@ -1632,6 +1632,18 @@ pre,
     width: 100%;
   }
 
+  .page-toolbar > .version-toolbar-actions {
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: 6px !important;
+  }
+
+  .version-toolbar-actions .n-button {
+    min-width: 0;
+    padding-inline: 6px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
   .page-toolbar .n-button,
   .mobile-action-row .n-button,
   .mobile-save-bar .n-button {
