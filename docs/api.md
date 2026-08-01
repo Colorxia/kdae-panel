@@ -103,7 +103,9 @@ X-CSRF-Token: <csrfToken>
 
 `source` 只接受 `official` 与 `kdae` 两个枚举值，仓库地址在代码中写死，不接受外部指定。`ref` 对官方来源是发布 tag，对 kdae 是构建编号。`GET /dae/versions` 另接受 `limit` 参数（1–100，默认 30），超出范围返回 `400 invalid_limit`。
 
-版本响应在上游字段之外附带 `cached`、`cachedAt`、`cachedBytes`；只存在于本机、不在当前上游清单中的版本还会带 `cachedOnly`。已过期的 kdae 构建只要本地缓存完整仍然可切换；上游暂时不可访问时，只要存在缓存也会返回本地版本。缓存按来源、版本与本机 CPU 平台隔离，真正安装前会重新计算二进制 SHA-256，而不是只信任缓存索引。
+安装状态分别返回 `architecture`（不含优化等级的 CPU 架构）、`preferredPlatform`（本机首选发布资产）和 `managed.platform`（当前面板账本记录的实际安装资产）。兼容字段 `platform` 仍等于 `preferredPlatform`。上游缺少首选资产时会回退到更保守的构建，因此三者不能混用；旧账本没有实际资产字段时 `managed.platform` 省略，`drifted` 为真时该记录也不再代表磁盘上的文件，客户端都应显示未知而不是用首选值代替。
+
+版本响应在上游字段之外附带 `cached`、`cachedAt`、`cachedBytes`；只存在于本机、不在当前上游清单中的版本还会带 `cachedOnly`。已过期的 kdae 构建只要本地缓存完整仍然可切换；上游暂时不可访问时，只要存在缓存也会返回本地版本。缓存按来源、版本与本机首选构建隔离，并额外记录下载时实际命中的构建变体；真正安装前会重新计算二进制 SHA-256，而不是只信任缓存索引。
 
 GitHub JSON 元数据另有 10 分钟进程内缓存；同 URL 的并发请求只访问上游一次，刷新失败时继续使用最近成功结果。凭据管理端点如下，任何响应都只返回 `configured` 与 `source`，不会返回 Token：
 

@@ -552,6 +552,8 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
           status: {
             binaryPath: '/usr/bin/dae',
             platform: 'x86_64_v3_avx2',
+            architecture: 'x86_64',
+            preferredPlatform: 'x86_64_v3_avx2',
             ready: true,
             present: true,
             version: applying ? 'dae version v1.9.0' : 'dae version v2.0.0',
@@ -559,6 +561,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
               source: 'official',
               ref: 'v2.0.0',
               label: 'v2.0.0',
+              platform: 'x86_64_v2_sse',
               installedAt: '2026-07-30T00:00:00Z',
               sha256: 'e2e',
             },
@@ -613,6 +616,10 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
 
     applying = false
     await page.reload()
+    const installCard = page.locator('.n-card', { hasText: '当前安装' }).first()
+    await expect(installCard.getByText('x86_64', { exact: true })).toBeVisible()
+    await expect(installCard.getByText('x86_64_v3_avx2', { exact: true })).toBeVisible()
+    await expect(installCard.getByText('x86_64_v2_sse', { exact: true })).toBeVisible()
     const row = page.locator('tr', { hasText: 'v1.9.0' })
     await expect(row.getByText('已下载')).toBeVisible()
     await capture(page, 'versions.png', 1600, 1120)

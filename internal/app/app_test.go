@@ -832,7 +832,7 @@ func (s *stubInstallService) Acquire(_ context.Context, _ upstream.Source, _, _ 
 	if s.release != nil {
 		<-s.release
 	}
-	bundle := upstream.Bundle{Binary: s.binary}
+	bundle := upstream.Bundle{Platform: "x86_64", Binary: s.binary}
 	if requireBundle {
 		bundle.Unit = []byte("dae.service")
 	}
@@ -849,7 +849,7 @@ func (s *stubInstallService) FirstInstall(_ context.Context, _ upstream.Bundle, 
 	return s.status, s.err
 }
 
-func (s *stubInstallService) Install(_ context.Context, _ []byte, source upstream.Source, ref, _ string) (daeinstall.Status, error) {
+func (s *stubInstallService) Install(_ context.Context, _ []byte, source upstream.Source, ref, _, _ string) (daeinstall.Status, error) {
 	s.record(string(source) + ":" + ref)
 	return s.status, s.err
 }

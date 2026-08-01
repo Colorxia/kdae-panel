@@ -115,6 +115,7 @@ export interface InstalledState {
   source?: UpstreamSource
   ref?: string
   label?: string
+  platform?: string
   version?: string
   installedAt?: string
   sha256?: string
@@ -122,7 +123,10 @@ export interface InstalledState {
 
 export interface InstallStatus {
   binaryPath?: string
+  /** @deprecated 兼容旧客户端的首选构建标识。 */
   platform: string
+  architecture?: string
+  preferredPlatform?: string
   ready: boolean
   present: boolean
   version?: string
