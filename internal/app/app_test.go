@@ -2058,6 +2058,52 @@ func TestDaeInstallRequiresAuthentication(t *testing.T) {
 	}
 }
 
+func TestDiagnosticReportRequiresAuthentication(t *testing.T) {
+	session := auth.Session{
+		Token: "session", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour),
+		User: auth.User{ID: 1, Username: "admin"},
+	}
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{
+			Dae:            stubDaeService{report: dae.Report{Available: true}},
+			Authentication: &stubAuthenticationService{initialized: true, session: session},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	anonymous := httptest.NewRecorder()
+	application.Handler().ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics/report", nil))
+	if anonymous.Code != http.StatusUnauthorized {
+		t.Fatalf("未登录状态码 = %d", anonymous.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics/report", nil)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: session.Token})
+	response := httptest.NewRecorder()
+	application.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("诊断报告状态码 = %d，响应 = %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Overall string `json:"overall"`
+		Counts  struct {
+			OK, Warning, Error, Unknown int
+		} `json:"counts"`
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	total := payload.Counts.OK + payload.Counts.Warning + payload.Counts.Error + payload.Counts.Unknown
+	if payload.Overall == "" || len(payload.Items) != 9 || total != len(payload.Items) {
+		t.Fatalf("诊断报告结构异常: overall=%q counts=%+v items=%d", payload.Overall, payload.Counts, len(payload.Items))
+	}
+}
+
 func TestLatencyProbeRequiresAuthentication(t *testing.T) {
 	session := auth.Session{Token: "session", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour), User: auth.User{ID: 1, Username: "admin"}}
 	prober := &stubProbeService{}

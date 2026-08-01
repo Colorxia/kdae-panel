@@ -25,6 +25,25 @@ export interface DaeReport {
   detectedAt: string
 }
 
+export type DiagnosticLevel = 'ok' | 'warning' | 'error' | 'unknown'
+
+export interface DiagnosticItem {
+  id: string
+  category: string
+  title: string
+  level: DiagnosticLevel
+  summary: string
+  details?: string[]
+  suggestion?: string
+}
+
+export interface DiagnosticReport {
+  generatedAt: string
+  overall: DiagnosticLevel
+  counts: Record<DiagnosticLevel, number>
+  items: DiagnosticItem[]
+}
+
 export interface OutlineElement {
   name?: string
   mapping?: string

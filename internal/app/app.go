@@ -23,6 +23,7 @@ import (
 	"github.com/tuoro/kdae-panel/internal/configstore"
 	"github.com/tuoro/kdae-panel/internal/dae"
 	"github.com/tuoro/kdae-panel/internal/daeinstall"
+	"github.com/tuoro/kdae-panel/internal/diagnostics"
 	"github.com/tuoro/kdae-panel/internal/geodata"
 	"github.com/tuoro/kdae-panel/internal/githubauth"
 	"github.com/tuoro/kdae-panel/internal/host"
@@ -315,6 +316,13 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 	registerScheduleRoutes(router, "/api/v1/schedule/geo", geoScheduleService)
 	registerUpstreamRoutes(router, dependencies.Install, operations, logger)
 	registerGeoRoutes(router, geo, geoSources)
+	diagnosticCollector := diagnostics.New(diagnostics.Options{
+		Dae: dependencies.Dae, Configuration: dependencies.Configuration,
+		Host: dependencies.Host, Geo: dependencies.Geo,
+	})
+	router.HandleFunc("GET /api/v1/diagnostics/report", func(writer http.ResponseWriter, request *http.Request) {
+		writeJSON(writer, http.StatusOK, diagnosticCollector.Report(request.Context()))
+	})
 	registerAuthenticationRoutes(router, dependencies.Authentication, cfg.SecureCookie, cfg.BootstrapToken, cfg.SetupURLFile, proxyTrust, logger)
 	apiNotFound := func(writer http.ResponseWriter, _ *http.Request) {
 		writeAPIError(writer, http.StatusNotFound, "api_not_found", "API 路径不存在")
