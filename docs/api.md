@@ -42,6 +42,7 @@ X-CSRF-Token: <csrfToken>
 | `POST` | `/config/backups` | 将当前入口配置保存为带名称、备注的手动存档 |
 | `PUT` | `/config/backups/{id}` | 修改存档名称和备注 |
 | `DELETE` | `/config/backups/{id}` | 删除存档内容及其元数据 |
+| `GET` | `/config/backups/{id}/export` | 以 `.dae` 文件导出存档原始内容 |
 | `GET` | `/config/backups/{id}/preview` | 对比存档与当前配置，并用当前 dae 预先校验 |
 | `POST` | `/config/backups/{id}/restore` | 恢复指定备份或存档 |
 
@@ -54,7 +55,7 @@ X-CSRF-Token: <csrfToken>
 }
 ```
 
-`name` 必填，去除首尾空白后最多 80 个字符；`note` 可选，最多 500 个字符。没有名称和备注的旧备份在前端显示为“自动备份”，也可以通过编辑接口补充。备份内容仍是独立的 `.dae` 文件，名称和备注保存在同编号的 `.meta.json` 文件中；删除存档会同时删除两者。
+`name` 必填，去除首尾空白后最多 80 个字符；`note` 可选，最多 500 个字符。没有名称和备注的旧备份在前端显示为“自动备份”，也可以通过编辑接口补充。备份内容仍是独立的 `.dae` 文件，名称和备注保存在同编号的 `.meta.json` 文件中；导出保持配置原始字节不变，不执行校验或重载；删除存档会同时删除内容与元数据，前端支持多选后批量调用删除接口。
 
 保存示例：
 
