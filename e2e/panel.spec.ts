@@ -80,7 +80,12 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
   })
 
   await test.step('概览呈现 systemd 桩给出的健康状态', async () => {
-    await expect(page.locator('.metric-card').first()).toContainText('运行中')
+    const metrics = page.locator('.metric-card')
+    await expect(metrics).toHaveCount(3)
+    await expect(metrics.first()).toContainText('运行中')
+    await expectCardsAligned(metrics)
+    await expect(page.getByText('本次运行时长', { exact: true })).toBeVisible()
+    await expect(page.getByText('随系统启动', { exact: true })).toBeVisible()
     await expect(page.getByText('dae version v1.0.6')).toBeVisible()
     await expectCardsAligned(page.locator('.equal-height-grid .panel-card'))
   })

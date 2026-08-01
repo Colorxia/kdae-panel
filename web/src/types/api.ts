@@ -54,7 +54,6 @@ export interface ServiceStatus {
   activeSince?: string
   startedAt?: string
   memoryBytes?: number
-  cpuUsageNanoseconds?: number
   tasks?: number
   restarts?: number
   unitPath?: string
@@ -79,6 +78,7 @@ export interface ConfigSaveResult {
   hash: string
   backupId?: string
   applied: boolean
+  deferred?: boolean
   savedAt: string
   rolledBack: boolean
 }
