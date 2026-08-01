@@ -93,6 +93,25 @@ export interface ConfigBackup {
   note?: string
 }
 
+export interface ConfigDiffLine {
+  kind: 'context' | 'add' | 'remove' | 'skip'
+  oldLine?: number
+  newLine?: number
+  text: string
+  skipCount?: number
+}
+
+export interface ConfigBackupPreview {
+  backup: ConfigBackup
+  currentHash: string
+  currentPresent: boolean
+  same: boolean
+  valid: boolean
+  validationError?: string
+  diff: ConfigDiffLine[]
+  diffTruncated?: boolean
+}
+
 export type UpstreamSource = 'official' | 'kdae'
 
 export interface UpstreamVersion {

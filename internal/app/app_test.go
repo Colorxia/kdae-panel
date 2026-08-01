@@ -73,6 +73,10 @@ func (s stubConfigurationService) DeleteBackup(_ context.Context, _ string) erro
 	return nil
 }
 
+func (s stubConfigurationService) PreviewBackup(_ context.Context, _ string) (configstore.BackupPreview, error) {
+	return configstore.BackupPreview{Valid: true, CurrentHash: s.document.Hash}, nil
+}
+
 func (s stubConfigurationService) Restore(_ context.Context, _, _ string, _ bool) (configstore.SaveResult, error) {
 	return configstore.SaveResult{}, nil
 }
@@ -322,6 +326,20 @@ func TestConfigurationBackupMetadataRoutes(t *testing.T) {
 	application.Handler().ServeHTTP(updated, update)
 	if updated.Code != http.StatusOK || !strings.Contains(updated.Body.String(), "日常配置") {
 		t.Fatalf("编辑存档响应异常: status=%d body=%s", updated.Code, updated.Body.String())
+	}
+
+	previewed := httptest.NewRecorder()
+	application.Handler().ServeHTTP(previewed, httptest.NewRequest(
+		http.MethodGet, "/api/v1/config/backups/"+url.PathEscape(backup.ID)+"/preview", nil))
+	if previewed.Code != http.StatusOK {
+		t.Fatalf("预览存档状态码 = %d，响应 = %s", previewed.Code, previewed.Body.String())
+	}
+	var preview configstore.BackupPreview
+	if err := json.NewDecoder(previewed.Body).Decode(&preview); err != nil {
+		t.Fatal(err)
+	}
+	if !preview.Valid || !preview.Same || preview.CurrentHash == "" || preview.Backup.ID != backup.ID {
+		t.Fatalf("预览存档响应异常: %+v", preview)
 	}
 
 	deleted := httptest.NewRecorder()

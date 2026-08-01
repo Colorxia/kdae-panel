@@ -27,6 +27,7 @@
   /* 语义色：与 naive-ui 的 success/warning 呼应，用于自绘元素 */
   --ok: #4ade80;
   --warn: #fbbf24;
+  --danger: #f87171;
 
   /* 分隔线：两档足够，更多档位肉眼无法区分 */
   --border: rgba(148, 163, 184, 0.12);
@@ -445,6 +446,80 @@ textarea {
 
 .backup-editor-modal {
   width: min(560px, calc(100vw - 32px));
+}
+
+.backup-diff-modal {
+  width: min(1040px, calc(100vw - 32px));
+}
+
+.backup-diff-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 14px 0 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.backup-diff {
+  max-height: min(62vh, 680px);
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-deep);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.backup-diff-line {
+  min-width: max-content;
+  display: grid;
+  grid-template-columns: 46px 46px 22px minmax(400px, 1fr);
+  padding-right: 12px;
+}
+
+.backup-diff-line code {
+  white-space: pre;
+}
+
+.backup-diff-number {
+  padding: 0 8px;
+  border-right: 1px solid var(--border-soft);
+  color: var(--text-faint);
+  text-align: right;
+  user-select: none;
+}
+
+.backup-diff-mark {
+  text-align: center;
+  user-select: none;
+}
+
+.backup-diff-add {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.backup-diff-remove {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.backup-diff-skip {
+  display: block;
+  min-width: 100%;
+  padding: 5px 12px;
+  color: var(--text-muted);
+  background: var(--bg-raised);
+  text-align: center;
+}
+
+.backup-validation-error {
+  max-height: 140px;
+  margin: 8px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
 }
 
 .backup-editor-form label {
@@ -1865,13 +1940,15 @@ pre,
   }
 
   .orchestrate-modal,
-  .backup-editor-modal {
+  .backup-editor-modal,
+  .backup-diff-modal {
     width: calc(100vw - 16px);
     max-height: calc(100dvh - 16px);
   }
 
   .orchestrate-modal > .n-card-content,
-  .backup-editor-modal > .n-card-content {
+  .backup-editor-modal > .n-card-content,
+  .backup-diff-modal > .n-card-content {
     max-height: calc(100dvh - 170px);
     overflow-y: auto;
   }
