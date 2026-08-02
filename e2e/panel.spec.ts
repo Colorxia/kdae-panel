@@ -917,9 +917,14 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
       body: JSON.stringify({
         snapshotAt: at(0),
         snapshotOk: true,
+        serviceRunning: true,
+        socketWindowSeconds: 30,
         logsOk: true,
         logLevel: 'info',
-        summary: { outboundTcp: 32, udpSockets: 1, windowEvents: 205, windowClients: 4, windowTargets: 8 },
+        summary: {
+          outboundTcp: 32, udpSockets: 1, sampledTcpPeak: 38, sampledUdpPeak: 4,
+          windowEvents: 205, windowClients: 4, windowTargets: 8,
+        },
         facets: {
           targets: [
             { id: 'api.github.com', label: 'api.github.com', count: 72 },
@@ -987,7 +992,8 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     }))
     await page.goto('/connections')
     await expect(page.getByRole('heading', { name: '连接活动', level: 2 })).toBeVisible()
-    await expect(page.locator('.connection-pulse')).toContainText('32条 dae TCP 出站')
+    await expect(page.locator('.connection-pulse')).toContainText('32当前 TCP 出站')
+    await expect(page.locator('.connection-snapshot-note')).toContainText('近 30 秒已采样峰值：TCP 38 · UDP 4')
     await expect(page.locator('.connection-facet-row', { hasText: 'api.github.com' })).toBeVisible()
     await page.locator('.connection-facet-row', { hasText: 'api.github.com' }).click()
     await expect(page.locator('tbody tr')).toHaveCount(1)
@@ -998,7 +1004,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expect(page.locator('tbody tr')).toHaveCount(2)
     await page.locator('.connection-facet-row', { hasText: '192.168.31.10' }).click()
     await page.locator('.connection-facet-modes .n-radio-button', { hasText: '目标' }).click()
-    await page.getByRole('button', { name: '实时端点 4' }).click()
+    await page.getByRole('button', { name: 'TCP 端点 4' }).click()
     await expect(page.locator('.n-drawer').getByText('203.0.113.90:8443')).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(page.locator('.n-drawer')).not.toBeVisible()
@@ -1041,7 +1047,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     expect(modeBoxes[2].y).toBeGreaterThan(modeBoxes[0].y)
     expect(Math.max(...modeBoxes.map(({ width }) => width)) - Math.min(...modeBoxes.map(({ width }) => width))).toBeLessThanOrEqual(1)
     await page.keyboard.press('Escape')
-    await page.getByRole('button', { name: '实时端点 4' }).click()
+    await page.getByRole('button', { name: 'TCP 端点 4' }).click()
     await expect(page.locator('.n-drawer').getByText('144.34.225.42:30128')).toBeVisible()
     await page.keyboard.press('Escape')
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
@@ -1050,10 +1056,14 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await page.route('**/api/v1/connections?*', (route) => route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({
-        snapshotAt: at(0), snapshotOk: true, logsOk: true, logLevel: 'warn',
-        summary: { outboundTcp: 2, udpSockets: 0, windowEvents: 0, windowClients: 0, windowTargets: 0 },
+        snapshotAt: at(0), snapshotOk: true, serviceRunning: true, socketWindowSeconds: 30,
+        logsOk: true, logLevel: 'warn',
+        summary: {
+          outboundTcp: 0, udpSockets: 0, sampledTcpPeak: 0, sampledUdpPeak: 0,
+          windowEvents: 0, windowClients: 0, windowTargets: 0,
+        },
         facets: { targets: [], clients: [], nodes: [], groups: [] },
-        endpoints: [{ address: '203.0.113.8:443', count: 2 }],
+        endpoints: [],
         entries: [],
       }),
     }))
@@ -1061,6 +1071,9 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expect(page.getByText('当前 dae 输出级别为')).toBeVisible()
     await expect(page.getByRole('button', { name: '切换为 info' })).toBeVisible()
     await expect(page.getByText('当前日志级别不记录连接建立流水')).toBeVisible()
+    await expect(page.locator('.connection-pulse').getByText('未捕获', { exact: true })).toHaveCount(3)
+    await expect(page.locator('.connection-snapshot-note')).toContainText('“未捕获”不代表没有代理流量')
+    await expect(page.getByRole('button', { name: 'TCP 端点 未捕获' })).toBeDisabled()
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
     await page.setViewportSize({ width: 1600, height: 900 })
     await page.unroute('**/api/v1/connections?*')
