@@ -359,3 +359,39 @@ export interface LogEntry {
   unit?: string
   pid?: string
 }
+
+export interface ConnectionEvent {
+  at: string
+  network: 'tcp4' | 'tcp6' | 'udp4' | 'udp6'
+  src: string
+  dst: string
+  dstAddr?: string
+  sniffed?: string
+  outbound?: string
+  dialer?: string
+  policy?: string
+  pname?: string
+  mac?: string
+  offloaded?: boolean
+  approxTime?: boolean
+}
+
+export interface ConnectionEndpoint {
+  address: string
+  count: number
+}
+
+export interface ConnectionsResponse {
+  snapshotAt: string
+  snapshotOk: boolean
+  logsOk: boolean
+  dropped?: number
+  truncated?: boolean
+  summary: {
+    outboundTcp: number
+    udpSockets: number
+    windowEvents: number
+  }
+  endpoints: ConnectionEndpoint[]
+  entries: ConnectionEvent[]
+}
