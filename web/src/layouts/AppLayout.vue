@@ -130,6 +130,7 @@ onBeforeUnmount(() => {
   <NLayout :has-sider="!mobile" class="app-shell">
     <NLayoutSider
       v-if="!mobile"
+      class="app-sidebar"
       bordered
       collapse-mode="width"
       :collapsed-width="64"
@@ -174,7 +175,7 @@ onBeforeUnmount(() => {
       </NDrawerContent>
     </NDrawer>
 
-    <NLayout>
+    <NLayout class="app-main">
       <NLayoutHeader bordered class="app-header">
         <div class="app-header-leading">
           <NButton
