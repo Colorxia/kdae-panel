@@ -140,8 +140,16 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
   })
 
   await test.step('Geo 数据是独立入口并可持久化自定义来源', async () => {
-    await page.goto('/geo')
+    const dashboardLink = page.locator('.app-sidebar a[href="/"]')
+    await page.locator('.app-sidebar a[href="/geo"]').click()
+    await expect(page).toHaveURL(/\/geo$/)
     await expect(page.getByRole('heading', { name: 'Geo 数据', level: 2 })).toBeVisible()
+    await expect(dashboardLink).not.toHaveAttribute('aria-current', 'page')
+    await expect(dashboardLink).not.toHaveClass(/router-link-active/)
+    expect(await dashboardLink.evaluate((link) => {
+      const item = link.closest('.n-menu-item-content')
+      return item ? getComputedStyle(item, '::before').transitionDuration : null
+    })).toBe('0s')
     await expect(page.getByText('geoip.dat', { exact: true })).toBeVisible()
     await expect(page.getByText('geosite.dat', { exact: true })).toBeVisible()
 
@@ -582,6 +590,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     // 先让当前配置与存档产生差异，再验证“预览 -> 恢复”的完整事务入口。
     await page.goto('/config')
     const configEditor = page.locator('.config-editor textarea')
+    await expect(configEditor).toHaveValue(/global \{/)
     await configEditor.fill(`${(await configEditor.inputValue()).trimEnd()}\n\n# E2E 恢复差异\n`)
     await page.locator('.page-toolbar').getByRole('button', { name: '保存并重载' }).click()
     await page.locator('.n-dialog').getByRole('button', { name: '保存并重载' }).click()

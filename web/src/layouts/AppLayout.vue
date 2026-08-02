@@ -48,9 +48,23 @@ const viewportWidth = ref(window.innerWidth)
 const drawerWidth = computed(() => Math.min(320, Math.round(viewportWidth.value * 0.86)))
 const collapsed = ref(window.innerWidth < 1100)
 
+interface MenuRouterLinkSlot {
+  href: string
+  isExactActive: boolean
+  navigate: (event?: MouseEvent) => Promise<unknown>
+}
+
 function menuLink(label: string, name: string, icon: typeof GridOutline): MenuOption {
   return {
-    label: () => h(RouterLink, { to: { name } }, { default: () => label }),
+    // 选中态由 NMenu 的 value 统一管理。使用 RouterLink 的 custom 模式，避免根路径
+    // 在所有子页面上保留 router-link-active，形成第二套相互矛盾的活动状态。
+    label: () => h(RouterLink, { to: { name }, custom: true }, {
+      default: ({ href, isExactActive, navigate }: MenuRouterLinkSlot) => h('a', {
+        href,
+        'aria-current': isExactActive ? 'page' : undefined,
+        onClick: navigate,
+      }, label),
+    }),
     key: name,
     icon: () => h(NIcon, null, { default: () => h(icon) }),
   }

@@ -80,6 +80,12 @@ textarea {
   min-height: 0;
 }
 
+/* 路由切换时旧菜单项应立即取消底色，避免组件库的淡出动画留下灰色残影。 */
+.app-sidebar .n-menu-item-content::before,
+.mobile-nav-drawer .n-menu-item-content::before {
+  transition: none;
+}
+
 .app-main {
   min-width: 0;
 }
