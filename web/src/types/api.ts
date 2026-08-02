@@ -399,6 +399,7 @@ export interface ConnectionsResponse {
   snapshotAt: string
   snapshotOk: boolean
   logsOk: boolean
+  logLevel?: 'error' | 'warn' | 'info' | 'debug' | 'trace'
   dropped?: number
   truncated?: boolean
   facetLimited?: boolean
