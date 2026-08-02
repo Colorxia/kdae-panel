@@ -43,15 +43,25 @@ var systemDirs = []string{
 // 顺序错了后果很实际：往低优先级目录写的更新永远不会生效，而检查却显示已就位。
 //
 // environment 是 dae 单元声明的环境变量，可以为 nil。
+// 返回值按清理后的路径去重，避免同一目录被误报为自己的遮蔽副本。
 func SearchPath(configPath string, environment map[string]string) []string {
-	paths := []string{}
+	candidates := make([]string, 0, len(systemDirs)+2)
 	if directory := environment[LocationAssetEnv]; directory != "" {
-		paths = append(paths, directory)
+		candidates = append(candidates, directory)
 	}
 	if configPath != "" {
-		paths = append(paths, filepath.Dir(configPath))
+		candidates = append(candidates, filepath.Dir(configPath))
 	}
-	return append(paths, systemDirs...)
+	candidates = append(candidates, systemDirs...)
+
+	paths := make([]string, 0, len(candidates))
+	for _, directory := range candidates {
+		directory = filepath.Clean(directory)
+		if !slices.Contains(paths, directory) {
+			paths = append(paths, directory)
+		}
+	}
+	return paths
 }
 
 // MissingWarning 在面板可见的目录里都找不到 geo 数据时提醒，找得到就返回空。
@@ -108,6 +118,7 @@ func locate(searchPath []string, names []string) []File {
 	files := make([]File, 0, len(names))
 	for _, name := range names {
 		file := File{Name: name}
+		var effective os.FileInfo
 		for _, directory := range searchPath {
 			candidate := filepath.Join(directory, name)
 			info, err := os.Stat(candidate)
@@ -117,6 +128,12 @@ func locate(searchPath []string, names []string) []File {
 			if !file.Present {
 				modTime := info.ModTime().UTC()
 				file.Present, file.Path, file.Size, file.ModTime = true, candidate, info.Size(), &modTime
+				effective = info
+				continue
+			}
+			// 同一文件经由重复目录或符号链接出现时并不是被遮蔽的副本，
+			// 否则界面会错误建议用户删除唯一生效的 Geo 文件。
+			if os.SameFile(effective, info) {
 				continue
 			}
 			// dae 只读优先级最高的那一份，其余的既占磁盘，又会让人以为

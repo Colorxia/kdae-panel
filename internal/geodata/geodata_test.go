@@ -556,18 +556,83 @@ func TestStatusDefaultsToLoyalsoldierBeforeAnyUpdate(t *testing.T) {
 // 地方，更新"成功"却毫无效果。
 func TestSearchPathHonoursLocationAsset(t *testing.T) {
 	paths := SearchPath("/etc/dae/config.dae", map[string]string{LocationAssetEnv: "/opt/geo"})
-	if len(paths) == 0 || paths[0] != "/opt/geo" {
+	if len(paths) == 0 || paths[0] != filepath.Clean("/opt/geo") {
 		t.Fatalf("DAE_LOCATION_ASSET 应排在最前: %v", paths)
 	}
-	if paths[1] != filepath.Dir("/etc/dae/config.dae") {
+	if paths[1] != filepath.Clean(filepath.Dir("/etc/dae/config.dae")) {
 		t.Fatalf("配置目录应排在第二位: %v", paths)
 	}
 }
 
 func TestSearchPathWithoutLocationAsset(t *testing.T) {
 	paths := SearchPath("/etc/dae/config.dae", nil)
-	if paths[0] != filepath.Dir("/etc/dae/config.dae") {
+	if paths[0] != filepath.Clean(filepath.Dir("/etc/dae/config.dae")) {
 		t.Fatalf("没有环境变量时配置目录应排在最前: %v", paths)
+	}
+}
+
+func TestSearchPathDeduplicatesDirectories(t *testing.T) {
+	configDir := filepath.Clean("/etc/dae")
+	for name, environment := range map[string]map[string]string{
+		"与配置目录相同": {LocationAssetEnv: "/etc/dae"},
+		"只差尾斜杠":   {LocationAssetEnv: "/etc/dae/"},
+		"包含上级目录":  {LocationAssetEnv: "/etc/dae/subdir/.."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			paths := SearchPath("/etc/dae/config.dae", environment)
+			count := 0
+			for _, path := range paths {
+				if path == configDir {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Fatalf("配置目录应只出现一次，实际 %d 次: %v", count, paths)
+			}
+		})
+	}
+}
+
+func TestLocateDoesNotShadowFileWithItself(t *testing.T) {
+	directory := testDirectory(t)
+	real := filepath.Join(directory, "real")
+	seedGeo(t, real, upstream.GeoIPName, "only-copy")
+
+	assertNoShadow := func(t *testing.T, searchPath []string) {
+		files := locate(searchPath, []string{upstream.GeoIPName})
+		if len(files) != 1 || !files[0].Present {
+			t.Fatalf("应找到 Geo 文件: %+v", files)
+		}
+		if len(files[0].Shadowed) != 0 {
+			t.Fatalf("同一文件不应被列为自己的遮蔽副本: %+v", files[0])
+		}
+	}
+	t.Run("同一目录重复", func(t *testing.T) { assertNoShadow(t, []string{real, real}) })
+	t.Run("符号链接目录", func(t *testing.T) {
+		link := filepath.Join(directory, "link")
+		if err := os.Symlink(real, link); err != nil {
+			t.Skipf("本机不支持创建符号链接: %v", err)
+		}
+		assertNoShadow(t, []string{link, real})
+	})
+}
+
+func TestDoneReportsBackupCleanupFailure(t *testing.T) {
+	directory := testDirectory(t)
+	backup := filepath.Join(directory, upstream.GeoIPName+rollbackSuffix)
+	if err := os.MkdirAll(filepath.Join(backup, "blocker"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	transaction := &geoTransaction{staged: []stagedFile{{
+		name: upstream.GeoIPName, backup: backup,
+	}}}
+
+	err := transaction.done()
+	if err == nil || !strings.Contains(err.Error(), upstream.GeoIPName) {
+		t.Fatalf("清理失败应指出对应文件: %v", err)
+	}
+	if transaction.staged[0].backup != backup {
+		t.Fatal("清理失败后必须保留回滚点记录，供状态页发现并处理")
 	}
 }
 

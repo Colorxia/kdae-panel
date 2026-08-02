@@ -99,7 +99,7 @@ func (m *Manager) Apply(ctx context.Context, data upstream.GeoData) (Status, err
 		}
 		return Status{}, fmt.Errorf("新 geo 数据导致 dae 重载失败，已还原为原数据：%w", err)
 	}
-	transaction.done()
+	cleanupErr := transaction.done()
 
 	state := &State{
 		Source:       data.Release.Source,
@@ -111,6 +111,9 @@ func (m *Manager) Apply(ctx context.Context, data upstream.GeoData) (Status, err
 	if stateErr != nil {
 		m.logger.Warn("记录 geo 更新状态失败", "error", stateErr)
 	}
+	if cleanupErr != nil {
+		m.logger.Warn("清理旧 Geo 回滚点失败", "error", cleanupErr)
+	}
 	m.logger.Info("已更新 geo 数据",
 		"source", state.Source, "tag", state.Tag, "targets", targets,
 		"reloaded", reloaded)
@@ -119,6 +122,10 @@ func (m *Manager) Apply(ctx context.Context, data upstream.GeoData) (Status, err
 	if stateErr != nil {
 		updated.Warnings = append(updated.Warnings,
 			fmt.Sprintf("geo 数据已更新并生效，但更新记录写入失败（%v）", stateErr))
+	}
+	if cleanupErr != nil {
+		updated.Warnings = append(updated.Warnings,
+			fmt.Sprintf("Geo 数据已更新并生效，但旧回滚点清理失败（%v）；可在异常文件区域确认后清理", cleanupErr))
 	}
 	return updated, nil
 }
@@ -252,18 +259,25 @@ func (t *geoTransaction) rollback() error {
 	return errors.Join(failures...)
 }
 
-// done 在 reload 成功后丢弃回滚点。
+// done 在 reload 成功后丢弃回滚点；删不掉时保留路径并交给状态页处理。
 //
 // 刻意不长期保留：geo 随时可以从上游重新下载并自校验，留一份几十兆的旧副本
 // 只是白占磁盘。二进制不同——kdae 的 CI 产物 90 天就过期，旧版本可能永久取不回来，
 // 所以那边才需要长期回滚点。
-func (t *geoTransaction) done() {
+func (t *geoTransaction) done() error {
+	var failures []error
 	for index := range t.staged {
-		if backup := t.staged[index].backup; backup != "" {
-			_ = os.Remove(backup)
-			t.staged[index].backup = ""
+		file := &t.staged[index]
+		if file.backup == "" {
+			continue
 		}
+		if err := os.Remove(file.backup); err != nil && !os.IsNotExist(err) {
+			failures = append(failures, fmt.Errorf("删除 %s 回滚点 %s: %w", file.name, file.backup, err))
+			continue
+		}
+		file.backup = ""
 	}
+	return errors.Join(failures...)
 }
 
 // cleanup 删掉还没启用的暂存文件。已经启用的不动——那是 commit 的成果。
