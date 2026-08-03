@@ -60,8 +60,13 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.25.12'
+          # kdae 独立决定自己的 Go 基线；直接读上游 go.mod，避免它升级后
+          # 兼容检查还停在面板的工具链版本而在真正验证契约前就失败。
+          go-version-file: upstream/go.mod
           cache: true
+          cache-dependency-path: |
+            go.sum
+            upstream/go.sum
 
       - name: 安装上游构建依赖
         run: |
