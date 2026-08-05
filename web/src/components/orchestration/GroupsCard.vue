@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, ref } from 'vue'
+import { computed, h, onMounted, ref, watch } from 'vue'
 import {
   NAlert,
   NButton,
@@ -7,7 +7,6 @@ import {
   NIcon,
   NInput,
   NInputGroup,
-  NInputNumber,
   NModal,
   NPopconfirm,
   NSelect,
@@ -36,9 +35,11 @@ import {
 import {
   createGroupFilter,
   describeGroupFilter,
-  knownFixedCandidateCount,
   parseGroupFilter,
+  resolveFixedCandidates,
   serializeGroupFilter,
+  type FixedCandidate,
+  type FixedCandidateResult,
   type GroupFilterDraft,
   type GroupFilterKind,
 } from '../../utils/group'
@@ -58,8 +59,9 @@ const POLICY_OPTIONS = [
   { label: 'min_avg10 · 最近 10 次平均延迟最小', value: 'min_avg10' },
   { label: 'min · 最近一次延迟最小', value: 'min' },
   { label: 'random · 每次连接随机', value: 'random' },
-  { label: 'fixed(n) · 固定第 n 个节点', value: 'fixed' },
+  { label: '固定节点 · 始终使用选中的节点', value: 'fixed' },
 ]
+const CREATE_POLICY_OPTIONS = POLICY_OPTIONS.filter((option) => option.value !== 'fixed')
 
 function parsePolicy(value?: string): { name: string; index: number } {
   const fixed = /^fixed\((\d+)\)$/.exec(value || '')
@@ -86,20 +88,17 @@ function createGroup() {
     message.error(`分组 ${name} 已存在`)
     return
   }
-  content.value = addGroup(content.value, name, newGroupPolicy.value === 'fixed' ? 'fixed(0)' : newGroupPolicy.value)
+  content.value = addGroup(content.value, name, newGroupPolicy.value)
   newGroupName.value = ''
 }
 
 function changePolicy(group: Group, name: string) {
-  if (name === 'fixed' && !validFixedIndex(group, parsePolicy(group.policy?.value).index)) return
-  const serialized = name === 'fixed' ? `fixed(${parsePolicy(group.policy?.value).index})` : name
-  content.value = setGroupPolicy(content.value, group, serialized)
-}
-
-function changeFixedIndex(group: Group, index: number | null) {
-  const normalized = index ?? 0
-  if (!validFixedIndex(group, normalized)) return
-  content.value = setGroupPolicy(content.value, group, `fixed(${normalized})`)
+  if (name === 'fixed') {
+    const index = groups.value.findIndex((candidate) => candidate.section.nameStart === group.section.nameStart)
+    if (index >= 0) openGroupEditor(index, 'fixed')
+    return
+  }
+  content.value = setGroupPolicy(content.value, group, name)
 }
 
 const FILTER_KIND_OPTIONS = [
@@ -153,6 +152,56 @@ const subscriptionNodeSourceMap = computed(() => new Map(
     .filter((source) => persistentSubscriptionTags.value.has(source.tag))
     .map((source) => [source.tag, source]),
 ))
+const fixedSources = computed(() => [...subscriptionNodeSourceMap.value.values()])
+
+function fixedCandidatesForGroup(group: Group): FixedCandidateResult {
+  return resolveFixedCandidates(
+    content.value,
+    group.filters.map((filter) => parseGroupFilter(filter.value)),
+    fixedSources.value,
+    subscriptionNodesLoaded.value,
+  )
+}
+
+function describeFixedCandidate(node: FixedCandidate): string {
+  return [node.protocol, node.host].filter(Boolean).join(' · ')
+}
+
+function fixedNodeOptions(result: FixedCandidateResult): ResourceOption[] {
+  if (!result.resolvable) return []
+  return result.nodes.map((node) => ({
+    label: node.name,
+    value: node.name,
+    description: describeFixedCandidate(node) || undefined,
+  }))
+}
+
+function fixedNodeValue(group: Group): string | null {
+  const policy = parsePolicy(group.policy?.value)
+  if (policy.name !== 'fixed') return null
+  const candidates = fixedCandidatesForGroup(group)
+  return candidates.resolvable ? candidates.nodes[policy.index]?.name || null : null
+}
+
+function fixedCandidateReason(group: Group): string {
+  const candidates = fixedCandidatesForGroup(group)
+  return candidates.resolvable ? '' : candidates.reason
+}
+
+function changeFixedNode(group: Group, name: string | null) {
+  if (!name) return
+  const candidates = fixedCandidatesForGroup(group)
+  if (!candidates.resolvable) {
+    message.warning(candidates.reason)
+    return
+  }
+  const index = candidates.nodes.findIndex((node) => node.name === name)
+  if (index < 0) {
+    message.error('所选节点已不在当前分组候选中，请重新读取后再试')
+    return
+  }
+  content.value = setGroupPolicy(content.value, group, `fixed(${index})`)
+}
 
 async function loadSubscriptionNodes() {
   if (subscriptionNodesLoading.value) return
@@ -169,6 +218,8 @@ async function loadSubscriptionNodes() {
     subscriptionNodesLoading.value = false
   }
 }
+
+onMounted(() => void loadSubscriptionNodes())
 
 function subscriptionNodeOptions(tag: string): ResourceOption[] {
   const source = subscriptionNodeSourceMap.value.get(tag)
@@ -212,6 +263,32 @@ const groupTarget = ref<{ index: number; snapshot: string } | null>(null)
 const groupPolicy = ref('min_moving_avg')
 const groupFixedIndex = ref(0)
 const groupFilters = ref<GroupFilterDraft[]>([])
+const groupFixedCandidates = computed<FixedCandidateResult | null>(() => {
+  if (groupPolicy.value !== 'fixed') return null
+  return resolveFixedCandidates(
+    content.value,
+    groupFilters.value,
+    fixedSources.value,
+    subscriptionNodesLoaded.value,
+  )
+})
+const groupFixedNodeOptions = computed(() => fixedNodeOptions(
+  groupFixedCandidates.value || { resolvable: false, reason: '' },
+))
+const groupFixedNode = ref<string | null>(null)
+const groupFixedNodeNeedsSync = ref(false)
+watch(groupFixedCandidates, (candidates) => {
+  if (!candidates?.resolvable) return
+  if (groupFixedNodeNeedsSync.value) {
+    groupFixedNode.value = candidates.nodes[groupFixedIndex.value]?.name || null
+    groupFixedNodeNeedsSync.value = false
+    return
+  }
+  if (groupFixedNode.value && !candidates.nodes.some((node) => node.name === groupFixedNode.value)) {
+    // 过滤条件改变后原节点已不在候选中，不能静默改选另一个节点。
+    groupFixedNode.value = null
+  }
+})
 const unknownNodeNames = computed(() => {
   const explicit = new Set(nodeOptions.value.map((option) => option.value))
   return [...new Set(groupFilters.value
@@ -231,7 +308,7 @@ const unknownSubscriptionNodes = computed(() => {
   return [...new Set(unknown)]
 })
 
-function openGroupEditor(groupIndex: number) {
+function openGroupEditor(groupIndex: number, requestedPolicy?: string) {
   const group = groups.value[groupIndex]
   if (!group) return
   if ((group.policy && !group.policy.editable) || group.filters.some((filter) => !filter.editable)) {
@@ -243,8 +320,10 @@ function openGroupEditor(groupIndex: number) {
     index: groupIndex,
     snapshot: content.value.slice(group.section.nameStart, group.section.bodyEnd + 1),
   }
-  groupPolicy.value = policy.name
+  groupPolicy.value = requestedPolicy || policy.name
   groupFixedIndex.value = policy.index
+  groupFixedNode.value = null
+  groupFixedNodeNeedsSync.value = policy.name === 'fixed' && requestedPolicy === undefined
   groupFilters.value = group.filters.map((filter) => parseGroupFilter(filter.value))
   groupEditVisible.value = true
   void loadSubscriptionNodes()
@@ -268,17 +347,17 @@ function applyGroupEdit() {
     return
   }
   if (groupPolicy.value === 'fixed') {
-    if (!Number.isInteger(groupFixedIndex.value) || groupFixedIndex.value < 0) {
-      message.error('fixed(n) 的索引必须是从 0 开始的整数')
+    const candidates = groupFixedCandidates.value
+    if (!candidates?.resolvable) {
+      message.error(candidates?.reason || '当前配置无法安全展开为节点列表')
       return
     }
-    const candidateCount = fixedCandidateCount(groupFilters.value)
-    if (candidateCount !== null && (candidateCount === 0 || groupFixedIndex.value >= candidateCount)) {
-      message.error(candidateCount === 0
-        ? '当前分组没有可供 fixed(0) 选择的节点'
-        : `fixed(${groupFixedIndex.value}) 已越界；当前过滤条件只有 ${candidateCount} 个明确节点`)
+    const selectedIndex = candidates.nodes.findIndex((node) => node.name === groupFixedNode.value)
+    if (selectedIndex < 0) {
+      message.error('请选择一个固定节点')
       return
     }
+    groupFixedIndex.value = selectedIndex
   }
 
   let next = content.value
@@ -297,35 +376,6 @@ function applyGroupEdit() {
   groupEditVisible.value = false
   groupTarget.value = null
 }
-
-function validFixedIndex(group: Group, index: number): boolean {
-  if (!Number.isInteger(index) || index < 0) {
-    message.error('fixed(n) 的索引必须是从 0 开始的整数')
-    return false
-  }
-  const candidateCount = fixedCandidateCount(group.filters.map((filter) => parseGroupFilter(filter.value)))
-  if (candidateCount === null || (candidateCount > 0 && index < candidateCount)) return true
-  message.error(candidateCount === 0
-    ? '当前分组没有可供 fixed(0) 选择的节点'
-    : `fixed(${index}) 已越界；当前过滤条件只有 ${candidateCount} 个明确节点`)
-  return false
-}
-
-function fixedCandidateCount(filters: GroupFilterDraft[]): number | null {
-  const explicit = new Set(nodeOptions.value.map((option) => option.value))
-  if (filters.some((filter) => filter.kind === 'nodes' && filter.values.some((value) => !explicit.has(value)))) {
-    return null
-  }
-  if (filters.some((filter) => filter.kind === 'subscriptionNodes'
-    && filter.values.some((value) => !subscriptionNodeOptions(filter.source).some((option) => option.value === value)))) {
-    return null
-  }
-  return knownFixedCandidateCount(
-    filters,
-    readSection(content.value, 'node').entries.length,
-    readSection(content.value, 'subscription').entries.length > 0,
-  )
-}
 </script>
 
 <template>
@@ -341,7 +391,7 @@ function fixedCandidateCount(filters: GroupFilterDraft[]): number | null {
     <div class="orchestrate-add inset" data-testid="group-add">
       <NInputGroup>
         <NInput v-model:value="newGroupName" placeholder="新分组名，如 proxy" @keyup.enter="createGroup" />
-        <NSelect v-model:value="newGroupPolicy" :options="POLICY_OPTIONS" class="group-policy-select" />
+        <NSelect v-model:value="newGroupPolicy" :options="CREATE_POLICY_OPTIONS" class="group-policy-select" />
         <NButton type="primary" ghost @click="createGroup">
           <template #icon><NIcon><AddOutline /></NIcon></template>新建
         </NButton>
@@ -376,15 +426,24 @@ function fixedCandidateCount(filters: GroupFilterDraft[]): number | null {
           :disabled="group.policy !== null && !group.policy.editable"
           @update:value="(value: string) => changePolicy(group, value)"
         />
-        <NInputNumber
-          v-if="parsePolicy(group.policy?.value).name === 'fixed'"
-          size="small"
-          class="group-fixed-index"
-          :min="0"
-          :precision="0"
-          :value="parsePolicy(group.policy?.value).index"
-          @update:value="(value: number | null) => changeFixedIndex(group, value)"
-        />
+        <template v-if="parsePolicy(group.policy?.value).name === 'fixed'">
+          <NSelect
+            v-if="fixedCandidatesForGroup(group).resolvable"
+            class="group-fixed-node-select"
+            size="small"
+            :value="fixedNodeValue(group)"
+            :options="fixedNodeOptions(fixedCandidatesForGroup(group))"
+            filterable
+            placeholder="选择节点"
+            @update:value="(value: string | null) => changeFixedNode(group, value)"
+          />
+          <NText
+            v-else
+            depth="3"
+            class="group-fixed-node-unavailable"
+            :title="fixedCandidateReason(group)"
+          >无法确定节点</NText>
+        </template>
       </div>
       <div class="group-row filters">
         <NText depth="3">过滤</NText>
@@ -429,8 +488,27 @@ function fixedCandidateCount(filters: GroupFilterDraft[]): number | null {
     </NSpace>
     <div class="group-editor-policy">
       <NText depth="3">策略</NText>
-      <NSelect v-model:value="groupPolicy" :options="POLICY_OPTIONS" />
-      <NInputNumber v-if="groupPolicy === 'fixed'" v-model:value="groupFixedIndex" :min="0" :precision="0" />
+      <NSelect v-model:value="groupPolicy" :options="POLICY_OPTIONS" data-testid="group-policy-picker" />
+      <div v-if="groupPolicy === 'fixed'" class="group-fixed-node-control">
+        <NSelect
+          v-model:value="groupFixedNode"
+          class="group-fixed-node-select"
+          :options="groupFixedNodeOptions"
+          :loading="subscriptionNodesLoading"
+          :disabled="!groupFixedCandidates?.resolvable"
+          placeholder="选择固定节点"
+          filterable
+          :render-label="renderResourceLabel"
+          data-testid="group-fixed-node-picker"
+        />
+        <NText
+          v-if="groupFixedCandidates && !groupFixedCandidates.resolvable"
+          depth="3"
+          class="group-fixed-node-hint"
+        >
+          {{ groupFixedCandidates.reason }}
+        </NText>
+      </div>
     </div>
     <div class="group-filter-editor">
       <div class="group-filter-editor-head">

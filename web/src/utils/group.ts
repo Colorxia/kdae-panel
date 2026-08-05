@@ -1,4 +1,6 @@
-import { isQuotable, isValidTag, parseGroups, quote, setGroupFilter, unquote } from './daeconf'
+import type { SubscriptionNodeSource } from '../types/api'
+import { isQuotable, isValidTag, parseGroups, quote, readSection, setGroupFilter, unquote } from './daeconf'
+import { parseNodeLink } from './nodelink'
 
 export type GroupFilterKind = 'nodes' | 'subscriptionNodes' | 'subscriptions' | 'nameKeyword' | 'nameRegex' | 'raw'
 
@@ -180,4 +182,178 @@ export function knownFixedCandidateCount(
     }
   }
   return candidates.size
+}
+
+export interface FixedCandidate {
+  name: string
+  protocol: string
+  host: string
+  port: number | null
+}
+
+export type FixedCandidateResult =
+  | { resolvable: true; nodes: FixedCandidate[] }
+  | { resolvable: false; reason: string }
+
+function fixedUnresolvable(reason: string): FixedCandidateResult {
+  return { resolvable: false, reason }
+}
+
+function singleSubscriptionTag(filters: GroupFilterDraft[]): string | null {
+  if (filters.length === 0 || filters.some((filter) => filter.exclude)) return null
+  const tags: string[] = []
+  for (const filter of filters) {
+    if (filter.kind === 'subscriptionNodes' && filter.source) {
+      tags.push(filter.source)
+      continue
+    }
+    if (filter.kind === 'subscriptions' && filter.values.length === 1 && filter.values[0]) {
+      tags.push(filter.values[0])
+      continue
+    }
+    return null
+  }
+  return new Set(tags).size === 1 ? tags[0] : null
+}
+
+function resolveSubscriptionCandidates(
+  tag: string,
+  filters: GroupFilterDraft[],
+  sources: SubscriptionNodeSource[],
+  sourcesLoaded: boolean,
+): FixedCandidateResult {
+  if (!sourcesLoaded) return fixedUnresolvable('订阅节点缓存尚未读取，暂时无法安全选择节点')
+  const source = sources.find((candidate) => candidate.tag === tag)
+  if (!source) return fixedUnresolvable(`订阅 ${tag} 没有可用缓存，无法确认节点顺序`)
+  if (source.problem) return fixedUnresolvable(`订阅 ${tag} 的缓存不可用：${source.problem}`)
+  if (source.skipped) {
+    return fixedUnresolvable(`订阅 ${tag} 还有 ${source.skipped} 个未命名节点，无法确认固定索引`)
+  }
+  if (source.nodes.some((node) => node.matches > 1)) {
+    return fixedUnresolvable(`订阅 ${tag} 存在同名节点，无法确认固定索引`)
+  }
+
+  const wanted = filters.every((filter) => filter.kind === 'subscriptionNodes')
+    ? new Set(filters.flatMap((filter) => filter.values.map((value) => value.trim()).filter(Boolean)))
+    : null
+  const known = new Set(source.nodes.map((node) => node.name))
+  if (wanted) {
+    const missing = [...wanted].filter((name) => !known.has(name))
+    if (missing.length > 0) return fixedUnresolvable(`${missing.join('、')} 不在订阅 ${tag} 的缓存中`)
+  }
+  const nodes = source.nodes
+    .filter((node) => !wanted || wanted.has(node.name))
+    .map((node) => ({
+      name: node.name,
+      protocol: node.protocol || '',
+      host: node.host || '',
+      port: null,
+    }))
+  return nodes.length > 0 ? { resolvable: true, nodes } : fixedUnresolvable('当前过滤条件没有可选节点')
+}
+
+function resolveLocalCandidates(
+  content: string,
+  filters: GroupFilterDraft[],
+  sources: SubscriptionNodeSource[],
+  sourcesLoaded: boolean,
+): FixedCandidateResult {
+  const nodeSection = readSection(content, 'node')
+  const subscriptionSection = readSection(content, 'subscription')
+  if (nodeSection.unparsedLines > 0 || subscriptionSection.unparsedLines > 0) {
+    return fixedUnresolvable('配置中有跨行或无法解析的节点声明，无法确认固定索引')
+  }
+
+  const entries = nodeSection.entries
+  if (entries.some((entry) => !entry.tag?.trim())) {
+    return fixedUnresolvable('本地节点存在未命名条目，无法确认固定索引')
+  }
+  const filtersAreExplicitNodes = filters.length > 0
+    && filters.every((filter) => filter.kind === 'nodes' && !filter.exclude)
+  if (filters.length > 0 && !filtersAreExplicitNodes) {
+    return fixedUnresolvable('当前过滤条件不是明确的本地节点列表')
+  }
+
+  const wanted = filtersAreExplicitNodes
+    ? new Set(filters.flatMap((filter) => filter.values.map((value) => value.trim()).filter(Boolean)))
+    : null
+  const available = new Set(entries.map((entry) => entry.tag!.trim()))
+  if (wanted) {
+    const missing = [...wanted].filter((name) => !available.has(name))
+    if (missing.length > 0) return fixedUnresolvable(`${missing.join('、')} 不是显式的本地节点标签`)
+  }
+
+  const selected = entries.filter((entry) => !wanted || wanted.has(entry.tag!.trim()))
+  const parsed = selected.map((entry) => ({ entry, info: parseNodeLink(entry.value) }))
+  if (parsed.some((candidate) => candidate.info === null)) {
+    return fixedUnresolvable('候选中有无法解析的节点链接，无法安全选择节点')
+  }
+  const names = parsed.map((candidate) => candidate.entry.tag!.trim())
+  if (new Set(names).size !== names.length) {
+    return fixedUnresolvable('本地节点存在重复标签，无法确认固定索引')
+  }
+
+  if (subscriptionSection.entries.length > 0) {
+    if (!sourcesLoaded) return fixedUnresolvable('配置包含订阅，正在读取缓存以确认节点顺序')
+    const subscriptionTags = subscriptionSection.entries.map((entry) => entry.tag?.trim() || '')
+    if (subscriptionTags.some((tag) => tag === '')) {
+      return fixedUnresolvable('存在未命名订阅，无法确认节点顺序')
+    }
+    if (new Set(subscriptionTags).size !== subscriptionTags.length) {
+      return fixedUnresolvable('配置中存在重复订阅标签，dae 合并节点的顺序无法安全确认')
+    }
+    const cacheSources = subscriptionTags.map((tag) => sources.find((source) => source.tag === tag))
+    if (cacheSources.some((source) => !source || source.problem || source.skipped || source.nodes.some((node) => node.matches > 1))) {
+      return fixedUnresolvable('订阅缓存不完整或存在重名节点，无法确认本地节点顺序')
+    }
+    const subscriptionNames = new Set(cacheSources.flatMap((source) => source?.nodes.map((node) => node.name) || []))
+    const collisions = names.filter((name) => subscriptionNames.has(name))
+    if (collisions.length > 0) {
+      return fixedUnresolvable(`${collisions.join('、')} 与订阅节点重名，无法确认固定索引`)
+    }
+  }
+
+  const nodes = parsed.map(({ entry, info }) => ({
+    name: entry.tag!.trim(),
+    protocol: info!.protocol,
+    host: info!.host,
+    port: info!.port,
+  }))
+  return nodes.length > 0 ? { resolvable: true, nodes } : fixedUnresolvable('当前过滤条件没有可选节点')
+}
+
+/**
+ * 解析 fixed 策略的候选顺序。无法证明名称与 dae 内部索引一一对应时不返回节点列表，
+ * 调用方应禁用名称选择，而不是猜一个 fixed(n)。
+ */
+export function resolveFixedCandidates(
+  content: string,
+  filters: GroupFilterDraft[],
+  sources: SubscriptionNodeSource[],
+  sourcesLoaded: boolean,
+): FixedCandidateResult {
+  const subscriptionSection = readSection(content, 'subscription')
+  if (subscriptionSection.unparsedLines > 0) {
+    return fixedUnresolvable('配置中有跨行或无法解析的订阅声明，无法确认固定索引')
+  }
+
+  const subscriptionTag = singleSubscriptionTag(filters)
+  if (subscriptionTag !== null) {
+    const matchingSubscriptions = subscriptionSection.entries
+      .filter((entry) => entry.tag?.trim() === subscriptionTag)
+    if (matchingSubscriptions.length !== 1) {
+      return fixedUnresolvable(matchingSubscriptions.length === 0
+        ? `配置中没有名为 ${subscriptionTag} 的订阅`
+        : `订阅标签 ${subscriptionTag} 重复，dae 合并节点的顺序无法安全确认`)
+    }
+    return resolveSubscriptionCandidates(subscriptionTag, filters, sources, sourcesLoaded)
+  }
+  if (filters.length === 0 && subscriptionSection.entries.length > 0) {
+    // dae 遍历 tagToNodeList 这个 Go map 构造全局节点池，跨来源顺序没有稳定承诺。
+    return fixedUnresolvable('该分组包含本地节点和订阅节点，dae 不保证不同来源之间的固定顺序；请先明确选择成员')
+  }
+  if (filters.length === 0 || filters.every((filter) => filter.kind === 'nodes' && !filter.exclude)) {
+    return resolveLocalCandidates(content, filters, sources, sourcesLoaded)
+  }
+  return fixedUnresolvable('当前过滤条件无法安全展开为节点列表')
 }

@@ -5,6 +5,7 @@ import {
   includeNodesInGroups,
   knownFixedCandidateCount,
   parseGroupFilter,
+  resolveFixedCandidates,
   serializeGroupFilter,
 } from './group'
 
@@ -108,5 +109,158 @@ describe('分组资源过滤', () => {
     expect(knownFixedCandidateCount([{
       ...createGroupFilter('nodes'), values: ['a'], exclude: true,
     }], 2, false)).toBeNull()
+  })
+})
+
+describe('固定节点候选解析', () => {
+  it('按 dae 节点声明顺序返回本地节点，而不是按过滤器顺序猜测', () => {
+    const content = [
+      'node {',
+      "  tokyo: 'vless://uuid@tokyo.example.com:443'",
+      "  singapore: 'trojan://uuid@sg.example.com:443'",
+      '}',
+      'group {',
+      '  proxy {',
+      '    filter: name(singapore, tokyo)',
+      '    policy: fixed(1)',
+      '  }',
+      '}',
+      '',
+    ].join('\n')
+    const result = resolveFixedCandidates(
+      content,
+      [parseGroupFilter('name(singapore, tokyo)')],
+      [],
+      true,
+    )
+
+    expect(result).toEqual({
+      resolvable: true,
+      nodes: [
+        { name: 'tokyo', protocol: 'vless', host: 'tokyo.example.com', port: 443 },
+        { name: 'singapore', protocol: 'trojan', host: 'sg.example.com', port: 443 },
+      ],
+    })
+  })
+
+  it('按单一订阅缓存顺序返回订阅节点', () => {
+    const source = {
+      tag: 'main',
+      cachedAt: '2026-08-05T00:00:00Z',
+      nodes: [
+        { name: '东京', protocol: 'vless', host: 'tokyo.example.com', matches: 1 },
+        { name: '新加坡', protocol: 'trojan', host: 'sg.example.com', matches: 1 },
+      ],
+    }
+    const result = resolveFixedCandidates(
+      "subscription {\n  main: 'https://example.com/sub'\n}\n",
+      [parseGroupFilter('subtag(main)')],
+      [source],
+      true,
+    )
+
+    expect(result).toMatchObject({
+      resolvable: true,
+      nodes: [
+        { name: '东京', protocol: 'vless', host: 'tokyo.example.com', port: null },
+        { name: '新加坡', protocol: 'trojan', host: 'sg.example.com', port: null },
+      ],
+    })
+  })
+
+  it('同一订阅的整份与指定节点过滤仍按该订阅顺序展开', () => {
+    const source = {
+      tag: 'main',
+      cachedAt: '2026-08-05T00:00:00Z',
+      nodes: [
+        { name: '东京', protocol: 'vless', host: 'tokyo.example.com', matches: 1 },
+        { name: '新加坡', protocol: 'trojan', host: 'sg.example.com', matches: 1 },
+      ],
+    }
+    const result = resolveFixedCandidates(
+      "subscription {\n  main: 'https-file://example.com/sub'\n}\n",
+      [
+        parseGroupFilter('subtag(main)'),
+        parseGroupFilter("subtag(main) && name('东京')"),
+      ],
+      [source],
+      true,
+    )
+
+    expect(result).toMatchObject({
+      resolvable: true,
+      nodes: [{ name: '东京' }, { name: '新加坡' }],
+    })
+  })
+
+  it('混合来源或缓存不完整时不猜测节点顺序', () => {
+    const mixed = resolveFixedCandidates(
+      "node {\n  local: 'vless://u@local.example.com:443'\n}\n",
+      [
+        parseGroupFilter('name(local)'),
+        parseGroupFilter('subtag(main) && name(东京)'),
+      ],
+      [],
+      true,
+    )
+    expect(mixed).toMatchObject({ resolvable: false })
+
+    const missingCache = resolveFixedCandidates(
+      "subscription {\n  main: 'https://example.com/sub'\n}\n",
+      [parseGroupFilter('subtag(main)')],
+      [],
+      true,
+    )
+    expect(missingCache).toMatchObject({ resolvable: false })
+  })
+
+  it('未设置过滤但同时存在本地节点和订阅时不把订阅静默漏掉', () => {
+    const result = resolveFixedCandidates(
+      [
+        'node {',
+        "  local: 'vless://u@local.example.com:443'",
+        '}',
+        'subscription {',
+        "  main: 'https-file://example.com/sub'",
+        '}',
+        '',
+      ].join('\n'),
+      [],
+      [{
+        tag: 'main',
+        cachedAt: '2026-08-05T00:00:00Z',
+        nodes: [{ name: '东京', protocol: 'vless', host: 'tokyo.example.com', matches: 1 }],
+      }],
+      true,
+    )
+
+    expect(result).toMatchObject({
+      resolvable: false,
+      reason: expect.stringContaining('本地节点和订阅节点'),
+    })
+  })
+
+  it('重复订阅标签无法映射为稳定索引', () => {
+    const result = resolveFixedCandidates(
+      [
+        'subscription {',
+        "  main: 'https-file://example.com/a'",
+        "  main: 'https-file://example.com/b'",
+        '}',
+        '',
+      ].join('\n'),
+      [parseGroupFilter('subtag(main)')],
+      [{
+        tag: 'main',
+        cachedAt: '2026-08-05T00:00:00Z',
+        nodes: [{ name: '东京', protocol: 'vless', host: 'tokyo.example.com', matches: 1 }],
+      }],
+      true,
+    )
+
+    expect(result).toMatchObject({
+      resolvable: false,
+      reason: expect.stringContaining('订阅标签 main 重复'),
+    })
   })
 })
