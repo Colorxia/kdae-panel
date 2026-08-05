@@ -1,0 +1,1 @@
+import{Tn as e}from"./client-XAxOi-qT.js";function t(){return e()!==null}var n=typeof window<`u`;export{n,t};
