@@ -884,7 +884,8 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
         versions: [
           {
             source: 'official', ref: 'v2.0.0', label: 'v2.0.0', description: '当前稳定版',
-            publishedAt: '2026-07-09T00:00:00Z', installable: true,
+            publishedAt: '2026-07-09T00:00:00Z', installable: true, cached: true,
+            cachedAt: '2026-07-30T00:00:00Z', cachedBytes: 33_554_432,
           },
           {
             source: 'official', ref: 'v1.9.0', label: 'v1.9.0', description: '已保存在本机',
@@ -920,6 +921,8 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expect(installCard.getByText('x86_64', { exact: true })).toBeVisible()
     await expect(installCard.getByText('x86_64_v3_avx2', { exact: true })).toBeVisible()
     await expect(installCard.getByText('x86_64_v2_sse', { exact: true })).toBeVisible()
+    const currentRow = page.locator('tr', { hasText: 'v2.0.0' })
+    await expect(currentRow.getByRole('button', { name: '删除 v2.0.0 的本地缓存' })).toHaveCount(0)
     const row = page.locator('tr', { hasText: 'v1.9.0' })
     await expect(row.getByText('已下载')).toBeVisible()
     await capture(page, 'versions.png', 1600, 1120)
@@ -1274,6 +1277,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     const mobileVersions = page.getByTestId('mobile-version-list')
     await expect(mobileVersions).toBeVisible()
     await expect(mobileVersions.getByText('已下载', { exact: true })).toBeVisible()
+    await expect(mobileVersions.getByRole('button', { name: '删除 v2.0.0 的本地缓存' })).toHaveCount(0)
     overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
     expect(overflow).toBeLessThanOrEqual(1)
     await page.unroute('**/api/v1/dae/install')

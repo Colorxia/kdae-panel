@@ -81,19 +81,21 @@ func newHTTPClient() *httpClient {
 }
 
 func newHTTPClientWithTokenSource(source GitHubTokenSource) *httpClient {
-	return newHTTPClientWithValidators(source, checkFirstHopContext, checkHTTPSRedirectTarget)
+	return newHTTPClientWithValidators(source, checkFirstHopContext, checkHTTPSRedirectTarget, true)
 }
 
 // newCustomHTTPClient 供管理员配置的自定义来源使用。它不携带 GitHub Token，
 // 且首跳和每次重定向都必须解析到公网 HTTPS 地址。
 func newCustomHTTPClient() *httpClient {
-	return newHTTPClientWithValidators(emptyGitHubTokenSource{}, checkPublicHTTPSTarget, checkPublicHTTPSTarget)
+	return newHTTPClientWithValidators(
+		emptyGitHubTokenSource{}, checkPublicHTTPSTarget, checkPublicHTTPSTarget, false)
 }
 
 func newHTTPClientWithValidators(
 	source GitHubTokenSource,
 	validateTarget func(context.Context, string) error,
 	validateRedirect func(context.Context, string) error,
+	allowFakeIP bool,
 ) *httpClient {
 	if source == nil {
 		source = emptyGitHubTokenSource{}
@@ -121,7 +123,7 @@ func newHTTPClientWithValidators(
 		ResponseHeaderTimeout: 30 * time.Second,
 		ExpectContinueTimeout: time.Second,
 		IdleConnTimeout:       30 * time.Second,
-		DialContext:           guardedDial(dialer, proxies),
+		DialContext:           guardedDial(dialer, proxies, allowFakeIP),
 	}
 	return &httpClient{
 		client: &http.Client{
@@ -149,12 +151,13 @@ func newHTTPClientWithValidators(
 	}
 }
 
-// guardedDial 拒绝连往内网地址。
+// guardedDial 拒绝连往内网地址。allowFakeIP 只供目标由本包构造的内置上游
+// 客户端开启；管理员提供 URL 的自定义来源继续要求 DNS 返回真实公网地址。
 //
 // 判断必须放在 Dialer.Control 里:DialContext 收到的是 URL 里的主机名,
 // 对域名做 netip.ParseAddr 只会失败,等于完全不设防;Control 则在每次实际
 // connect 之前拿到解析后的具体地址,因此 DNS 重绑定同样逃不掉。
-func guardedDial(dialer *net.Dialer, proxies *proxyAddresses) func(context.Context, string, string) (net.Conn, error) {
+func guardedDial(dialer *net.Dialer, proxies *proxyAddresses, allowFakeIP bool) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		if proxies.contains(address) {
 			return dialer.DialContext(ctx, network, address)
@@ -169,13 +172,31 @@ func guardedDial(dialer *net.Dialer, proxies *proxyAddresses) func(context.Conte
 			if err != nil {
 				return fmt.Errorf("无法解析连接地址 %q", resolved)
 			}
-			if !publicAddress(ip) {
+			if !dialAddressAllowed(address, ip, allowFakeIP) {
 				return fmt.Errorf("拒绝连接到非公网地址 %s", ip)
 			}
 			return nil
 		}
 		return guarded.DialContext(ctx, network, address)
 	}
+}
+
+// dialAddressAllowed 兼容 mihomo 默认的 fake-ip DNS 模式，同时不把该保留网段
+// 整体提升为公网地址。只有调用方明确允许、原始连接目标仍是域名时才能通过；
+// URL 直接写 198.18/15 仍会被拒绝。TLS 继续按原域名校验证书。
+func dialAddressAllowed(address string, resolved netip.Addr, allowFakeIP bool) bool {
+	if publicAddress(resolved) {
+		return true
+	}
+	if !allowFakeIP || !mihomoFakeIPRange.Contains(resolved.Unmap()) {
+		return false
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	_, err = netip.ParseAddr(host)
+	return err != nil
 }
 
 // proxyAddresses 记录环境变量里配置的代理地址。
@@ -209,6 +230,8 @@ func (p *proxyAddresses) contains(address string) bool {
 	return p.known[address]
 }
 
+var mihomoFakeIPRange = netip.MustParsePrefix("198.18.0.0/15")
+
 // reservedRanges 是 netip 的内建判断没覆盖、但同样不该出现在上游下载链路上的网段。
 // 100.64/10 是运营商级 NAT，也是 Tailscale 的地址段；198.18/15 常被用作 fake-ip；
 // 240/4 与 0/8 是保留段。
@@ -221,7 +244,7 @@ func (p *proxyAddresses) contains(address string) bool {
 // 这条不变量兜底，v6 侧漏一个口子等于整条防线在这类主机上失效。
 var reservedRanges = []netip.Prefix{
 	netip.MustParsePrefix("100.64.0.0/10"),
-	netip.MustParsePrefix("198.18.0.0/15"),
+	mihomoFakeIPRange,
 	netip.MustParsePrefix("192.0.0.0/24"),
 	netip.MustParsePrefix("192.0.2.0/24"),
 	netip.MustParsePrefix("192.88.99.0/24"), // 6to4 中继任播

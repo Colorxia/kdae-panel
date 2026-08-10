@@ -330,6 +330,10 @@ func registerUpstreamRoutes(router *http.ServeMux, service InstallService, opera
 		}
 		defer versionTasks.end()
 		if err := service.DeleteCached(source, payload.Ref); err != nil {
+			if errors.Is(err, daeinstall.ErrCachedVersionInUse) {
+				writeAPIError(writer, http.StatusConflict, "cached_version_in_use", err.Error())
+				return
+			}
 			if errors.Is(err, daeinstall.ErrCachedVersionNotFound) {
 				writeAPIError(writer, http.StatusNotFound, "cached_version_not_found", err.Error())
 				return

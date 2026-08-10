@@ -212,7 +212,7 @@ func TestPublicAddressRejectsInternalTargets(t *testing.T) {
 
 // 这才是真正的 SSRF 关口：必须对"解析到内网的域名"生效，而不只是字面 IP。
 func TestGuardedDialRejectsHostnamesResolvingInternally(t *testing.T) {
-	dial := guardedDial(&net.Dialer{Timeout: 5 * time.Second}, &proxyAddresses{})
+	dial := guardedDial(&net.Dialer{Timeout: 5 * time.Second}, &proxyAddresses{}, false)
 
 	// localhost 会解析到 127.0.0.1，域名形式同样必须被拦下
 	for _, address := range []string{"localhost:80", "127.0.0.1:80", "[::1]:80"} {
@@ -224,6 +224,33 @@ func TestGuardedDialRejectsHostnamesResolvingInternally(t *testing.T) {
 		if !strings.Contains(err.Error(), "非公网地址") {
 			t.Fatalf("%s 的拒绝原因 = %v", address, err)
 		}
+	}
+}
+
+func TestDialAddressAllowsMihomoFakeIPOnlyForBuiltInHostname(t *testing.T) {
+	fakeIP := netip.MustParseAddr("198.18.0.1")
+	privateIP := netip.MustParseAddr("192.168.1.1")
+	publicIP := netip.MustParseAddr("140.82.121.4")
+	tests := []struct {
+		name      string
+		address   string
+		resolved  netip.Addr
+		allowFake bool
+		want      bool
+	}{
+		{"内置上游域名解析为 fake-ip", "github.com:443", fakeIP, true, true},
+		{"自定义来源不放宽 fake-ip", "example.com:443", fakeIP, false, false},
+		{"字面 fake-ip 仍拒绝", "198.18.0.1:443", fakeIP, true, false},
+		{"普通内网地址仍拒绝", "github.com:443", privateIP, true, false},
+		{"普通公网地址照常允许", "github.com:443", publicIP, false, true},
+	}
+	for _, item := range tests {
+		t.Run(item.name, func(t *testing.T) {
+			if got := dialAddressAllowed(item.address, item.resolved, item.allowFake); got != item.want {
+				t.Fatalf("dialAddressAllowed(%q, %s, %t) = %t，期望 %t",
+					item.address, item.resolved, item.allowFake, got, item.want)
+			}
+		})
 	}
 }
 
@@ -243,7 +270,7 @@ func TestGuardedDialAllowsConfiguredProxy(t *testing.T) {
 	address := listener.Addr().String()
 	proxies := &proxyAddresses{}
 	proxies.remember(&url.URL{Scheme: "http", Host: address})
-	conn, err := guardedDial(&net.Dialer{Timeout: 5 * time.Second}, proxies)(context.Background(), "tcp", address)
+	conn, err := guardedDial(&net.Dialer{Timeout: 5 * time.Second}, proxies, false)(context.Background(), "tcp", address)
 	if err != nil {
 		t.Fatalf("已配置的代理应被放行: %v", err)
 	}

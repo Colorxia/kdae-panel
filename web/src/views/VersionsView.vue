@@ -228,12 +228,12 @@ async function install(version: UpstreamVersion) {
 }
 
 function confirmDeleteCached(version: UpstreamVersion) {
-  const current = isInstalled(version)
+  // 后端同样会拒绝；这里防止状态刷新期间的旧事件继续打开确认框。
+  if (isInstalled(version)) return
   const size = formatBytes(version.cachedBytes)
   dialog.warning({
     title: `删除本地版本 ${version.label}`,
-    content: `将删除这份 ${size} 的本地缓存。`
-      + (current ? '当前运行中的 dae 不受影响；以后再次安装该版本需要重新下载。' : '当前运行文件和回滚点不受影响。'),
+    content: `将删除这份 ${size} 的本地缓存。当前运行文件和回滚点不受影响。`,
     positiveText: '删除缓存',
     negativeText: '取消',
     onPositiveClick: () => deleteCached(version),
@@ -411,7 +411,7 @@ const columns = computed<DataTableColumns<UpstreamVersion>>(() => [
           default: () => firstInstall.value ? '安装' : '预检并切换',
         }))
       }
-      if (row.cached) {
+      if (row.cached && !isInstalled(row)) {
         actions.push(h(NTooltip, null, {
           trigger: () => h(NButton, {
             size: 'small',
@@ -422,7 +422,7 @@ const columns = computed<DataTableColumns<UpstreamVersion>>(() => [
             disabled: busy.value || cacheDeleting.value !== '',
             onClick: () => confirmDeleteCached(row),
           }, { icon: () => h(NIcon, null, { default: () => h(TrashOutline) }) }),
-          default: () => isInstalled(row) ? '删除缓存，不影响当前运行' : '删除本地缓存',
+          default: () => '删除本地缓存',
         }))
       }
       return h(NSpace, { size: 4, align: 'center', wrap: false }, { default: () => actions })
@@ -567,7 +567,7 @@ onBeforeUnmount(() => {
                   {{ firstInstall ? '安装' : '预检并切换' }}
                 </NButton>
                 <NButton
-                  v-if="version.cached"
+                  v-if="version.cached && !isInstalled(version)"
                   secondary
                   type="error"
                   :aria-label="`删除 ${version.label} 的本地缓存`"

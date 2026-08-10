@@ -417,10 +417,18 @@ func (i *Installer) Acquire(ctx context.Context, source upstream.Source, ref, la
 }
 
 // DeleteCached 删除指定版本的本地副本，不触碰当前运行文件与事务回滚点。
+// 当前安装账本引用的版本必须保留；即使有人绕过前端直接调用 API，也不能删除。
 func (i *Installer) DeleteCached(source upstream.Source, ref string) error {
 	platform, err := upstream.DetectPlatform()
 	if err != nil {
 		return err
+	}
+	state, err := i.readState()
+	if err != nil {
+		return fmt.Errorf("读取当前 dae 版本: %w", err)
+	}
+	if state != nil && state.Source == source && state.Ref == ref {
+		return ErrCachedVersionInUse
 	}
 	return i.cache.delete(source, ref, platform.Name)
 }

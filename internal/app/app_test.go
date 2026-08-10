@@ -1056,6 +1056,18 @@ func TestDaeCachedVersionDeleteReportsMissing(t *testing.T) {
 	}
 }
 
+func TestDaeCachedVersionDeleteRejectsCurrentVersion(t *testing.T) {
+	service := &stubInstallService{err: daeinstall.ErrCachedVersionInUse}
+	application := newInstallApp(t, service)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/dae/cache",
+		strings.NewReader(`{"source":"official","ref":"v2.0.0"}`))
+	application.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "cached_version_in_use") {
+		t.Fatalf("当前版本缓存响应 = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 // 还没有 dae 时必须走首次安装，而不是去替换一个不存在的文件。
 func TestDaeInstallUsesFirstInstallWhenNotReady(t *testing.T) {
 	service := &stubInstallService{

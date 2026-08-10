@@ -129,7 +129,7 @@ GitHub JSON 元数据另有 10 分钟进程内缓存；同 URL 的并发请求�
 { "source": "official", "ref": "v2.0.0" }
 ```
 
-删除只影响 `/var/lib/kdae-panel/dae-versions/` 下的对应缓存，不修改当前运行的 `/usr/bin/dae`，也不删除安装事务的上一版回滚点。版本不存在返回 `404 cached_version_not_found`。
+删除只影响 `/var/lib/kdae-panel/dae-versions/` 下的对应缓存，不修改当前运行的 `/usr/bin/dae`，也不删除安装事务的上一版回滚点。当前安装账本正在使用的版本禁止删除，返回 `409 cached_version_in_use`；版本不存在返回 `404 cached_version_not_found`。
 
 机器上还没有 dae 时，`GET /dae/install` 的响应会附带 `provision` 字段，说明首次安装是否可行、将要写入哪些路径、以及缺少哪些可写目录。此时提交安装会走首次安装：除可执行文件外还写入 geo 数据、种子配置与 systemd 单元，然后 `daemon-reload`，但**不会启动服务**。
 

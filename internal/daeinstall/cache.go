@@ -27,8 +27,9 @@ const (
 )
 
 var (
-	// ErrCachedVersionNotFound 供 API 把重复删除映射成 404。
+	// ErrCachedVersionNotFound 与 ErrCachedVersionInUse 供 API 映射稳定的错误码。
 	ErrCachedVersionNotFound = errors.New("本地版本不存在")
+	ErrCachedVersionInUse    = errors.New("当前正在使用的 dae 版本不能删除")
 	errInvalidVersionCache   = errors.New("本地版本缓存无效")
 )
 

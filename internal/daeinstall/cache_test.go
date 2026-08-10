@@ -192,6 +192,33 @@ func TestDeleteCachedDoesNotTouchInstalledBinary(t *testing.T) {
 	}
 }
 
+func TestDeleteCachedRejectsCurrentManagedVersion(t *testing.T) {
+	fetcher := &fakeFetcher{binary: elf("v2")}
+	installer, _ := newTestInstaller(t, fetcher, &fakeService{})
+	if _, _, err := installer.Acquire(
+		context.Background(), upstream.SourceOfficial, "v2.0.0", "v2.0.0", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := installer.writeState(&State{
+		Source: upstream.SourceOfficial,
+		Ref:    "v2.0.0",
+		Label:  "v2.0.0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installer.DeleteCached(upstream.SourceOfficial, "v2.0.0"); !errors.Is(err, ErrCachedVersionInUse) {
+		t.Fatalf("删除当前版本应被拒绝: %v", err)
+	}
+	platform, err := upstream.DetectPlatform()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := installer.cache.load(upstream.SourceOfficial, "v2.0.0", platform.Name); err != nil {
+		t.Fatalf("拒绝删除后缓存应仍然存在: %v", err)
+	}
+}
+
 func TestSwitchCachesManagedVersionBeingReplaced(t *testing.T) {
 	fetcher := &fakeFetcher{}
 	service := &fakeService{}
