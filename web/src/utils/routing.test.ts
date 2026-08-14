@@ -1,5 +1,25 @@
 import { describe, expect, it } from 'vitest'
-import { buildSimpleRouting, detectSimpleRouting } from './routing'
+import { buildSimpleRouting, detectSimpleRouting, splitRoutingMatch } from './routing'
+
+describe('路由规则编辑回填', () => {
+  it.each([
+    ['pname(AdGuardHome)', 'pname', 'AdGuardHome'],
+    ["domain(regex: 'example\\(com\\)')", 'domain', "regex: 'example\\(com\\)'"],
+    ['domain(suffix(example.com))', 'domain', 'suffix(example.com)'],
+  ] as const)('拆分单个匹配器：%s', (match, kind, value) => {
+    expect(splitRoutingMatch(match)).toEqual({ kind, value })
+  })
+
+  it.each([
+    'pname(AdGuardHome) && l4proto(udp) && dport(53)',
+    '!domain(geosite:cn)',
+    'custom(foo)',
+    'raw(foo)',
+    'pname(AdGuardHome))',
+  ])('复合或未知表达式原样进入高级模式：%s', (match) => {
+    expect(splitRoutingMatch(match)).toEqual({ kind: 'raw', value: match })
+  })
+})
 
 describe('常用路由模板', () => {
   it.each([

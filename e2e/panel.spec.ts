@@ -447,6 +447,21 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await ruleModal.getByRole('button', { name: '应用到编排' }).click()
     await expect(routing.getByText('domain(geosite:cn)')).toBeVisible()
 
+    const compoundMatch = 'pname(AdGuardHome) && l4proto(udp) && dport(53)'
+    await routing.getByRole('button', { name: '添加规则' }).click()
+    await ruleModal.locator('.n-base-selection').first().click()
+    await clickVisibleOption(page, '高级匹配表达式')
+    const compoundInput = ruleModal.getByPlaceholder('domain(geosite:gfw) && dport(443)')
+    await compoundInput.fill(compoundMatch)
+    await ruleModal.getByRole('button', { name: '应用到编排' }).click()
+
+    const compoundRule = routing.locator('.routing-rule', { hasText: compoundMatch })
+    await compoundRule.getByRole('button', { name: '编辑' }).click()
+    await expect(ruleModal.locator('.n-base-selection').first()).toContainText('高级匹配表达式')
+    await expect(compoundInput).toHaveValue(compoundMatch)
+    await ruleModal.getByRole('button', { name: '应用到编排' }).click()
+    await expect(routing.getByText(compoundMatch, { exact: true })).toBeVisible()
+
     await routing.getByRole('button', { name: '编辑路由' }).click()
     const routingModal = page.getByTestId('routing-editor-modal')
     const advancedTab = routingModal.locator('.n-tabs-tab', { hasText: '高级模式' })

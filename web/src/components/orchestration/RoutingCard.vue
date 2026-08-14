@@ -36,7 +36,9 @@ import {
   detectSimpleRouting,
   MAC_ADDRESS_REGEX,
   SIMPLE_ROUTING_MODES,
+  splitRoutingMatch,
   type MacAction,
+  type RoutingMatchKind,
   type SimpleRoutingMode,
 } from '../../utils/routing'
 
@@ -55,7 +57,7 @@ const outboundOptions = computed(() => [
   ...groups.value.map((group) => ({ label: `${group.name} · 分组`, value: group.name })),
 ])
 
-type RuleKind = 'domain' | 'dip' | 'dport' | 'sip' | 'sport' | 'pname' | 'mac' | 'l4proto' | 'ipversion' | 'raw' | 'fallback'
+type RuleKind = RoutingMatchKind | 'raw' | 'fallback'
 
 const RULE_KIND_OPTIONS: Array<{ label: string; value: RuleKind }> = [
   { label: '目标域名 domain', value: 'domain' },
@@ -77,14 +79,6 @@ const ruleKind = ref<RuleKind>('domain')
 const ruleValue = ref('')
 const ruleOutbound = ref('direct')
 
-function splitMatch(match: string): { kind: RuleKind; value: string } {
-  const parsed = /^([A-Za-z_][A-Za-z0-9_]*)\((.*)\)$/.exec(match)
-  if (parsed && RULE_KIND_OPTIONS.some((option) => option.value === parsed[1])) {
-    return { kind: parsed[1] as RuleKind, value: parsed[2] }
-  }
-  return { kind: 'raw', value: match }
-}
-
 function openRuleEditor(rule?: RoutingRule) {
   if (rule && !rule.editable) {
     message.warning('该规则跨行书写，请使用“编辑路由”中的高级模式')
@@ -97,7 +91,7 @@ function openRuleEditor(rule?: RoutingRule) {
     ruleKind.value = 'fallback'
     ruleValue.value = ''
   } else if (rule) {
-    const parsed = splitMatch(rule.match)
+    const parsed = splitRoutingMatch(rule.match)
     ruleKind.value = parsed.kind
     ruleValue.value = parsed.value
   } else {

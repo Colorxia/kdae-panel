@@ -1,6 +1,65 @@
 export type SimpleRoutingMode = 'gfw' | 'nonCn' | 'cnOnly' | 'global' | 'direct' | 'macOnly'
 export type MacAction = 'proxy' | 'direct'
 
+export const ROUTING_MATCH_KINDS = [
+  'domain',
+  'dip',
+  'dport',
+  'sip',
+  'sport',
+  'pname',
+  'mac',
+  'l4proto',
+  'ipversion',
+] as const
+
+export type RoutingMatchKind = (typeof ROUTING_MATCH_KINDS)[number]
+
+const routingMatchKinds: ReadonlySet<string> = new Set(ROUTING_MATCH_KINDS)
+
+/**
+ * 只拆分单个受支持的顶层匹配器。复合表达式和未知匹配器必须原样进入高级模式，
+ * 否则编辑器会把首个左括号与最后一个右括号误当成同一调用的边界。
+ */
+export function splitRoutingMatch(match: string): { kind: RoutingMatchKind | 'raw'; value: string } {
+  const head = /^([A-Za-z_][A-Za-z0-9_]*)\(/.exec(match)
+  if (!head || !routingMatchKinds.has(head[1])) return { kind: 'raw', value: match }
+
+  const openParen = head[0].length - 1
+  let depth = 0
+  let quote: "'" | '"' | null = null
+
+  for (let index = openParen; index < match.length; index += 1) {
+    const char = match[index]
+    if (quote) {
+      if (char === '\\' && match[index + 1] === quote) index += 1
+      else if (char === quote) quote = null
+      continue
+    }
+    if (char === "'" || char === '"') {
+      quote = char
+      continue
+    }
+    if (char === '(') {
+      depth += 1
+      continue
+    }
+    if (char !== ')') continue
+
+    depth -= 1
+    if (depth < 0) return { kind: 'raw', value: match }
+    if (depth === 0) {
+      if (index !== match.length - 1) return { kind: 'raw', value: match }
+      return {
+        kind: head[1] as RoutingMatchKind,
+        value: match.slice(openParen + 1, index),
+      }
+    }
+  }
+
+  return { kind: 'raw', value: match }
+}
+
 export const SIMPLE_ROUTING_MODES: Array<{
   value: SimpleRoutingMode
   label: string
