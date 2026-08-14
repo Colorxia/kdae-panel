@@ -5,7 +5,7 @@
 - Linux 与 systemd；
 - 已安装并能够通过 `systemctl status dae` 正常运行的 dae——若这台机器上还没有 dae，可直接使用默认开启的版本管理完成首次安装；
 - `/etc/dae/config.dae` 是实际入口配置（首次安装时由面板写入不劫持流量的种子配置）；
-- 构建阶段需要 Go 1.25.12+ 和 Node.js 22+；
+- 构建阶段需要 Go 1.25.13+ 和 Node.js 22+；
 - 运行阶段不需要 Node.js。
 
 ## 一键部署

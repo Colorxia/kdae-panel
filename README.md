@@ -73,7 +73,7 @@ KDAE_PANEL_VERSION=v0.1.0 bash -c "$(curl -fsSL https://raw.githubusercontent.co
 
 ## 从源码安装
 
-依赖 Go 1.25.12+、Node.js 22+，运行环境需要 systemd：
+依赖 Go 1.25.13+、Node.js 22+，运行环境需要 systemd：
 
 ```bash
 git clone https://github.com/tuoro/kdae-panel.git
