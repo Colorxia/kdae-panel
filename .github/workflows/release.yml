@@ -45,6 +45,14 @@ jobs:
           go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - run: bash scripts/build-release.sh "${GITHUB_REF_NAME}"
 
+      # GitHub 自动日志只枚举合并的 PR，会漏掉直接推送到主分支的提交。
+      - name: 生成完整更新日志
+        run: |
+          bash scripts/generate-release-notes.sh \
+            "${GITHUB_REF_NAME}" \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            "dist/RELEASE_NOTES.md"
+
       - name: 生成发布来源证明
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -52,7 +60,7 @@ jobs:
 
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
-          generate_release_notes: true
+          body_path: dist/RELEASE_NOTES.md
           # 带连字符的 tag（v1.0.0-rc.1）标为预发布：它不会成为 releases/latest，
           # 一键部署的用户不会装到它，而发布链路本身仍被完整演练一遍。
           prerelease: ${{ contains(github.ref_name, '-') }}
