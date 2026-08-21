@@ -159,7 +159,9 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		_ = authStore.Close()
 		return nil, fmt.Errorf("初始化订阅节点缓存: %w", err)
 	}
-	dependencies.SubscriptionNodes = subscriptionNodes
+	dependencies.SubscriptionNodes = managedSubscriptionNodeService{
+		base: subscriptionNodes, reader: subscriptionNodes, managed: managedSubscriptions,
+	}
 	if cfg.EnableDaeInstall {
 		installer, err := daeinstall.New(daeinstall.Options{
 			BinaryPath:  cfg.DaeBinary,

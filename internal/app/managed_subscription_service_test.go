@@ -2,17 +2,21 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/tuoro/kdae-panel/internal/configstore"
 	"github.com/tuoro/kdae-panel/internal/managedsubscription"
+	"github.com/tuoro/kdae-panel/internal/subscriptioncache"
 )
 
 type stubManagedSubscriptionService struct {
@@ -77,6 +81,39 @@ func TestManagedSubscriptionRoutes(t *testing.T) {
 	application.Handler().ServeHTTP(prepared, request)
 	if prepared.Code != http.StatusOK || !strings.Contains(prepared.Body.String(), "file://managed.d/main-next.sub") {
 		t.Fatalf("prepare response = %d %s", prepared.Code, prepared.Body.String())
+	}
+}
+
+func TestManagedSubscriptionNodesJoinTheGroupNodeSources(t *testing.T) {
+	directory := t.TempDir()
+	managedDirectory := filepath.Join(directory, "managed.d")
+	if err := os.Mkdir(managedDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	name := "airport-0123456789abcdef.sub"
+	content := base64.StdEncoding.EncodeToString([]byte("trojan://secret@node.example.com:443#香港节点\n"))
+	if err := os.WriteFile(filepath.Join(managedDirectory, name), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := subscriptioncache.New(filepath.Join(directory, "config.dae"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	managed := &stubManagedSubscriptionService{items: []managedsubscription.Subscription{{
+		Definition: managedsubscription.Definition{Tag: "airport", URL: "https://example.com/sub", UserAgent: "Shadowrocket"},
+		LocalURL:   "file://managed.d/" + name,
+	}}}
+	service := managedSubscriptionNodeService{
+		base:   stubSubscriptionNodes{sources: []subscriptioncache.Source{{Tag: "native"}}},
+		reader: reader, managed: managed,
+	}
+	sources, err := service.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != 2 || sources[1].Tag != "native" || sources[0].Tag != "airport" ||
+		len(sources[0].Nodes) != 1 || sources[0].Nodes[0].Name != "香港节点" {
+		t.Fatalf("合并后的订阅节点异常: %+v", sources)
 	}
 }
 
