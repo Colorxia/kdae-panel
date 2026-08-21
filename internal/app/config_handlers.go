@@ -12,12 +12,14 @@ import (
 	"unicode"
 
 	"github.com/tuoro/kdae-panel/internal/configstore"
+	"github.com/tuoro/kdae-panel/internal/managedsubscription"
 )
 
 type configContentRequest struct {
-	Content      string `json:"content"`
-	ExpectedHash string `json:"expectedHash"`
-	Apply        *bool  `json:"apply,omitempty"`
+	Content              string                            `json:"content"`
+	ExpectedHash         string                            `json:"expectedHash"`
+	Apply                *bool                             `json:"apply,omitempty"`
+	ManagedSubscriptions *[]managedsubscription.Definition `json:"managedSubscriptions,omitempty"`
 }
 
 type restoreBackupRequest struct {
@@ -30,7 +32,7 @@ type backupMetadataRequest struct {
 	Note string `json:"note,omitempty"`
 }
 
-func registerConfigurationRoutes(router *http.ServeMux, service ConfigurationService, operations *sync.Mutex) {
+func registerConfigurationRoutes(router *http.ServeMux, service ConfigurationService, managed ManagedSubscriptionService, operations *sync.Mutex) {
 	if service == nil {
 		unavailable := func(writer http.ResponseWriter, _ *http.Request) {
 			writeAPIError(writer, http.StatusServiceUnavailable, "configuration_unavailable", "配置管理服务尚未初始化")
@@ -76,6 +78,21 @@ func registerConfigurationRoutes(router *http.ServeMux, service ConfigurationSer
 			return
 		}
 		defer operations.Unlock()
+		var previous []managedsubscription.Definition
+		activated := false
+		if payload.ManagedSubscriptions != nil {
+			if managed == nil {
+				writeAPIError(writer, http.StatusServiceUnavailable, "managed_subscriptions_unavailable", "面板托管订阅服务尚未初始化")
+				return
+			}
+			var err error
+			previous, err = managed.Activate(*payload.ManagedSubscriptions)
+			if err != nil {
+				writeAPIError(writer, http.StatusBadRequest, "managed_subscriptions_invalid", err.Error())
+				return
+			}
+			activated = true
+		}
 		result, err := service.Save(
 			request.Context(),
 			payload.Content,
@@ -83,6 +100,11 @@ func registerConfigurationRoutes(router *http.ServeMux, service ConfigurationSer
 			boolDefaultTrue(payload.Apply),
 		)
 		if err != nil {
+			if activated {
+				if restoreErr := managed.Restore(previous); restoreErr != nil {
+					err = fmt.Errorf("%w；恢复托管订阅设置失败: %v", err, restoreErr)
+				}
+			}
 			writeConfigurationError(writer, err)
 			return
 		}

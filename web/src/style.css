@@ -2043,6 +2043,23 @@ pre,
   max-width: 130px;
 }
 
+.subscription-ua-select {
+  width: 160px;
+}
+
+.subscription-source {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.subscription-source .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .orchestrate-add-hint {
   margin-top: 10px;
   display: flex;
@@ -2824,6 +2841,14 @@ pre,
 
   .orchestrate-add .n-input-group > .orchestrate-tag-input {
     grid-column: 1 / -1;
+  }
+
+  .orchestrate-add .n-input-group > .n-input:not(.orchestrate-tag-input) {
+    grid-column: 1 / -1;
+  }
+
+  .subscription-ua-select {
+    width: auto;
   }
 
   .orchestrate-add .n-input-group > * {

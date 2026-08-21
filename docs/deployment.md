@@ -90,6 +90,7 @@ sudo systemctl restart kdae-panel
 | `KDAE_PANEL_DATABASE` | `/var/lib/kdae-panel/panel.db` | 认证数据库 |
 | `KDAE_PANEL_BACKUP_DIR` | `/var/lib/kdae-panel/backups` | 自动备份与手动配置存档目录；存档名称和备注位于对应的 `.meta.json` 文件 |
 | `KDAE_PANEL_SCHEDULE_FILE` | `/var/lib/kdae-panel/schedule.json` | 订阅自动刷新的设置与上次执行时间 |
+| `KDAE_PANEL_MANAGED_SUBSCRIPTIONS_FILE` | `/var/lib/kdae-panel/managed-subscriptions.json` | 面板托管订阅的原始地址与 User-Agent，权限 `0600` |
 | `KDAE_PANEL_INSTALL_STATE_FILE` | `/var/lib/kdae-panel/dae-install.json` | dae 版本安装记录，同目录还存放回滚点与 `dae-versions/` 本地版本库 |
 | `KDAE_PANEL_GITHUB_TOKEN_FILE` | `/var/lib/kdae-panel/github-token` | 设置页保存 GitHub API Token 的独立文件，权限 `0600` |
 | `KDAE_PANEL_GITHUB_TOKEN` | 空 | 可选 GitHub API Token；非空时优先于设置页文件且不能从 UI 修改，只需公开仓库只读权限 |

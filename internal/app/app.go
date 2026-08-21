@@ -28,6 +28,7 @@ import (
 	"github.com/tuoro/kdae-panel/internal/geodata"
 	"github.com/tuoro/kdae-panel/internal/githubauth"
 	"github.com/tuoro/kdae-panel/internal/host"
+	"github.com/tuoro/kdae-panel/internal/managedsubscription"
 	"github.com/tuoro/kdae-panel/internal/netprobe"
 	"github.com/tuoro/kdae-panel/internal/panelupdate"
 	"github.com/tuoro/kdae-panel/internal/schedule"
@@ -64,20 +65,21 @@ type ConfigurationService interface {
 }
 
 type Dependencies struct {
-	Dae               DaeService
-	Configuration     ConfigurationService
-	Host              HostService
-	Authentication    AuthenticationService
-	Probe             ProbeService
-	Schedule          ScheduleService
-	GeoSchedule       ScheduleService
-	Install           InstallService
-	Geo               GeoService
-	PanelRelease      PanelReleaseChecker
-	PanelUpdate       PanelUpdateService
-	GitHub            GitHubCredentialService
-	SubscriptionNodes SubscriptionNodeService
-	Connections       daeconn.Snapshotter
+	Dae                  DaeService
+	Configuration        ConfigurationService
+	Host                 HostService
+	Authentication       AuthenticationService
+	Probe                ProbeService
+	Schedule             ScheduleService
+	GeoSchedule          ScheduleService
+	Install              InstallService
+	Geo                  GeoService
+	PanelRelease         PanelReleaseChecker
+	PanelUpdate          PanelUpdateService
+	GitHub               GitHubCredentialService
+	SubscriptionNodes    SubscriptionNodeService
+	ManagedSubscriptions ManagedSubscriptionService
+	Connections          daeconn.Snapshotter
 }
 
 type SubscriptionNodeService interface {
@@ -109,7 +111,12 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 	}
 	adoptRunningServiceBootState(hostManager, logger)
 	daeService := newSystemdDaeService(daeClient, daeClient, daeClient, hostManager)
-	configuration, err := configstore.NewManager(cfg.DaeConfigPath, cfg.BackupDir, daeService)
+	managedSubscriptions, err := managedsubscription.Open(cfg.ManagedSubscriptionsPath, cfg.DaeConfigPath, logger)
+	if err != nil {
+		return nil, fmt.Errorf("初始化面板托管订阅: %w", err)
+	}
+	managedDaeService := managedSubscriptionDaeService{DaeService: daeService, managed: managedSubscriptions}
+	configuration, err := configstore.NewManager(cfg.DaeConfigPath, cfg.BackupDir, managedDaeService)
 	if err != nil {
 		return nil, fmt.Errorf("初始化配置管理器: %w", err)
 	}
@@ -139,12 +146,13 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		setupURLs = bootstrapSetupURLs(cfg.ListenAddress, cfg.BootstrapToken)
 	}
 	dependencies := Dependencies{
-		Dae:            daeService,
-		Configuration:  configuration,
-		Host:           hostManager,
-		Authentication: authStore,
-		Probe:          netprobe.New(),
-		GitHub:         githubCredentials,
+		Dae:                  managedDaeService,
+		Configuration:        configuration,
+		Host:                 hostManager,
+		Authentication:       authStore,
+		Probe:                netprobe.New(),
+		GitHub:               githubCredentials,
+		ManagedSubscriptions: managedSubscriptions,
 	}
 	subscriptionNodes, err := subscriptioncache.New(cfg.DaeConfigPath)
 	if err != nil {
@@ -324,11 +332,12 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 		}
 		writeJSON(writer, http.StatusOK, outline)
 	})
-	registerConfigurationRoutes(router, dependencies.Configuration, operations)
+	registerConfigurationRoutes(router, dependencies.Configuration, dependencies.ManagedSubscriptions, operations)
 	registerServiceRoutes(router, dependencies.Dae, dependencies.Host, operations)
 	registerConnectionRoutes(router, dependencies.Host, dependencies.Configuration, dependencies.Connections)
 	registerProbeRoutes(router, dependencies.Probe, logger)
 	registerSubscriptionNodeRoutes(router, dependencies.SubscriptionNodes)
+	registerManagedSubscriptionRoutes(router, dependencies.ManagedSubscriptions)
 	registerScheduleRoutes(router, "/api/v1/schedule/reload", scheduleService)
 	registerScheduleRoutes(router, "/api/v1/schedule/geo", geoScheduleService)
 	registerUpstreamRoutes(router, dependencies.Install, operations, logger)

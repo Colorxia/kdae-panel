@@ -63,6 +63,7 @@ func run() error {
 	journalctl := flag.String("journalctl", envOr("KDAE_PANEL_JOURNALCTL", cfg.Journalctl), "journalctl 可执行文件路径")
 	databasePath := flag.String("database", envOr("KDAE_PANEL_DATABASE", cfg.DatabasePath), "面板 SQLite 数据库路径")
 	schedulePath := flag.String("schedule-file", envOr("KDAE_PANEL_SCHEDULE_FILE", cfg.SchedulePath), "订阅自动刷新设置文件路径")
+	managedSubscriptionsPath := flag.String("managed-subscriptions-file", envOr("KDAE_PANEL_MANAGED_SUBSCRIPTIONS_FILE", cfg.ManagedSubscriptionsPath), "面板托管订阅设置文件路径")
 	installStatePath := flag.String("install-state-file", envOr("KDAE_PANEL_INSTALL_STATE_FILE", cfg.InstallStatePath), "dae 版本安装状态文件路径")
 	githubTokenPath := flag.String("github-token-file", envOr("KDAE_PANEL_GITHUB_TOKEN_FILE", cfg.GitHubTokenPath), "GitHub API Token 持久化文件路径")
 	geoStatePath := flag.String("geo-state-file", envOr("KDAE_PANEL_GEO_STATE_FILE", cfg.GeoStatePath), "geo 数据更新状态文件路径")
@@ -94,6 +95,7 @@ func run() error {
 	cfg.Journalctl = *journalctl
 	cfg.DatabasePath = *databasePath
 	cfg.SchedulePath = *schedulePath
+	cfg.ManagedSubscriptionsPath = *managedSubscriptionsPath
 	cfg.InstallStatePath = *installStatePath
 	cfg.GitHubTokenPath = *githubTokenPath
 	cfg.GeoStatePath = *geoStatePath
