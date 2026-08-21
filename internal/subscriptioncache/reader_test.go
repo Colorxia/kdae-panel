@@ -95,3 +95,47 @@ func TestReaderReturnsEmptyWhenPersistDirectoryDoesNotExist(t *testing.T) {
 		t.Fatalf("空缓存结果异常: sources=%v err=%v", sources, err)
 	}
 }
+
+func TestReaderListsOnlyActivatedManagedCaches(t *testing.T) {
+	directory := t.TempDir()
+	managedDirectory := filepath.Join(directory, "managed.d")
+	if err := os.Mkdir(managedDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	activeName := "airport-0123456789abcdef.sub"
+	active := base64.StdEncoding.EncodeToString([]byte("trojan://secret@active.example.com:443#当前节点\n"))
+	stale := base64.StdEncoding.EncodeToString([]byte("trojan://secret@stale.example.com:443#旧节点\n"))
+	if err := os.WriteFile(filepath.Join(managedDirectory, activeName), []byte(active), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managedDirectory, "airport-fedcba9876543210.sub"), []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := New(filepath.Join(directory, "config.dae"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, err := reader.ListManaged(context.Background(), []ManagedSource{{
+		Tag: "airport", LocalURL: "file://managed.d/" + activeName,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != 1 || len(sources[0].Nodes) != 1 || sources[0].Nodes[0].Name != "当前节点" {
+		t.Fatalf("托管订阅节点异常: %+v", sources)
+	}
+}
+
+func TestReaderRejectsManagedCachePathEscape(t *testing.T) {
+	reader, err := New(filepath.Join(t.TempDir(), "config.dae"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = reader.ListManaged(context.Background(), []ManagedSource{{
+		Tag: "airport", LocalURL: "file://managed.d/../secret.sub",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "缓存文件名无效") {
+		t.Fatalf("ListManaged() = %v", err)
+	}
+}
