@@ -12,6 +12,19 @@ import (
 
 const maxNodes = 4096
 
+// Validate 确认内容至少包含一个 dae 可消费的 SIP008 或 Base64 节点。
+// 面板托管订阅在替换旧缓存前调用它，避免机场错误页被当作成功结果落盘。
+func Validate(content []byte) (nodes int, skipped int, err error) {
+	parsed, skipped, err := parseSubscription(content)
+	if err != nil {
+		return 0, skipped, err
+	}
+	if len(parsed) == 0 {
+		return 0, skipped, errors.New("订阅中没有可识别节点")
+	}
+	return len(parsed), skipped, nil
+}
+
 type sip008 struct {
 	Version int            `json:"version"`
 	Servers []sip008Server `json:"servers"`

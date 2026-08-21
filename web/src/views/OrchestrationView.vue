@@ -20,7 +20,13 @@ import {
   SaveOutline,
 } from '@vicons/ionicons5'
 import { APIError, getJSON, postJSON, putJSON } from '../api/client'
-import type { ConfigDocument, ConfigSaveResult } from '../types/api'
+import type {
+  ConfigDocument,
+  ConfigSaveResult,
+  ManagedSubscription,
+  ManagedSubscriptionDefinition,
+  ManagedSubscriptionsResponse,
+} from '../types/api'
 import { readSection } from '../utils/daeconf'
 import { defaultConfiguration, withDefaultDNS } from '../utils/dns'
 import GlobalCard from '../components/orchestration/GlobalCard.vue'
@@ -41,11 +47,29 @@ const saving = ref(false)
 const document = ref<ConfigDocument | null>(null)
 const content = ref('')
 const originalContent = ref('')
+const managedSubscriptions = ref<ManagedSubscription[]>([])
+const originalManaged = ref('[]')
 const validationMessage = ref('')
 const validationError = ref('')
 const dnsDraftAdded = ref(false)
 
-const dirty = computed(() => content.value !== originalContent.value)
+function managedDefinitions(items: ManagedSubscription[]): ManagedSubscriptionDefinition[] {
+  return items
+    .map(({ tag, url, userAgent }) => ({ tag, url, userAgent }))
+    .sort((left, right) => left.tag.localeCompare(right.tag))
+}
+
+function managedSnapshot(items: ManagedSubscription[]): string {
+  return JSON.stringify(managedDefinitions(items))
+}
+
+function managedForContent(text: string, items: ManagedSubscription[]): ManagedSubscription[] {
+  const entries = readSection(text, 'subscription').entries
+  return items.filter((item) => entries.some((entry) => entry.tag === item.tag && entry.value === item.localUrl))
+}
+
+const dirty = computed(() => content.value !== originalContent.value
+  || managedSnapshot(managedSubscriptions.value) !== originalManaged.value)
 const unparsedLines = computed(
   () => readSection(content.value, 'global').unparsedLines
     + readSection(content.value, 'node').unparsedLines
@@ -59,16 +83,21 @@ async function load() {
   validationError.value = ''
   dnsDraftAdded.value = false
   try {
+    const managed = await getJSON<ManagedSubscriptionsResponse>('/api/v1/subscriptions/managed')
     const loaded = await getJSON<ConfigDocument>('/api/v1/config')
     document.value = loaded
     content.value = withDefaultDNS(loaded.content)
     originalContent.value = loaded.content
+    managedSubscriptions.value = managedForContent(loaded.content, managed.subscriptions)
+    originalManaged.value = managedSnapshot(managedSubscriptions.value)
     dnsDraftAdded.value = content.value !== loaded.content
   } catch (error) {
     if (error instanceof APIError && error.status === 404) {
       document.value = null
       content.value = defaultConfiguration()
       originalContent.value = ''
+      managedSubscriptions.value = []
+      originalManaged.value = '[]'
       dnsDraftAdded.value = true
     } else {
       message.error(error instanceof Error ? error.message : '读取配置失败')
@@ -100,13 +129,18 @@ async function save(apply: boolean) {
   // 提交的是点击那一刻的快照。请求在途时用户可能继续编排，
   // 因此成功后只把快照记为已保存，dirty 会如实保留其后的新改动。
   const submitted = content.value
+  const submittedItems = managedForContent(submitted, managedSubscriptions.value)
+  const submittedManaged = managedDefinitions(submittedItems)
   try {
     const result = await putJSON<ConfigSaveResult>('/api/v1/config', {
       content: submitted,
       expectedHash: document.value?.hash || '',
       apply,
+      managedSubscriptions: submittedManaged,
     })
     originalContent.value = submitted
+    managedSubscriptions.value = submittedItems
+    originalManaged.value = JSON.stringify(submittedManaged)
     dnsDraftAdded.value = false
     document.value = {
       path: document.value?.path || '/etc/dae/config.dae',
@@ -208,7 +242,7 @@ onMounted(() => void load())
 
         <NGrid class="equal-height-grid" responsive="screen" cols="1 l:2" :x-gap="16" :y-gap="16">
           <NGridItem>
-            <SubscriptionsCard v-model="content" :dirty="dirty" />
+            <SubscriptionsCard v-model="content" v-model:managed="managedSubscriptions" :dirty="dirty" />
           </NGridItem>
           <NGridItem>
             <GroupsCard v-model="content" />

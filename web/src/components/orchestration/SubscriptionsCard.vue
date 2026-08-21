@@ -23,15 +23,15 @@ import {
 import { AddOutline, CreateOutline, RefreshOutline, TimerOutline, TrashOutline } from '@vicons/ionicons5'
 import { getJSON, postJSON, putJSON } from '../../api/client'
 import { useMobileViewport } from '../../composables/useMobileViewport'
-import type { ScheduleStatus } from '../../types/api'
+import type { ManagedSubscription, ScheduleStatus } from '../../types/api'
 import { appendToSection, isQuotable, isValidTag, quote, readSection, removeLine, type Entry } from '../../utils/daeconf'
 import { parseScheme, supportsPersistence, togglePersistence } from '../../utils/subscription'
 import { formatDateTime } from '../../utils/format'
 import { entryActions, useEntryRewrite, type EntryTarget } from './entry'
 import SectionEditorModal from './SectionEditorModal.vue'
 
-// 订阅内容始终由 dae 在 reload 时拉取，面板只负责维护配置里的那一行。
 const content = defineModel<string>({ required: true })
+const managed = defineModel<ManagedSubscription[]>('managed', { required: true })
 const props = defineProps<{
   /** 有未保存的编排时不允许"立即刷新"：重载应用的是磁盘配置，会绕过这些改动。 */
   dirty: boolean
@@ -49,12 +49,40 @@ const sourceVisible = ref(false)
 const subscriptionTag = ref('')
 const subscriptionURL = ref('')
 const subscriptionPersist = ref(true)
+const subscriptionUA = ref('')
+const preparing = ref(false)
+
+const UA_OPTIONS = [
+  { label: 'dae 原生拉取', value: '' },
+  { label: 'Shadowrocket', value: 'Shadowrocket' },
+  { label: 'Clash Verge', value: 'clash-verge' },
+  { label: 'FlClash', value: 'FlClash' },
+]
+
+function managedForEntry(entry: Entry): ManagedSubscription | undefined {
+  if (!entry.tag) return undefined
+  return managed.value.find((item) => item.tag === entry.tag && item.localUrl === entry.value)
+}
+
+function displayURL(entry: Entry): string {
+  return managedForEntry(entry)?.url || entry.value
+}
+
+function replaceManaged(previousTag: string | undefined, item?: ManagedSubscription) {
+  const next = managed.value.filter((candidate) => candidate.tag !== previousTag && candidate.tag !== item?.tag)
+  if (item) next.push(item)
+  managed.value = next
+}
+
+async function prepareManaged(tag: string, url: string, userAgent: string): Promise<ManagedSubscription> {
+  return postJSON<ManagedSubscription>('/api/v1/subscriptions/managed/prepare', { tag, url, userAgent })
+}
 
 function subscriptionLine(tag: string, url: string): string {
   return tag === '' ? quote(url) : `${tag}: ${quote(url)}`
 }
 
-function validSubscription(tag: string, url: string): boolean {
+function validSubscription(tag: string, url: string, userAgent = '', editingTag = ''): boolean {
   if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url) || !isQuotable(url)) {
     message.error('请输入完整的订阅链接，且不能同时包含单引号和双引号')
     return false
@@ -63,20 +91,50 @@ function validSubscription(tag: string, url: string): boolean {
     message.error('订阅标签只能使用字母、数字、下划线、点或横线，且以字母或下划线开头')
     return false
   }
+  if (userAgent !== '' && tag === '') {
+    message.error('设置请求 UA 的订阅必须填写唯一标签')
+    return false
+  }
+  if (userAgent !== '' && !/^https?:\/\//i.test(url)) {
+    message.error('设置请求 UA 时仅支持 HTTP 或 HTTPS 订阅地址')
+    return false
+  }
+  if (userAgent.includes('\r') || userAgent.includes('\n') || userAgent.length > 256) {
+    message.error('请求 UA 不能换行且不能超过 256 个字符')
+    return false
+  }
+  if (tag !== '' && tag !== editingTag && subscriptions.value.some((entry) => entry.tag === tag)) {
+    message.error(`订阅标签 ${tag} 已存在`)
+    return false
+  }
   return true
 }
 
-function addSubscription() {
+async function addSubscription() {
   const tag = subscriptionTag.value.trim()
   let url = subscriptionURL.value.trim()
-  if (!validSubscription(tag, url)) return
-  // 开关是双向的：粘贴的链接已带 -file 而开关关闭时，同样要剥掉后缀
-  if (supportsPersistence(url) && parseScheme(url)?.persistent !== subscriptionPersist.value) {
-    url = togglePersistence(url)
+  const userAgent = subscriptionUA.value.trim()
+  if (!validSubscription(tag, url, userAgent)) return
+  preparing.value = true
+  try {
+    if (userAgent !== '') {
+      const item = await prepareManaged(tag, url, userAgent)
+      url = item.localUrl
+      replaceManaged(undefined, item)
+    }
+    // 开关是双向的：粘贴的链接已带 -file 而开关关闭时，同样要剥掉后缀
+    if (userAgent === '' && supportsPersistence(url) && parseScheme(url)?.persistent !== subscriptionPersist.value) {
+      url = togglePersistence(url)
+    }
+    content.value = appendToSection(content.value, 'subscription', [subscriptionLine(tag, url)])
+    subscriptionTag.value = ''
+    subscriptionURL.value = ''
+    subscriptionUA.value = ''
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '准备托管订阅失败')
+  } finally {
+    preparing.value = false
   }
-  content.value = appendToSection(content.value, 'subscription', [subscriptionLine(tag, url)])
-  subscriptionTag.value = ''
-  subscriptionURL.value = ''
 }
 
 function setPersistence(entry: Entry, persistent: boolean) {
@@ -92,20 +150,47 @@ function setPersistence(entry: Entry, persistent: boolean) {
 const editTarget = ref<EntryTarget | null>(null)
 const editTag = ref('')
 const editURL = ref('')
+const editUA = ref('')
 
 function openSubscriptionEditor(entry: Entry) {
   editTarget.value = captureEntry(entry)
   editTag.value = entry.tag || ''
-  editURL.value = entry.value
+  const item = managedForEntry(entry)
+  editURL.value = item?.url || entry.value
+  editUA.value = item?.userAgent || ''
 }
 
-function applySubscriptionEdit() {
+async function applySubscriptionEdit() {
   const target = editTarget.value
   if (!target) return
   const tag = editTag.value.trim()
   const url = editURL.value.trim()
-  if (!validSubscription(tag, url)) return
-  if (rewriteEntry(target, subscriptionLine(tag, url))) editTarget.value = null
+  const userAgent = editUA.value.trim()
+  const previous = managedForEntry(target.entry)
+  if (!validSubscription(tag, url, userAgent, target.entry.tag || '')) return
+  preparing.value = true
+  try {
+    let nextURL = url
+    let nextManaged: ManagedSubscription | undefined
+    if (userAgent !== '') {
+      nextManaged = await prepareManaged(tag, url, userAgent)
+      nextURL = nextManaged.localUrl
+    }
+    if (rewriteEntry(target, subscriptionLine(tag, nextURL))) {
+      replaceManaged(previous?.tag, nextManaged)
+      editTarget.value = null
+    }
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '准备托管订阅失败')
+  } finally {
+    preparing.value = false
+  }
+}
+
+function removeSubscription(entry: Entry) {
+  const item = managedForEntry(entry)
+  content.value = removeLine(content.value, entry.lineStart, entry.lineEnd)
+  if (item) replaceManaged(item.tag)
 }
 
 const subscriptionColumns: DataTableColumns<Entry> = [
@@ -123,7 +208,13 @@ const subscriptionColumns: DataTableColumns<Entry> = [
     key: 'value',
     minWidth: 200,
     ellipsis: { tooltip: true },
-    render: (row) => h('span', { class: 'mono' }, row.value),
+    render: (row) => {
+      const item = managedForEntry(row)
+      return h('div', { class: 'subscription-source' }, [
+        h('span', { class: 'mono' }, displayURL(row)),
+        item ? h(NTag, { size: 'tiny', bordered: false, type: 'info' }, { default: () => `UA: ${item.userAgent}` }) : null,
+      ])
+    },
   },
   {
     title: () => h(NTooltip, null, {
@@ -134,7 +225,7 @@ const subscriptionColumns: DataTableColumns<Entry> = [
     key: 'persist',
     width: 100,
     render: (row) => {
-      if (!supportsPersistence(row.value)) return h(NText, { depth: 3 }, { default: () => '—' })
+      if (managedForEntry(row) || !supportsPersistence(row.value)) return h(NText, { depth: 3 }, { default: () => '—' })
       return h(NSwitch, {
         size: 'small',
         value: parseScheme(row.value)?.persistent === true,
@@ -153,7 +244,7 @@ const subscriptionColumns: DataTableColumns<Entry> = [
         title: '移除',
         icon: TrashOutline,
         type: 'error',
-        onClick: () => { content.value = removeLine(content.value, row.lineStart, row.lineEnd) },
+        onClick: () => removeSubscription(row),
       },
     ], true),
   },
@@ -221,7 +312,7 @@ function confirmRefreshNow() {
   }
   dialog.info({
     title: '立即刷新订阅',
-    content: 'dae 会在无损重载时重新拉取全部订阅链接，现有连接不会中断。'
+    content: '面板会先更新带 UA 的托管订阅，再由 dae 无损重载其余订阅，现有连接不会中断。'
       + '重载应用的是磁盘上的当前配置，因此之前"仅保存"而未应用的改动也会一并生效。',
     positiveText: '刷新并重载',
     negativeText: '取消',
@@ -233,7 +324,7 @@ async function refreshNow() {
   refreshing.value = true
   try {
     await postJSON('/api/v1/service/actions/reload')
-    message.success('已触发无损重载，订阅内容将在重载后生效')
+    message.success('托管订阅已更新，并已触发 dae 无损重载')
   } catch (error) {
     message.error(error instanceof Error ? error.message : '刷新订阅失败')
   } finally {
@@ -272,13 +363,25 @@ onMounted(() => void loadSchedule())
       <NInputGroup>
         <NInput v-model:value="subscriptionTag" placeholder="标签(可选)" class="orchestrate-tag-input" />
         <NInput v-model:value="subscriptionURL" placeholder="https://example.com/subscription" @keyup.enter="addSubscription" />
-        <NButton type="primary" ghost @click="addSubscription">
+        <NSelect
+          v-model:value="subscriptionUA"
+          :options="UA_OPTIONS"
+          filterable
+          tag
+          placeholder="请求 UA"
+          class="subscription-ua-select"
+        />
+        <NButton type="primary" ghost :loading="preparing" @click="addSubscription">
           <template #icon><NIcon><AddOutline /></NIcon></template>添加
         </NButton>
       </NInputGroup>
       <div class="orchestrate-add-hint">
-        <NSwitch v-model:value="subscriptionPersist" size="small" />
-        <NText depth="3">启用离线缓存（写作 https-file://，拉取失败时回退到上次成功的内容）</NText>
+        <NSwitch v-model:value="subscriptionPersist" size="small" :disabled="subscriptionUA !== ''" />
+        <NText depth="3">
+          {{ subscriptionUA
+            ? '设置 UA 后由面板下载、校验并缓存，dae 从本地文件读取；必须填写标签。'
+            : '启用离线缓存（写作 https-file://，拉取失败时回退到上次成功的内容）' }}
+        </NText>
       </div>
       <NText v-if="scheduleSummary" depth="3" class="schedule-summary">
         订阅刷新：{{ scheduleSummary }}<template v-if="reloadSchedule?.nextRunAt">，下次 {{ formatDateTime(reloadSchedule.nextRunAt) }}</template>
@@ -307,10 +410,13 @@ onMounted(() => void loadSchedule())
             <div class="mobile-record-title">
               <span>{{ entry.tag || '未命名订阅' }}</span>
               <NTag v-if="parseScheme(entry.value)?.persistent" size="tiny" type="info" :bordered="false">离线缓存</NTag>
+              <NTag v-if="managedForEntry(entry)" size="tiny" type="info" :bordered="false">
+                UA: {{ managedForEntry(entry)?.userAgent }}
+              </NTag>
             </div>
           </div>
-          <p class="mobile-record-description mono">{{ entry.value }}</p>
-          <div v-if="supportsPersistence(entry.value)" class="mobile-record-toggle">
+          <p class="mobile-record-description mono">{{ displayURL(entry) }}</p>
+          <div v-if="!managedForEntry(entry) && supportsPersistence(entry.value)" class="mobile-record-toggle">
             <div>
               <strong>离线缓存</strong>
               <NText depth="3">拉取失败时使用上次成功内容</NText>
@@ -330,7 +436,7 @@ onMounted(() => void loadSchedule())
               secondary
               type="error"
               :disabled="!entry.editable"
-              @click="content = removeLine(content, entry.lineStart, entry.lineEnd)"
+              @click="removeSubscription(entry)"
             >
               <template #icon><NIcon><TrashOutline /></NIcon></template>移除
             </NButton>
@@ -342,20 +448,27 @@ onMounted(() => void loadSchedule())
   </NCard>
 
   <NModal :show="editTarget !== null" preset="card" title="编辑订阅" class="orchestrate-modal" @update:show="editTarget = null">
-    <NText depth="3">修改标签或链接地址。订阅内容始终由 dae 在下次重载时重新拉取。</NText>
+    <NText depth="3">设置请求 UA 后由面板负责下载和校验；留空则恢复为 dae 原生拉取。</NText>
     <NInput v-model:value="editTag" placeholder="标签(可选)" spellcheck="false" />
     <NInput v-model:value="editURL" class="mono" placeholder="https://example.com/subscription" spellcheck="false" @keyup.enter="applySubscriptionEdit" />
+    <NSelect
+      v-model:value="editUA"
+      :options="UA_OPTIONS"
+      filterable
+      tag
+      placeholder="请求 UA（留空由 dae 拉取）"
+    />
     <template #footer>
       <NSpace justify="end">
         <NButton @click="editTarget = null">取消</NButton>
-        <NButton type="primary" @click="applySubscriptionEdit">确定</NButton>
+        <NButton type="primary" :loading="preparing" @click="applySubscriptionEdit">确定</NButton>
       </NSpace>
     </template>
   </NModal>
 
   <NModal v-model:show="scheduleVisible" preset="card" title="订阅自动刷新" class="orchestrate-modal">
     <NText depth="3">
-      dae 只在无损重载时重新拉取订阅，因此自动刷新的实现就是按间隔执行一次 dae reload。
+      自动刷新会先更新由面板托管的订阅，再执行一次 dae reload；其他订阅仍由 dae 拉取。
       面板有其他控制操作正在执行时会跳过当轮，不会与之交叉。
     </NText>
     <NAlert v-if="scheduleError" type="error" :bordered="false" class="card-alert schedule-alert">

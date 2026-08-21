@@ -18,6 +18,8 @@ type Config struct {
 	Journalctl     string
 	DatabasePath   string
 	SchedulePath   string
+	// ManagedSubscriptionsPath 保存由面板携带自定义 UA 拉取的订阅定义。
+	ManagedSubscriptionsPath string
 	// InstallStatePath 记录面板装了哪个 dae 版本，并存放回滚用的上一版二进制。
 	InstallStatePath string
 	// GitHubTokenPath 保存管理员在设置页填写的 GitHub API Token。
@@ -53,17 +55,18 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		ListenAddress:  "0.0.0.0:2023",
-		Version:        "dev",
-		TrustedProxies: "127.0.0.0/8,::1/128",
-		DaeBinary:      "dae",
-		DaeConfigPath:  "/etc/dae/config.dae",
-		BackupDir:      "/var/lib/kdae-panel/backups",
-		ServiceName:    "dae",
-		Systemctl:      "systemctl",
-		Journalctl:     "journalctl",
-		DatabasePath:   "/var/lib/kdae-panel/panel.db",
-		SchedulePath:   "/var/lib/kdae-panel/schedule.json",
+		ListenAddress:            "0.0.0.0:2023",
+		Version:                  "dev",
+		TrustedProxies:           "127.0.0.0/8,::1/128",
+		DaeBinary:                "dae",
+		DaeConfigPath:            "/etc/dae/config.dae",
+		BackupDir:                "/var/lib/kdae-panel/backups",
+		ServiceName:              "dae",
+		Systemctl:                "systemctl",
+		Journalctl:               "journalctl",
+		DatabasePath:             "/var/lib/kdae-panel/panel.db",
+		SchedulePath:             "/var/lib/kdae-panel/schedule.json",
+		ManagedSubscriptionsPath: "/var/lib/kdae-panel/managed-subscriptions.json",
 		// 上一版二进制也放在这个前缀下，因此目录必须在 ReadWritePaths 内。
 		InstallStatePath: "/var/lib/kdae-panel/dae-install.json",
 		GitHubTokenPath:  "/var/lib/kdae-panel/github-token",
@@ -112,6 +115,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.SchedulePath == "" {
 		c.SchedulePath = defaults.SchedulePath
+	}
+	if c.ManagedSubscriptionsPath == "" {
+		c.ManagedSubscriptionsPath = defaults.ManagedSubscriptionsPath
 	}
 	if c.GeoStatePath == "" {
 		c.GeoStatePath = defaults.GeoStatePath

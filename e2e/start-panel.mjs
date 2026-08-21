@@ -63,6 +63,7 @@ const child = spawn(bin('kdae-panel'), [
   '-github-token-file', join(work, 'github-token'),
   '-panel-backup-file', join(work, 'kdae-panel.previous'),
   '-geo-state-file', join(work, 'geo.json'),
+  '-managed-subscriptions-file', join(work, 'managed-subscriptions.json'),
   // E2E 必须完全离线可重复，不向 GitHub 发任何请求
   '-disable-update-check',
 ], { stdio: 'inherit' })

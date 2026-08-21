@@ -322,6 +322,22 @@ export interface ScheduleStatus {
   nextRunAt?: string
 }
 
+export interface ManagedSubscriptionDefinition {
+  tag: string
+  url: string
+  userAgent: string
+}
+
+export interface ManagedSubscription extends ManagedSubscriptionDefinition {
+  localUrl: string
+  updatedAt?: string
+  lastError?: string
+}
+
+export interface ManagedSubscriptionsResponse {
+  subscriptions: ManagedSubscription[]
+}
+
 export interface LatencyTarget {
   host: string
   port: number
