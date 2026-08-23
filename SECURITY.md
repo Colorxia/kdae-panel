@@ -36,7 +36,7 @@ dae 版本管理（`KDAE_PANEL_ENABLE_DAE_INSTALL`，默认开启）会引入一
 
 - **两个信任根，同属 GitHub**：`raw.githubusercontent.com` 上 main 分支的 get.sh 本身，与 GitHub Release 的发布资产。`curl | bash` 等于同时信任两者；不接受的话，手动下载发布包核对后安装，或从源码构建。一键卸载只涉及第一个信任根——raw 上 main 分支的脚本本身，不下载任何 Release 资产，信任边界是部署的子集；安装时会在 `/usr/share/kdae-panel/` 落一份本地副本，卸载可以完全离线。
 - **校验强制**：脚本先解析 latest 实际指向的 tag，两个文件从同一固定版本下载，逐一比对 `SHA256SUMS`，不一致即中止，没有跳过开关。清单与发布包同发布者、同 Release，防传输损坏与不完整下载，防不住发布者本身——与 dae 的 `.dgst` 同一档。
-- **独立的来源证明**：发布流水线为每个归档生成 GitHub OIDC 构建来源证明，`gh attestation verify <归档> --repo tuoro/kdae-panel` 可验证归档确实产自本仓库的发布工作流。它不依赖与包同源的清单，防得住"资产被事后替换"；残余信任是 GitHub 本身与系统 CA 信任库。
+- **独立的来源证明**：发布流水线为每个归档生成 GitHub OIDC 构建来源证明，`gh attestation verify <归档> --repo Colorxia/kdae-panel` 可验证归档确实产自本仓库的发布工作流。它不依赖与包同源的清单，防得住"资产被事后替换"；残余信任是 GitHub 本身与系统 CA 信任库。
 - **发布纪律**：只有 `vX.Y.Z` 形式的 tag 会成为正式 release；带连字符的 tag（`v1.0.0-rc.1`）自动标为预发布，不会被 latest 直链选中，一键部署的用户不会装到它。
 
 ## dae 版本管理

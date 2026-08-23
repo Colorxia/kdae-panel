@@ -58,16 +58,16 @@
 在有 systemd 的 Linux（amd64 / arm64 / riscv64）上，以 root 执行：
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/get.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Colorxia/kdae-panel/main/scripts/get.sh)"
 ```
 
 脚本会下载最新发布包、比对 `SHA256SUMS`、安装并启动服务。固定安装某个版本：
 
 ```bash
-KDAE_PANEL_VERSION=v0.1.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/get.sh)"
+KDAE_PANEL_VERSION=v0.1.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Colorxia/kdae-panel/main/scripts/get.sh)"
 ```
 
-这条命令等于信任本仓库与 GitHub：校验和与发布包同处一个 Release，防传输损坏，防不住发布者本身。不接受这个前提、或网络无法直连 GitHub 时，请手动到 [Releases](https://github.com/tuoro/kdae-panel/releases) 下载对应架构的 `kdae-panel_linux_<arch>.tar.gz` 与 `SHA256SUMS`，用 `sha256sum -c --ignore-missing SHA256SUMS` 核对（清单含全部架构，勿直接整份 `-c`）后运行包内的 `install.sh`——或直接用下面的源码方式。发布包另附构建来源证明，验证方式见 [docs/deployment.md](docs/deployment.md)。
+这条命令等于信任本仓库与 GitHub：校验和与发布包同处一个 Release，防传输损坏，防不住发布者本身。不接受这个前提、或网络无法直连 GitHub 时，请手动到 [Releases](https://github.com/Colorxia/kdae-panel/releases) 下载对应架构的 `kdae-panel_linux_<arch>.tar.gz` 与 `SHA256SUMS`，用 `sha256sum -c --ignore-missing SHA256SUMS` 核对（清单含全部架构，勿直接整份 `-c`）后运行包内的 `install.sh`——或直接用下面的源码方式。发布包另附构建来源证明，验证方式见 [docs/deployment.md](docs/deployment.md)。
 
 若这台机器上还没有 dae，装好面板后可直接在版本管理页完成 dae 的首次安装。安装完成后的访问方式见下方「首次访问」。
 
@@ -76,7 +76,7 @@ KDAE_PANEL_VERSION=v0.1.0 bash -c "$(curl -fsSL https://raw.githubusercontent.co
 依赖 Go 1.25.13+、Node.js 22+，运行环境需要 systemd：
 
 ```bash
-git clone https://github.com/tuoro/kdae-panel.git
+git clone https://github.com/Colorxia/kdae-panel.git
 cd kdae-panel
 npm ci --prefix web
 make build
@@ -100,7 +100,7 @@ http://<面板机器的内网 IP>:2023
 以下命令须在 root shell 中执行：
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Colorxia/kdae-panel/main/scripts/uninstall.sh)"
 ```
 
 默认移除程序、服务单元及其 systemd override，配置、账户数据库与配置备份全部保留；清理 override 是为了避免重装后意外恢复 `/usr/bin` 等高权限写路径。要连数据一并清除，在命令前加 `KDAE_PANEL_PURGE=true`。两种模式都不触碰 dae——它的服务、二进制、配置与 geo 数据原样保留。安装时会在本地落一份等效脚本，离线也可卸载：`sudo bash /usr/share/kdae-panel/uninstall.sh`；一键自升级只替换二进制，这份离线脚本仍属于最近一次完整安装的版本，联网时优先使用上面的最新脚本。

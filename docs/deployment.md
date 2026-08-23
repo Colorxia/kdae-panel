@@ -13,14 +13,14 @@
 以下命令须在 root shell 中执行（OpenWrt 默认登录即 root；普通发行版可先运行 `sudo -i`）：
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/get.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Colorxia/kdae-panel/main/scripts/get.sh)"
 ```
 
 脚本按 `uname -m` 选择发布资产（amd64 / arm64 / riscv64），从 GitHub Release 的 latest 直链下载、比对 `SHA256SUMS` 后运行包内的 `install.sh`，效果与源码安装完全一致。设置 `KDAE_PANEL_VERSION=v0.1.0` 可固定版本。
 
 三点如实说明：
 
-- **信任边界**：`curl | bash` 等于信任本仓库与 GitHub。校验和与发布包由同一个发布者签出、放在同一个 Release，防的是传输损坏与不完整下载，防不住发布者本身。发布包另附 GitHub OIDC 来源证明，可用 `gh attestation verify kdae-panel_linux_<arch>.tar.gz --repo tuoro/kdae-panel` 进一步确认归档确实由本仓库的发布流程构建——它不依赖与包同源的清单，防得住"资产被事后替换"，仍防不住发布者提交的代码本身。
+- **信任边界**：`curl | bash` 等于信任本仓库与 GitHub。校验和与发布包由同一个发布者签出、放在同一个 Release，防的是传输损坏与不完整下载，防不住发布者本身。发布包另附 GitHub OIDC 来源证明，可用 `gh attestation verify kdae-panel_linux_<arch>.tar.gz --repo Colorxia/kdae-panel` 进一步确认归档确实由本仓库的发布流程构建——它不依赖与包同源的清单，防得住"资产被事后替换"，仍防不住发布者提交的代码本身。
 - **网络前提**：`raw.githubusercontent.com` 与 `github.com` 都必须可达。无法直连时，请在能访问的机器上手动下载 `kdae-panel_linux_<arch>.tar.gz` 与 `SHA256SUMS` 两个文件，核对通过后拷到目标机器解压，运行包内 `install.sh`。核对命令：
 
   ```bash
@@ -36,7 +36,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/sc
 ## 从源码安装
 
 ```bash
-git clone https://github.com/tuoro/kdae-panel.git
+git clone https://github.com/Colorxia/kdae-panel.git
 cd kdae-panel
 npm ci --prefix web
 make build
@@ -251,7 +251,7 @@ sudo systemctl restart dae
 以下命令同样须在 root shell 中执行：
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Colorxia/kdae-panel/main/scripts/uninstall.sh)"
 ```
 
 安装时（无论一键部署还是源码安装）也会在本地落一份等效脚本，离线可用（早期安装的机器没有这份副本，重跑一次安装即可补上）：
@@ -265,7 +265,7 @@ sudo bash /usr/share/kdae-panel/uninstall.sh
 默认保留 `/etc/kdae-panel` 与 `/var/lib/kdae-panel`（配置、账户数据库、配置备份、dae 回滚副本），但主服务单元及其 `kdae-panel.service.d` override 会一并移除，避免重装后意外恢复高权限。确认数据不再需要后可用清除模式重跑。本地副本会随普通卸载一起移除，因此重跑要用一键命令（或源码检出）：
 
 ```bash
-sudo KDAE_PANEL_PURGE=true bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)"
+sudo KDAE_PANEL_PURGE=true bash -c "$(curl -fsSL https://raw.githubusercontent.com/Colorxia/kdae-panel/main/scripts/uninstall.sh)"
 ```
 
 清除模式会按 env 文件里配置的实际路径删除数据（数据库、订阅刷新、geo 更新与安装状态文件即使被挪到默认目录之外也会被找到），随后删除上述两个目录本身。唯一的例外是备份目录：它需要以 root 递归删除，取值又来自 env 配置，因此只有位于默认数据目录 `/var/lib/kdae-panel` 之内时才自动删，挪到别处的会打印路径请你确认后手工处理——env 里一个手滑的取值不该变成 root 下的 `rm -rf`。

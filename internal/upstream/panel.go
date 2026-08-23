@@ -21,8 +21,10 @@ const maxPanelBytes = 32 << 20
 
 // PanelRepoOwner / PanelRepoName 是面板自身的仓库坐标，
 // 新版本检查、自升级与一键部署脚本都指向这里。
+// 本部署指向 Colorxia/kdae-panel（fork），其 Release 由与上游相同的
+// release 流水线在推 tag 时产出；上游 tuoro/kdae-panel 仅作参照。
 const (
-	PanelRepoOwner = "tuoro"
+	PanelRepoOwner = "Colorxia"
 	PanelRepoName  = "kdae-panel"
 )
 

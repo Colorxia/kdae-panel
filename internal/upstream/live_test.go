@@ -134,7 +134,7 @@ func TestLivePanelRelease(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	tag, err := LatestPanelRelease(ctx, "tuoro", "kdae-panel")
+	tag, err := LatestPanelRelease(ctx, PanelRepoOwner, PanelRepoName)
 	if err != nil {
 		t.Fatal(err)
 	}
