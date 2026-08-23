@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kdae-panel 一键部署：下载最新发布包、校验 sha256、安装并启动。
 #
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/get.sh)"
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/Colorxia/kdae-panel/main/scripts/get.sh)"
 #
 # 固定安装某个版本：
 #   KDAE_PANEL_VERSION=v0.1.0 bash -c "$(curl -fsSL ...)"
@@ -11,7 +11,7 @@
 # 防不住发布者本身。不接受这个前提的话，请改用 README 里的源码构建方式。
 set -euo pipefail
 
-repo="tuoro/kdae-panel"
+repo="Colorxia/kdae-panel"
 version="${KDAE_PANEL_VERSION:-}"
 
 # 在拼进 URL 之前拦住异常取值：含空格/换行会让 curl 直接报参数错误，

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kdae-panel 卸载。一键执行：
 #
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)"
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/Colorxia/kdae-panel/main/scripts/uninstall.sh)"
 #   （须在 root shell 中执行）
 #
 # 默认保留配置、账户数据库与全部配置备份；要连数据一并清除：
@@ -141,7 +141,7 @@ if [[ ${purge} == true ]]; then
 else
   echo "配置和账户数据未删除；默认位于 /etc/kdae-panel 与 /var/lib/kdae-panel，自定义路径按 env 配置保留。"
   echo "要连数据一并清除，用清除模式重跑（本地脚本副本已随程序移除）："
-  echo "  （在 root shell 中）KDAE_PANEL_PURGE=true bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)\""
+  echo "  （在 root shell 中）KDAE_PANEL_PURGE=true bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Colorxia/kdae-panel/main/scripts/uninstall.sh)\""
   echo "  （源码检出仍在时等效：sudo KDAE_PANEL_PURGE=true ./scripts/uninstall.sh）"
 
   for leftover in "${state_file}.previous-dae" "${state_file}.previous-dae.pending"; do
