@@ -3,7 +3,8 @@
 // 支持两个来源,它们的"版本"含义不同,界面需要如实区分:
 //   - official: daeuniverse/dae 的 GitHub Release,版本即 tag,可回到任意历史版本,
 //     校验和来自随包发布的 .dgst 文件。
-//   - kdae: olicesx/dae 的 kdae 分支没有 Release,只有 CI 构建产物。版本即一次
+//   - kdae: kdae 分支（本部署指向 Colorxia/dae 的 fork，与上游 olicesx/dae 的
+//     kdae 分支保持同步并携带本地补丁）没有 Release,只有 CI 构建产物。版本即一次
 //     成功的构建,校验和来自 GitHub Actions API 的 digest 字段。产物 90 天过期,
 //     过期后无法安装。
 //
@@ -109,7 +110,7 @@ func NewDefaultRegistryWithGitHubToken(source GitHubTokenSource) *Registry {
 	client := newHTTPClientWithTokenSource(source)
 	return newRegistry(client,
 		NewOfficialProvider(client, "daeuniverse", "dae"),
-		NewKdaeProvider(client, "olicesx", "dae", "kdae", "build.yml"),
+		NewKdaeProvider(client, "Colorxia", "dae", "kdae", "build.yml"),
 	)
 }
 
