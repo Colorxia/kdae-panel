@@ -51,6 +51,11 @@ type Config struct {
 	// EnableGeoUpdate 是为旧部署保留的兼容字段。Geo 管理现在始终在认证后可用；
 	// 下载仍受公网 HTTPS、体积与 SHA-256 三重约束。
 	EnableGeoUpdate bool
+	// DisableBootPolicySync 关闭面板与 systemd 开机策略的联动：
+	// 启动时不再把"正在运行但 disabled"的 dae 自动 enable，
+	// 面板里的启停也只用瞬时 start/stop/restart，不改写开机自启状态。
+	// 适合约定 dae 手动启停、不开机自启的部署。默认关闭，保持上游行为。
+	DisableBootPolicySync bool
 }
 
 func DefaultConfig() Config {

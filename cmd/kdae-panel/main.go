@@ -51,6 +51,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	disableBootPolicySyncDefault, err := envBool("KDAE_PANEL_DISABLE_BOOT_POLICY_SYNC", cfg.DisableBootPolicySync)
+	if err != nil {
+		return err
+	}
 	listen := flag.String("listen", envOr("KDAE_PANEL_LISTEN", cfg.ListenAddress), "HTTP 监听地址")
 	bootstrapToken := flag.String("bootstrap-token", envOr("KDAE_PANEL_BOOTSTRAP_TOKEN", cfg.BootstrapToken), "首次初始化 bootstrap token")
 	setupURLFile := flag.String("setup-url-file", envOr("KDAE_PANEL_SETUP_URL_FILE", cfg.SetupURLFile), "首次初始化链接临时文件")
@@ -73,6 +77,7 @@ func run() error {
 	enableGeoUpdate := flag.Bool("enable-geo-update", enableGeoUpdateDefault, "兼容旧版本；Geo 数据管理现已始终启用")
 	disableUpdateCheck := flag.Bool("disable-update-check", disableUpdateCheckDefault, "关闭面板自身的新版本检查")
 	enableSelfUpdate := flag.Bool("enable-self-update", enableSelfUpdateDefault, "允许面板一键升级自身")
+	disableBootPolicySync := flag.Bool("disable-boot-policy-sync", disableBootPolicySyncDefault, "关闭面板启停时对 systemd 开机策略的联动")
 	panelBackupPath := flag.String("panel-backup-file", envOr("KDAE_PANEL_BACKUP_FILE", cfg.PanelBackupPath), "自升级时保留的上一版面板二进制路径")
 	sessionTTL := flag.Duration("session-ttl", sessionTTLDefault, "登录会话有效期")
 	secureCookie := flag.Bool("secure-cookie", secureCookieDefault, "仅通过 HTTPS 发送登录 Cookie")
@@ -105,6 +110,7 @@ func run() error {
 	cfg.EnableGeoUpdate = *enableGeoUpdate
 	cfg.DisableUpdateCheck = *disableUpdateCheck
 	cfg.EnableSelfUpdate = *enableSelfUpdate
+	cfg.DisableBootPolicySync = *disableBootPolicySync
 	cfg.PanelBackupPath = *panelBackupPath
 	cfg.SessionTTL = *sessionTTL
 	cfg.SecureCookie = *secureCookie

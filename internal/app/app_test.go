@@ -450,6 +450,44 @@ func TestAdoptRunningServiceBootState(t *testing.T) {
 	}
 }
 
+// TestServiceStartAndStopWithBootPolicySyncDisabled 验证 DisableBootPolicySync
+// 打开后，面板启停只发瞬时 start/stop，不改写 systemd 开机自启状态，
+// 响应消息也不再宣称"已设为随系统启动"。
+func TestServiceStartAndStopWithBootPolicySyncDisabled(t *testing.T) {
+	hostService := &stubHostService{}
+	application, err := NewWithDependencies(
+		Config{Version: "test-panel", DisableBootPolicySync: true},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{Dae: stubDaeService{}, Host: hostService},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantMessages := map[string]string{"start": "dae 已启动", "stop": "dae 已停止"}
+	for _, action := range []string{"start", "stop"} {
+		response := httptest.NewRecorder()
+		application.Handler().ServeHTTP(response, httptest.NewRequest(
+			http.MethodPost, "/api/v1/service/actions/"+action, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s 状态码 = %d，响应 = %s", action, response.Code, response.Body.String())
+		}
+		var body struct {
+			Message string `json:"message"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+			t.Fatalf("解析 %s 响应失败: %v", action, err)
+		}
+		if body.Message != wantMessages[action] {
+			t.Fatalf("%s 响应消息 = %q，期望 %q", action, body.Message, wantMessages[action])
+		}
+	}
+	want := []host.Action{host.ActionStart, host.ActionStop}
+	if !reflect.DeepEqual(hostService.actions, want) {
+		t.Fatalf("服务动作 = %v，期望 %v", hostService.actions, want)
+	}
+}
+
 func TestServiceSuspendStateClearsAfterReload(t *testing.T) {
 	hostService := &stubHostService{status: host.Status{
 		Name:        "dae.service",

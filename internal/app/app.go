@@ -109,7 +109,9 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("初始化主机服务管理器: %w", err)
 	}
-	adoptRunningServiceBootState(hostManager, logger)
+	if !cfg.DisableBootPolicySync {
+		adoptRunningServiceBootState(hostManager, logger)
+	}
 	daeService := newSystemdDaeService(daeClient, daeClient, daeClient, hostManager)
 	managedSubscriptions, err := managedsubscription.Open(cfg.ManagedSubscriptionsPath, cfg.DaeConfigPath, logger)
 	if err != nil {
@@ -343,7 +345,7 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 		writeJSON(writer, http.StatusOK, outline)
 	})
 	registerConfigurationRoutes(router, dependencies.Configuration, dependencies.ManagedSubscriptions, operations)
-	registerServiceRoutes(router, dependencies.Dae, dependencies.Host, operations)
+	registerServiceRoutes(router, dependencies.Dae, dependencies.Host, operations, cfg.DisableBootPolicySync)
 	registerConnectionRoutes(router, dependencies.Host, dependencies.Configuration, dependencies.Connections)
 	registerProbeRoutes(router, dependencies.Probe, logger)
 	registerSubscriptionNodeRoutes(router, dependencies.SubscriptionNodes)

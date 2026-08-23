@@ -56,7 +56,7 @@ type serviceStatusResponse struct {
 	Suspended bool `json:"suspended"`
 }
 
-func registerServiceRoutes(router *http.ServeMux, daeService DaeService, hostService HostService, operations *sync.Mutex) {
+func registerServiceRoutes(router *http.ServeMux, daeService DaeService, hostService HostService, operations *sync.Mutex, disableBootPolicySync bool) {
 	controlState := &serviceControlState{}
 	router.HandleFunc("GET /api/v1/host/interfaces", func(writer http.ResponseWriter, request *http.Request) {
 		if hostService == nil {
@@ -110,11 +110,14 @@ func registerServiceRoutes(router *http.ServeMux, daeService DaeService, hostSer
 			hostAction := host.Action(action)
 			// 用户从面板启动或停止时，同时更新 systemd 的开机状态；版本切换走安装器
 			// 内部的普通 start/stop/restart，不会被这里改变。
-			switch hostAction {
-			case host.ActionStart:
-				hostAction = host.ActionEnableNow
-			case host.ActionStop:
-				hostAction = host.ActionDisableNow
+			// DisableBootPolicySync 开启时只用瞬时动作，不改写开机自启状态。
+			if !disableBootPolicySync {
+				switch hostAction {
+				case host.ActionStart:
+					hostAction = host.ActionEnableNow
+				case host.ActionStop:
+					hostAction = host.ActionDisableNow
+				}
 			}
 			err = hostService.Action(request.Context(), hostAction)
 		case "reload":
@@ -155,13 +158,21 @@ func registerServiceRoutes(router *http.ServeMux, daeService DaeService, hostSer
 			"suspended": action == "suspend",
 			"deferred":  deferred,
 		}
-		if action == "suspend" {
-			response["message"] = "dae 已暂停，代理流量处理已停止；点击无损重载即可恢复"
-		} else if action == string(host.ActionStart) {
-			response["message"] = "dae 已启动，并已设为随系统启动"
-		} else if action == string(host.ActionStop) {
-			response["message"] = "dae 已停止，并已取消随系统启动"
-		} else if deferred {
+if action == "suspend" {
+				response["message"] = "dae 已暂停，代理流量处理已停止；点击无损重载即可恢复"
+			} else if action == string(host.ActionStart) {
+				if disableBootPolicySync {
+					response["message"] = "dae 已启动"
+				} else {
+					response["message"] = "dae 已启动，并已设为随系统启动"
+				}
+			} else if action == string(host.ActionStop) {
+				if disableBootPolicySync {
+					response["message"] = "dae 已停止"
+				} else {
+					response["message"] = "dae 已停止，并已取消随系统启动"
+				}
+			} else if deferred {
 			response["message"] = "dae 当前未运行，无需重载；下次启动会读取磁盘配置"
 		}
 		writeJSON(writer, http.StatusOK, response)
