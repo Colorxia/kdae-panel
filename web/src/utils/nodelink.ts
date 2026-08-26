@@ -6,6 +6,9 @@ export interface NodeLinkInfo {
   name: string
   host: string
   port: number | null
+  // portText 保留端口并集的原文（如 hy2 端口跳跃的 "16384,50000-60000"），
+  // 仅供展示；port 字段取并集的第一个端口用于探测。
+  portText?: string
 }
 
 const KNOWN_PROTOCOLS = new Set([
@@ -33,24 +36,35 @@ function decodeName(fragment: string): string {
 }
 
 /** 从 `[user@]host[:port]` 形式的 authority 中提取主机与端口。 */
-function parseAuthority(authority: string): { host: string; port: number | null } {
+function parseAuthority(authority: string): { host: string; port: number | null; portText?: string } {
   const at = authority.lastIndexOf('@')
   let hostPort = at >= 0 ? authority.slice(at + 1) : authority
   let host = hostPort
   let port: number | null = null
+  let portText: string | undefined
   const v6 = /^\[([^\]]+)\](?::(\d+))?$/.exec(hostPort)
   if (v6) {
     host = v6[1]
     port = v6[2] ? Number(v6[2]) : null
   } else {
     const colon = hostPort.lastIndexOf(':')
-    if (colon >= 0 && /^\d+$/.test(hostPort.slice(colon + 1))) {
-      host = hostPort.slice(0, colon)
-      port = Number(hostPort.slice(colon + 1))
+    if (colon >= 0) {
+      const tail = hostPort.slice(colon + 1)
+      // dae 的 hy2/hysteria2 端口跳跃把 server 编码为“端口并集”：
+      // 形如 16384 / 16384,50000-60000 / 50000-60000（仅数字、逗号与连字符，首尾为数字）。
+      // 取并集的第一个端口作为展示与探测端口；其余原文放入 portText。
+      if (/^[0-9,-]+$/.test(tail) && /^\d/.test(tail) && /\d$/.test(tail)) {
+        const basePort = Number(tail.split(/[,-]/)[0])
+        if (Number.isInteger(basePort) && basePort >= 1 && basePort <= 65535) {
+          host = hostPort.slice(0, colon)
+          port = basePort
+          if (tail !== String(basePort)) portText = tail
+        }
+      }
     }
   }
   if (port !== null && (port < 1 || port > 65535)) port = null
-  return { host, port }
+  return { host, port, portText }
 }
 
 function parseURLStyle(protocol: string, rest: string): NodeLinkInfo {
@@ -58,8 +72,8 @@ function parseURLStyle(protocol: string, rest: string): NodeLinkInfo {
   const name = fragmentAt >= 0 ? decodeName(rest.slice(fragmentAt + 1)) : ''
   let authority = fragmentAt >= 0 ? rest.slice(0, fragmentAt) : rest
   authority = authority.split(/[/?]/, 1)[0]
-  const { host, port } = parseAuthority(authority)
-  return { protocol, name, host, port }
+  const { host, port, portText } = parseAuthority(authority)
+  return { protocol, name, host, port, portText }
 }
 
 function validPort(value: unknown): number | null {

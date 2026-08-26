@@ -29,6 +29,16 @@ describe('parseNodeLink', () => {
     expect(parseNodeLink('tuic://uuid:pass@t.example:443#tuic')?.host).toBe('t.example')
   })
 
+  it('解析 hy2 端口跳跃（端口并集）取首个端口', () => {
+    expect(parseNodeLink('hy2://auth@2.27.134.25:16384,50000-60000?insecure=1#hop')).toEqual({
+      protocol: 'hysteria2', name: 'hop', host: '2.27.134.25', port: 16384,
+      portText: '16384,50000-60000',
+    })
+    expect(parseNodeLink('hy2://auth@2.27.134.25:50000-60000#range')?.host).toBe('2.27.134.25')
+    expect(parseNodeLink('hy2://auth@2.27.134.25:50000-60000#range')?.port).toBe(50000)
+    expect(parseNodeLink('hy2://auth@2.27.134.25:16384,50000-60000#hop')?.port).toBe(16384)
+  })
+
   it('解析两种 ss 形式', () => {
     expect(parseNodeLink('ss://YWVzOm1pbWk@5.6.7.8:8388#HK')).toEqual({
       protocol: 'ss', name: 'HK', host: '5.6.7.8', port: 8388,

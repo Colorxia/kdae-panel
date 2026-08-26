@@ -77,9 +77,18 @@ const (
 )
 
 func parseEvent(timestamp time.Time, fields map[string]string) (Event, parseOutcome) {
-	// dae 会为复用的 UDP 会话输出 debug 行；只接收连接建立时的 info 行，
-	// 否则一条 UDP 流会反复制造新记录。
-	if fields["level"] != "info" {
+	// dae 会为复用的 UDP 会话输出 debug 行，只接收连接建立时的 info 行，
+	// 否则一条 UDP 流会反复制造新记录。上游 kdae 自 502d976（cut relay log
+	// noise）起把连接建立日志降到 debug（tcp.go / udp.go 均为 Debugf），
+	// 因此这里同时接受 info 与 debug 两种级别的连接建立行。
+	if level := fields["level"]; level != "info" && level != "debug" {
+		return Event{}, parseSkipped
+	}
+	// 真实连接建立事件（tcp.go:324 / udp.go:1264 的 Debugf）恒带 "ip" 目标端点；
+	// dae 的 DNS 转发器也会输出形如 <-> 的 debug 行（dns_controller_forwarder.go:501），
+	// 它带 network/outbound/dialer 但没有 ip。用 ip 作指纹把 DNS 行排除在连接之外
+	// （不计入 dropped，也不制造假连接），避免放开 debug 后误判。
+	if fields["ip"] == "" {
 		return Event{}, parseSkipped
 	}
 	network := fields["network"]

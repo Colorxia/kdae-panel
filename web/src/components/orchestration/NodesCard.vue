@@ -272,7 +272,19 @@ const nodeColumns: DataTableColumns<NodeRow> = [
     title: '端口',
     key: 'port',
     width: 90,
-    render: (row) => row.info?.port ?? '—',
+    render: (row) => {
+      const info = row.info
+      const port = info?.port
+      if (!port) return h(NText, { depth: 3 }, { default: () => '—' })
+      const label = h('span', { class: 'mono' }, String(port))
+      if (info?.portText && info.portText !== String(port)) {
+        return h(NTooltip, null, {
+          trigger: () => label,
+          default: () => `端口并集: ${info.portText}`,
+        })
+      }
+      return label
+    },
   },
   {
     title: () => h(NTooltip, null, {
