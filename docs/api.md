@@ -315,7 +315,7 @@ ICMP ping socket 通常受系统的 `ping_group_range` 控制；发行单元同�
 
 | 字段 | 来源 | 含义 |
 |---|---|---|
-| `entries` | dae `info` 级别的连接日志 | 历史建立流水，包含源、目的、嗅探域名、出站、节点、策略、进程和 MAC |
+| `entries` | dae 的连接建立日志；官方/旧版使用 `info`，受影响的新 kdae 使用 `debug` | 历史建立流水，包含源、目的、嗅探域名、出站、节点、策略、进程和 MAC |
 | `facets.targets` / `nodes` / `groups` | 同上 | 所选时间窗内按目标、`dialer` 和 `outbound` 聚合的新建连接数 |
 | `facets.clients` | 同上 | 有效单播 MAC 作为稳定键、最新 IP 作为标签；无有效 MAC 时按 IP 聚合 |
 | `endpoints` | `/proc/net/tcp{,6}` 与 `/proc/<pid>/fd` | dae 此刻持有的 ESTABLISHED TCP socket，按远端 `IP:端口` 聚合 |
@@ -324,7 +324,9 @@ ICMP ping socket 通常受系统的 `ping_group_range` 控制；发行单元同�
 | `summary.sampledTcpPeak` / `sampledUdpPeak` | 最近成功的 procfs 快照 | `socketWindowSeconds` 秒内实际采样到的峰值；dae PID 变化后清空 |
 | `summary.windowEvents` / `windowClients` / `windowTargets` | 面板内存 | 所选时间窗内保留的事件、客户端和目标数 |
 
-`logsOk` 与 `snapshotOk` 分别表示两个来源是否可用；任一来源失败不会抹掉另一边的数据。`serviceRunning` 根据 systemd MainPID 区分“dae 未运行”和“运行中但当前未捕获”，`socketWindowSeconds` 给出离散采样峰值窗口。`logLevel` 来自当前配置的 `global.log_level`，字段省略时按 dae 默认值 `info` 返回，无法可靠读取时省略。`warn` 或 `error` 不会产生连接建立流水，页面会保留实时 socket 快照并提供经配置事务切换到 `info` 的入口。日志事件在内存中最多保留 2000 条、最长 24 小时，面板重启后从当前 journald 窗口重新积累。分布在明细条数裁剪前计算，每个维度最多返回前 200 项，超限时 `facetLimited=true`。`truncated=true` 表示部分明细或端点不完整，页面计数只能基于面板当前保留或扫描到的数据。解析器拒绝未知协议与残缺连接行，只接收 `info` 事件；只有同时包含 `<->` 与连接元数据的候选行解析失败才计入 `dropped`，Netkit 设备对等普通生命周期日志不会制造误报。
+`logsOk` 与 `snapshotOk` 分别表示两个来源是否可用；任一来源失败不会抹掉另一边的数据。`serviceRunning` 根据 systemd MainPID 区分“dae 未运行”和“运行中但当前未捕获”，`socketWindowSeconds` 给出离散采样峰值窗口。`logLevel` 来自当前配置的 `global.log_level`，字段省略时按 dae 默认值 `info` 返回，无法可靠读取时省略。`requiredLogLevel` 是当前运行版本产生连接建立流水所需的最低级别：官方 dae 和旧版 kdae 为 `info`，`unstable-20260825.r1148.502d97` 以及由面板安装账本确认的后续 kdae 为 `debug`。当前级别不足时，页面会保留实时 socket 快照，并提供经配置事务切换到对应级别的入口；切到 `debug` 会明确提示额外日志量与运行开销。
+
+日志事件在内存中最多保留 2000 条、最长 24 小时，面板重启后从当前 journald 窗口重新积累。分布在明细条数裁剪前计算，每个维度最多返回前 200 项，超限时 `facetLimited=true`。`truncated=true` 表示部分明细或端点不完整，页面计数只能基于面板当前保留或扫描到的数据。解析器拒绝未知协议与残缺连接行；`info` 连接事件保持兼容，`debug` 事件只在运行版本被确认属于上述 kdae 范围且 journald `_PID` 等于当前 systemd MainPID 时接收，避免把旧进程或其他 debug 日志误计为连接。只有同时包含 `<->` 与连接元数据的候选行解析失败才计入 `dropped`，Netkit 设备对等普通生命周期日志不会制造误报。
 
 `endpoints` 是远端地址分布，不是节点名称映射：同一节点可能解析成多个地址，直连流量也可能完全留在 eBPF 数据面而不产生 dae userspace socket。当前值为零只表示这次离散采样没有命中，不能推出“没有代理流量”；峰值同样只汇总实际采样，不填补采样间隙。dae 没有公开逐条连接状态接口，因此 API 不提供 `live`、`closed` 一类猜测值。端点只读取 journald 与 Linux procfs，不读取 dae/kdae 内部 eBPF Map；与其他管理接口一样只允许已登录管理员访问。
 

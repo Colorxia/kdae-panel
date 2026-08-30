@@ -82,6 +82,22 @@ func TestInspectUnavailable(t *testing.T) {
 	}
 }
 
+func TestVersionOnlyRunsVersionCommand(t *testing.T) {
+	runner := &fakeRunner{
+		results: map[string]command.Result{
+			"dae --version": {Stdout: "dae version unstable-20260825.r1148.502d97\ngo runtime go1.26 linux/amd64\n"},
+		},
+		errors: map[string]error{},
+	}
+	version, err := NewClientWithRunner("dae", runner, time.Second).Version(context.Background())
+	if err != nil || version != "dae version unstable-20260825.r1148.502d97" {
+		t.Fatalf("版本 = %q，错误 = %v", version, err)
+	}
+	if want := []string{"dae --version"}; !reflect.DeepEqual(runner.calls, want) {
+		t.Fatalf("调用 = %v，期望 %v", runner.calls, want)
+	}
+}
+
 func TestOutlineRejectsEmptyStructure(t *testing.T) {
 	runner := &fakeRunner{
 		results: map[string]command.Result{

@@ -42,7 +42,7 @@
 - 面板自身的新版本提醒：读取本仓库最新发布并长时缓存，设置页支持立即检查，可用 `KDAE_PANEL_DISABLE_UPDATE_CHECK` 整体关闭；
 - 面板一键自升级：默认开启，可在设置页直接开关；校验 sha256、用新二进制自证可运行后再替换并重启自身，保留上一版供人工还原；
 - 节点入口延迟探测：公网使用不经过 dae TCP/UDP 转发的 ICMP 三次中位数，内网使用 TCP；不靠延迟阈值猜测，也不以可能经过当前代理的结果兜底；
-- 连接活动：以 dae 的 info 日志展示最近 24 小时内有界的连接建立流水，按目标、客户端、节点与出站组聚合并可直接筛选明细；客户端有有效 MAC 时跨 IP 合并。dae 当前持有的 TCP/UDP socket、最近 30 秒已采样峰值与远端分布作为独立快照呈现；未捕获不会被误写成“没有流量”，也不读取内部 eBPF Map 或伪造逐条存活状态、流量和速率；
+- 连接活动：以 dae 的连接建立日志展示最近 24 小时内有界的流水，自动区分使用 `info` 的官方/旧版 dae 与从 `unstable-20260825.r1148.502d97` 起改用 `debug` 的 kdae（首个构建精确识别，后续构建依据面板安装账本确认），并在当前级别不足时提供带开销说明的切换入口；按目标、客户端、节点与出站组聚合并可直接筛选明细，客户端有有效 MAC 时跨 IP 合并。dae 当前持有的 TCP/UDP socket、最近 30 秒已采样峰值与远端分布作为独立快照呈现；未捕获不会被误写成“没有流量”，也不读取内部 eBPF Map 或伪造逐条存活状态、流量和速率；
 - 原始配置编辑、独立校验、并发冲突检测和事务保存；
 - 保存前备份、原子替换及重载失败后的磁盘回滚；
 - 配置历史存档：可为当前配置保存名称和备注，恢复前展示与当前配置的逐行差异，并用当前 dae 预先校验兼容性；不兼容存档禁止恢复，真正恢复时仍再次校验并受乐观锁保护；存档支持原文导出、单份删除和多选批量删除，自动备份仍按 50 份、256 MiB 上限自动清理；
@@ -67,7 +67,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/sc
 KDAE_PANEL_VERSION=v0.1.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/get.sh)"
 ```
 
-这条命令等于信任本仓库与 GitHub：校验和与发布包同处一个 Release，防传输损坏，防不住发布者本身。不接受这个前提、或网络无法直连 GitHub 时，请手动到 [Releases](https://github.com/tuoro/kdae-panel/releases) 下载对应架构的 `kdae-panel_linux_<arch>.tar.gz` 与 `SHA256SUMS`，用 `sha256sum -c --ignore-missing SHA256SUMS` 核对（清单含全部架构，勿直接整份 `-c`）后运行包内的 `install.sh`——或直接用下面的源码方式。发布包另附构建来源证明，验证方式见 [docs/deployment.md](docs/deployment.md)。
+这条命令等于信任本仓库与 GitHub：校验和与发布包同处一个 Release，防传输损坏，防不住发布者本身。不接受这个前提、或网络无法直连 GitHub 时，请手动到 [Releases](https://github.com/tuoro/kdae-panel/releases) 下载对应架构的 `kdae-panel_linux_<arch>.tar.gz` 与 `SHA256SUMS`，用 `sha256sum -c --ignore-missing SHA256SUMS` 核对（清单含全部架构，勿直接整份 `-c`）后运行包内的 `install.sh`——或直接用下面的源码方式。由 GitHub Actions 构建的发布包另附来源证明；本地应急构建是否包含证明以对应 Release 说明为准，验证方式见 [docs/deployment.md](docs/deployment.md)。
 
 若这台机器上还没有 dae，装好面板后可直接在版本管理页完成 dae 的首次安装。安装完成后的访问方式见下方「首次访问」。
 

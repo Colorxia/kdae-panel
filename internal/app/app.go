@@ -44,6 +44,7 @@ type App struct {
 }
 
 type DaeService interface {
+	Version(ctx context.Context) (string, error)
 	Inspect(ctx context.Context) dae.Report
 	Outline(ctx context.Context) (dae.Outline, error)
 	Reload(ctx context.Context) error
@@ -80,6 +81,7 @@ type Dependencies struct {
 	SubscriptionNodes    SubscriptionNodeService
 	ManagedSubscriptions ManagedSubscriptionService
 	Connections          daeconn.Snapshotter
+	ConnectionInstall    ConnectionInstallStateService
 }
 
 type SubscriptionNodeService interface {
@@ -177,6 +179,7 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 			return nil, fmt.Errorf("初始化 dae 版本管理: %w", err)
 		}
 		dependencies.Install = installer
+		dependencies.ConnectionInstall = installer
 	}
 	geoRegistry, err := upstream.OpenGeoRegistryWithGitHubToken(githubCredentials, cfg.GeoSourcesPath)
 	if err != nil {
@@ -344,7 +347,8 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 	})
 	registerConfigurationRoutes(router, dependencies.Configuration, dependencies.ManagedSubscriptions, operations)
 	registerServiceRoutes(router, dependencies.Dae, dependencies.Host, operations)
-	registerConnectionRoutes(router, dependencies.Host, dependencies.Configuration, dependencies.Connections)
+	registerConnectionRoutes(router, dependencies.Dae, dependencies.Host, dependencies.Configuration,
+		dependencies.ConnectionInstall, dependencies.Connections)
 	registerProbeRoutes(router, dependencies.Probe, logger)
 	registerSubscriptionNodeRoutes(router, dependencies.SubscriptionNodes)
 	registerManagedSubscriptionRoutes(router, dependencies.ManagedSubscriptions)

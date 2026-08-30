@@ -20,7 +20,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/sc
 
 三点如实说明：
 
-- **信任边界**：`curl | bash` 等于信任本仓库与 GitHub。校验和与发布包由同一个发布者签出、放在同一个 Release，防的是传输损坏与不完整下载，防不住发布者本身。发布包另附 GitHub OIDC 来源证明，可用 `gh attestation verify kdae-panel_linux_<arch>.tar.gz --repo tuoro/kdae-panel` 进一步确认归档确实由本仓库的发布流程构建——它不依赖与包同源的清单，防得住"资产被事后替换"，仍防不住发布者提交的代码本身。
+- **信任边界**：`curl | bash` 等于信任本仓库与 GitHub。校验和与发布包由同一个发布者签出、放在同一个 Release，防的是传输损坏与不完整下载，防不住发布者本身。由 GitHub Actions 构建且在 Release 说明中标明含来源证明的发布包，可用 `gh attestation verify kdae-panel_linux_<arch>.tar.gz --repo tuoro/kdae-panel` 进一步确认归档确实由本仓库的发布流程构建——它不依赖与包同源的清单，防得住"资产被事后替换"，仍防不住发布者提交的代码本身。本地应急构建无法签发 GitHub OIDC 来源证明，应以 Release 中的校验和和构建说明为准。
 - **网络前提**：`raw.githubusercontent.com` 与 `github.com` 都必须可达。无法直连时，请在能访问的机器上手动下载 `kdae-panel_linux_<arch>.tar.gz` 与 `SHA256SUMS` 两个文件，核对通过后拷到目标机器解压，运行包内 `install.sh`。核对命令：
 
   ```bash

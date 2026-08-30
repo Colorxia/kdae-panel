@@ -350,6 +350,12 @@ func (i *Installer) Status(ctx context.Context) Status {
 	return status
 }
 
+// InstalledState 返回面板记录的当前 dae 安装来源。它只读取小型账本，不重新
+// 探测或散列二进制；消费方若据此选择兼容策略，还应与运行中二进制的版本核对。
+func (i *Installer) InstalledState() (*State, error) {
+	return i.readState()
+}
+
 // geoSearchPath 取回 dae 查找 geo 数据文件的顺序。
 // 顺序本身由 geodata 包定义，这里只补上本机的环境变量——两处各写一份的话，
 // 早晚会出现"安装认为已就位、更新却写去了别处"这种自相矛盾。

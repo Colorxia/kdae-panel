@@ -1012,6 +1012,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
         socketWindowSeconds: 30,
         logsOk: true,
         logLevel: 'info',
+        requiredLogLevel: 'info',
         summary: {
           outboundTcp: 32, udpSockets: 1, sampledTcpPeak: 38, sampledUdpPeak: 4,
           windowEvents: 205, windowClients: 4, windowTargets: 8,
@@ -1148,7 +1149,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
       contentType: 'application/json',
       body: JSON.stringify({
         snapshotAt: at(0), snapshotOk: true, serviceRunning: true, socketWindowSeconds: 30,
-        logsOk: true, logLevel: 'warn',
+        logsOk: true, logLevel: 'info', requiredLogLevel: 'debug',
         summary: {
           outboundTcp: 0, udpSockets: 0, sampledTcpPeak: 0, sampledUdpPeak: 0,
           windowEvents: 0, windowClients: 0, windowTargets: 0,
@@ -1159,8 +1160,9 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
       }),
     }))
     await page.goto('/connections')
-    await expect(page.getByText('当前 dae 输出级别为')).toBeVisible()
-    await expect(page.getByRole('button', { name: '切换为 info' })).toBeVisible()
+    await expect(page.getByText(/当前 kdae 将连接建立流水写入/)).toBeVisible()
+    await expect(page.getByText(/启用 debug 会增加日志量和运行开销/)).toBeVisible()
+    await expect(page.getByRole('button', { name: '切换为 debug' })).toBeVisible()
     await expect(page.getByText('当前日志级别不记录连接建立流水')).toBeVisible()
     await expect(page.locator('.connection-pulse').getByText('未捕获', { exact: true })).toHaveCount(3)
     await expect(page.locator('.connection-snapshot-note')).toContainText('“未捕获”不代表没有代理流量')
