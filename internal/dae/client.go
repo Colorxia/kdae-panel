@@ -89,13 +89,13 @@ func (c *Client) Inspect(ctx context.Context) Report {
 		DetectedAt: time.Now().UTC(),
 	}
 
-	versionResult, err := c.run(ctx, "--version")
+	version, err := c.Version(ctx)
 	if err != nil {
-		report.Problem = command.Describe(err, versionResult)
+		report.Problem = err.Error()
 		return report
 	}
 	report.Available = true
-	report.Version = firstNonEmptyLine(versionResult.Stdout)
+	report.Version = version
 
 	helpResult, err := c.run(ctx, "--help")
 	if err != nil {
@@ -115,6 +115,16 @@ func (c *Client) Inspect(ctx context.Context) Report {
 		report.Problem = err.Error()
 	}
 	return report
+}
+
+// Version 只读取 dae 的第一行版本标识，供不需要命令与配置结构探测的轻量
+// 兼容判断使用。
+func (c *Client) Version(ctx context.Context) (string, error) {
+	result, err := c.run(ctx, "--version")
+	if err != nil {
+		return "", fmt.Errorf("读取 dae 版本: %s", command.Describe(err, result))
+	}
+	return firstNonEmptyLine(result.Stdout), nil
 }
 
 func (c *Client) Outline(ctx context.Context) (Outline, error) {

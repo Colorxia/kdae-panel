@@ -8,7 +8,7 @@ import (
 func TestParseConnectionEvent(t *testing.T) {
 	timestamp := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	lines := []LogLine{{Timestamp: timestamp, Message: `level=info msg="192.0.2.23:4567 <-> example.com:443" dialer=tokyo ip=203.0.113.8:443 mac=00:11:22:33:44:55 network=tcp4 outbound=proxy pname=curl policy=min sniffed=example.com:443`}}
-	events, dropped := Parse(lines)
+	events, dropped := Parse(lines, ParseOptions{})
 	if dropped != 0 || len(events) != 1 {
 		t.Fatalf("events = %+v, dropped = %d", events, dropped)
 	}
@@ -23,7 +23,7 @@ func TestParseConnectionEvent(t *testing.T) {
 
 func TestParseLocalhostAndMappedIPv4(t *testing.T) {
 	lines := []LogLine{{Message: `level=info msg="localhost:1234 <-> target:80" ip="[::ffff:192.0.2.10]:80" network=tcp6 outbound=direct`}}
-	events, dropped := Parse(lines)
+	events, dropped := Parse(lines, ParseOptions{})
 	if dropped != 0 || len(events) != 1 {
 		t.Fatalf("events = %+v, dropped = %d", events, dropped)
 	}
@@ -32,31 +32,14 @@ func TestParseLocalhostAndMappedIPv4(t *testing.T) {
 	}
 }
 
-func TestParseAcceptsDebugConnectionsAndSkipsNonConnectionLogs(t *testing.T) {
+func TestParseSkipsDebugAndCountsMalformedConnectionLines(t *testing.T) {
 	lines := []LogLine{
-		// 上游 502d976 起连接建立日志为 debug；带 ip 的真实连接应被接受。
-		{Message: `level=debug msg="192.0.2.1:1 <-> example.com:443" ip=203.0.113.1:443 network=tcp4 outbound=proxy`},
-		// 无 ip 的 <-> 行（如 DNS 转发日志）既不是连接，也不是格式变化，应跳过且不计 dropped。
 		{Message: `level=debug msg="192.0.2.1:1 <-> example.com:53" network=udp4 outbound=proxy`},
-		// Netkit 设备对日志无结构化字段，不进入严格校验。
+		{Message: `level=info msg="192.0.2.1:1 <-> example.com:443" network=tcp4`},
 		{Message: `level=info msg="Successfully created Netkit device pair dae0 <-> dae0-peer"`},
 		{Message: `level=info msg="普通日志"`},
 	}
-	events, dropped := Parse(lines)
-	if len(events) != 1 || events[0].Outbound != "proxy" {
-		t.Fatalf("events = %+v, dropped = %d", events, dropped)
-	}
-	if dropped != 0 {
-		t.Fatalf("dropped = %d, want 0（无 ip 的 <-> 行应被跳过而非计为格式变化）", dropped)
-	}
-}
-
-func TestParseCountsMalformedConnectionLinesAsDropped(t *testing.T) {
-	// 带 ip（形似连接）但缺 outbound → 严格校验失败 → 计为 dropped，暴露格式变化。
-	lines := []LogLine{
-		{Message: `level=info msg="192.0.2.1:1 <-> example.com:443" ip=203.0.113.1:443 network=tcp4`},
-	}
-	events, dropped := Parse(lines)
+	events, dropped := Parse(lines, ParseOptions{})
 	if len(events) != 0 || dropped != 1 {
 		t.Fatalf("events = %+v, dropped = %d", events, dropped)
 	}
@@ -64,8 +47,30 @@ func TestParseCountsMalformedConnectionLinesAsDropped(t *testing.T) {
 
 func TestParseDoesNotAcceptFieldsInjectedIntoQuotedMessage(t *testing.T) {
 	line := LogLine{Message: `level=info msg="192.0.2.1:1 <-> node \" outbound=block:443" network=tcp4 outbound=proxy ip=203.0.113.1:443`}
-	events, dropped := Parse([]LogLine{line})
+	events, dropped := Parse([]LogLine{line}, ParseOptions{})
 	if dropped != 0 || len(events) != 1 || events[0].Outbound != "proxy" {
 		t.Fatalf("引号内字段影响了解析: events=%+v dropped=%d", events, dropped)
+	}
+}
+
+func TestParseAcceptsDebugOnlyFromCurrentPID(t *testing.T) {
+	message := `level=debug msg="192.0.2.1:1 <-> example.com:53" ip=203.0.113.1:53 network=udp4 outbound=proxy`
+	lines := []LogLine{
+		{Message: message, PID: "42"},
+		{Message: message, PID: "41"},
+		{Message: message},
+		{
+			PID:     "42",
+			Message: `level=debug msg="192.0.2.1:1 <-> 8.8.8.8:53" _qname=example.com network=udp4 outbound=direct qtype=A`,
+		},
+	}
+	events, dropped := Parse(lines, ParseOptions{AcceptDebug: true, CurrentPID: "42"})
+	if dropped != 0 || len(events) != 1 {
+		t.Fatalf("debug PID 边界失效: events=%+v dropped=%d", events, dropped)
+	}
+
+	events, dropped = Parse(lines, ParseOptions{CurrentPID: "42"})
+	if dropped != 0 || len(events) != 0 {
+		t.Fatalf("未授权版本接收了 debug: events=%+v dropped=%d", events, dropped)
 	}
 }

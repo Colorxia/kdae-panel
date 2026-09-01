@@ -14,8 +14,11 @@ import (
 
 	"github.com/tuoro/kdae-panel/internal/auth"
 	"github.com/tuoro/kdae-panel/internal/configstore"
+	"github.com/tuoro/kdae-panel/internal/dae"
 	"github.com/tuoro/kdae-panel/internal/daeconn"
+	"github.com/tuoro/kdae-panel/internal/daeinstall"
 	"github.com/tuoro/kdae-panel/internal/host"
+	"github.com/tuoro/kdae-panel/internal/upstream"
 )
 
 type stubConnectionSnapshotter struct {
@@ -74,6 +77,7 @@ func TestConnectionsEndpoint(t *testing.T) {
 	}
 	if snapshotter.pid != 42 || !response.SnapshotOK || !response.ServiceRunning ||
 		response.SocketWindowSeconds != int(daeconn.RecentSampleWindow/time.Second) || !response.LogsOK || response.LogLevel != "warn" ||
+		response.RequiredLogLevel != connectionInfoLogLevel ||
 		response.Summary.OutboundTCP != 2 || response.Summary.UDPSockets != 1 ||
 		response.Summary.SampledTCPPeak != 4 || response.Summary.SampledUDPPeak != 2 || response.Summary.WindowEvents != 2 ||
 		response.Summary.WindowClients != 1 || response.Summary.WindowTargets != 1 {
@@ -95,6 +99,102 @@ func TestConnectionsEndpoint(t *testing.T) {
 	if len(response.Facets.Nodes) != 1 || response.Facets.Nodes[0].Label != "tokyo" || response.Facets.Nodes[0].Count != 2 ||
 		len(response.Facets.Groups) != 1 || response.Facets.Groups[0].Label != "proxy" || response.Facets.Groups[0].Count != 2 {
 		t.Fatalf("路由分布异常: nodes=%+v groups=%+v", response.Facets.Nodes, response.Facets.Groups)
+	}
+}
+
+func TestConnectionsEndpointAcceptsCurrentKdaeDebugEvents(t *testing.T) {
+	timestamp := time.Now().UTC().Add(-time.Minute)
+	hostService := &stubHostService{
+		status: host.Status{MainPID: 42, ActiveState: "active"},
+		logs: []host.LogEntry{
+			{
+				Timestamp: timestamp,
+				PID:       "42",
+				Message:   `level=debug msg="192.0.2.2:1234 <-> example.com:443" ip=203.0.113.1:443 network=tcp4 outbound=proxy dialer=tokyo`,
+			},
+			{
+				Timestamp: timestamp.Add(-time.Second),
+				PID:       "41",
+				Message:   `level=debug msg="192.0.2.3:1235 <-> stale.example:443" ip=203.0.113.2:443 network=tcp4 outbound=proxy dialer=tokyo`,
+			},
+		},
+	}
+	application, err := NewWithDependencies(Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), Dependencies{
+		Dae: stubDaeService{report: dae.Report{
+			Available: true,
+			Version:   "dae version unstable-20260825.r1148.502d97",
+		}},
+		Host:          hostService,
+		Configuration: stubConfigurationService{document: configstore.Document{Content: "global { log_level: info }"}},
+		Connections:   &stubConnectionSnapshotter{snapshot: daeconn.Snapshot{Endpoints: map[string]int{}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/connections", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，响应 = %s", recorder.Code, recorder.Body.String())
+	}
+	var response connectionsResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.RequiredLogLevel != connectionDebugLogLevel || len(response.Entries) != 1 ||
+		response.Entries[0].Target != "example.com:443" {
+		t.Fatalf("新版 kdae debug 连接流水处理异常: %+v", response)
+	}
+}
+
+func TestConnectionLogPolicyFor(t *testing.T) {
+	matchingVersion := "dae version unstable-20260830.r1155.ea50cdf"
+	tests := []struct {
+		name      string
+		version   string
+		state     *daeinstall.State
+		wantLevel string
+		wantDebug bool
+	}{
+		{name: "官方稳定版", version: "dae version v0.10.0", wantLevel: connectionInfoLogLevel},
+		{
+			name: "旧版 kdae", version: "dae version unstable-20260824.r1147.bba4dca",
+			state:     &daeinstall.State{Source: upstream.SourceKdae, Version: "dae version unstable-20260824.r1147.bba4dca"},
+			wantLevel: connectionInfoLogLevel,
+		},
+		{
+			name: "首个变更提交无需旧账本", version: "dae version unstable-20260825.r1148.502d97",
+			wantLevel: connectionDebugLogLevel, wantDebug: true,
+		},
+		{
+			name: "面板管理的后续 kdae", version: matchingVersion,
+			state:     &daeinstall.State{Source: upstream.SourceKdae, Version: matchingVersion},
+			wantLevel: connectionDebugLogLevel, wantDebug: true,
+		},
+		{
+			name: "后续 kdae 可按提交核对", version: matchingVersion,
+			state:     &daeinstall.State{Source: upstream.SourceKdae, Label: "ea50cdf"},
+			wantLevel: connectionDebugLogLevel, wantDebug: true,
+		},
+		{name: "无来源账本的后续构建", version: matchingVersion, wantLevel: connectionInfoLogLevel},
+		{
+			name: "官方来源不能凭 revision 开启", version: matchingVersion,
+			state:     &daeinstall.State{Source: upstream.SourceOfficial, Version: matchingVersion},
+			wantLevel: connectionInfoLogLevel,
+		},
+		{
+			name: "运行版本与账本不一致", version: matchingVersion,
+			state:     &daeinstall.State{Source: upstream.SourceKdae, Version: "dae version unstable-20260829.r1154.deadbee", Label: "deadbee"},
+			wantLevel: connectionInfoLogLevel,
+		},
+		{name: "畸形版本", version: "dae version unstable-r1155.not-hex", wantLevel: connectionInfoLogLevel},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			policy := connectionLogPolicyFor(test.version, test.state)
+			if policy.requiredLevel != test.wantLevel || policy.acceptDebug != test.wantDebug {
+				t.Fatalf("策略 = %+v, want level=%q debug=%v", policy, test.wantLevel, test.wantDebug)
+			}
+		})
 	}
 }
 

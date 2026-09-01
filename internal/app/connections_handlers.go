@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -8,11 +9,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tuoro/kdae-panel/internal/daeconfig"
 	"github.com/tuoro/kdae-panel/internal/daeconn"
+	"github.com/tuoro/kdae-panel/internal/daeinstall"
 	"github.com/tuoro/kdae-panel/internal/host"
+	"github.com/tuoro/kdae-panel/internal/upstream"
 )
 
 const (
@@ -20,6 +24,15 @@ const (
 	connectionsDefaultWindow = 15 * time.Minute
 	connectionsMaxWindow     = 24 * time.Hour
 	connectionFacetLimit     = 200
+	kdaeDebugLogRevision     = 1148
+	connectionPolicyRetry    = 30 * time.Second
+	minimumCommitIDLength    = 6
+)
+
+const (
+	connectionInfoLogLevel  = "info"
+	connectionDebugLogLevel = "debug"
+	kdaeDebugLogCommit      = "502d976ee63539f198be18c40221691701b1cbcb"
 )
 
 type connectionsSummary struct {
@@ -58,6 +71,7 @@ type connectionsResponse struct {
 	SocketWindowSeconds int                  `json:"socketWindowSeconds"`
 	LogsOK              bool                 `json:"logsOk"`
 	LogLevel            string               `json:"logLevel,omitempty"`
+	RequiredLogLevel    string               `json:"requiredLogLevel"`
 	Dropped             int                  `json:"dropped,omitempty"`
 	Truncated           bool                 `json:"truncated,omitempty"`
 	FacetLimited        bool                 `json:"facetLimited,omitempty"`
@@ -67,24 +81,49 @@ type connectionsResponse struct {
 	Entries             []daeconn.Event      `json:"entries"`
 }
 
+// ConnectionInstallStateService 只暴露连接兼容判断需要的安装来源，不把版本
+// 管理器的下载、替换和卸载能力带进只读连接端点。
+type ConnectionInstallStateService interface {
+	InstalledState() (*daeinstall.State, error)
+}
+
+type connectionLogPolicy struct {
+	requiredLevel string
+	acceptDebug   bool
+}
+
+type connectionLogPolicyCache struct {
+	pid       int
+	policy    connectionLogPolicy
+	known     bool
+	checkedAt time.Time
+}
+
 type connectionTracker struct {
+	dae           DaeService
 	host          HostService
 	configuration ConfigurationService
+	installation  ConnectionInstallStateService
 	snapshotter   daeconn.Snapshotter
 	store         *daeconn.Store
+	policyMu      sync.Mutex
+	policyCache   connectionLogPolicyCache
 }
 
 func registerConnectionRoutes(
 	router *http.ServeMux,
+	daeService DaeService,
 	hostService HostService,
 	configuration ConfigurationService,
+	installation ConnectionInstallStateService,
 	snapshotter daeconn.Snapshotter,
 ) {
 	if snapshotter == nil {
 		snapshotter = daeconn.NewProcSnapshotter()
 	}
 	tracker := &connectionTracker{
-		host: hostService, configuration: configuration, snapshotter: snapshotter, store: daeconn.NewStore(),
+		dae: daeService, host: hostService, configuration: configuration, installation: installation,
+		snapshotter: snapshotter, store: daeconn.NewStore(),
 	}
 	router.HandleFunc("GET /api/v1/connections", tracker.handle)
 }
@@ -107,12 +146,22 @@ func (tracker *connectionTracker) handle(writer http.ResponseWriter, request *ht
 		return
 	}
 
+	var status host.Status
+	statusOK := false
+	if current, statusErr := tracker.host.Status(request.Context()); statusErr == nil {
+		status, statusOK = current, true
+	}
+	policy := tracker.connectionLogPolicy(request.Context(), status.MainPID)
+
 	logs, logErr := tracker.host.Logs(request.Context(), host.MaxLogLines)
 	lines := make([]daeconn.LogLine, len(logs))
 	for index, entry := range logs {
-		lines[index] = daeconn.LogLine{Timestamp: entry.Timestamp, Message: entry.Message}
+		lines[index] = daeconn.LogLine{Timestamp: entry.Timestamp, Message: entry.Message, PID: entry.PID}
 	}
-	events, dropped := daeconn.Parse(lines)
+	events, dropped := daeconn.Parse(lines, daeconn.ParseOptions{
+		AcceptDebug: policy.acceptDebug,
+		CurrentPID:  strconv.Itoa(status.MainPID),
+	})
 	merged, storeTruncated := tracker.store.Merge(events)
 	now := time.Now().UTC()
 	windowed := connectionEventsSince(merged, now.Add(-window))
@@ -120,9 +169,8 @@ func (tracker *connectionTracker) handle(writer http.ResponseWriter, request *ht
 
 	var snapshot daeconn.Snapshot
 	snapshotOK := false
-	serviceRunning := false
-	if status, statusErr := tracker.host.Status(request.Context()); statusErr == nil {
-		serviceRunning = status.MainPID > 0
+	serviceRunning := statusOK && status.MainPID > 0
+	if statusOK {
 		if taken, snapshotErr := tracker.snapshotter.Snapshot(request.Context(), status.MainPID); snapshotErr == nil {
 			snapshot, snapshotOK = taken, true
 		}
@@ -149,6 +197,7 @@ func (tracker *connectionTracker) handle(writer http.ResponseWriter, request *ht
 		SocketWindowSeconds: int(daeconn.RecentSampleWindow / time.Second),
 		LogsOK:              logErr == nil,
 		LogLevel:            logLevel,
+		RequiredLogLevel:    policy.requiredLevel,
 		Dropped:             dropped,
 		Truncated:           storeTruncated || snapshot.Truncated || responseTruncated,
 		FacetLimited:        facetLimited,
@@ -165,6 +214,102 @@ func (tracker *connectionTracker) handle(writer http.ResponseWriter, request *ht
 		Endpoints: sortedConnectionEndpoints(snapshot.Endpoints),
 		Entries:   listed,
 	})
+}
+
+func defaultConnectionLogPolicy() connectionLogPolicy {
+	return connectionLogPolicy{requiredLevel: connectionInfoLogLevel}
+}
+
+// connectionLogPolicy 每个 dae PID 只探测一次运行版本。版本切换会重启 dae，
+// 新 PID 使缓存自然失效；探测临时失败则短暂退回 info 后重试。
+func (tracker *connectionTracker) connectionLogPolicy(ctx context.Context, pid int) connectionLogPolicy {
+	policy := defaultConnectionLogPolicy()
+	if pid <= 0 || tracker.dae == nil {
+		return policy
+	}
+
+	tracker.policyMu.Lock()
+	defer tracker.policyMu.Unlock()
+	now := time.Now().UTC()
+	cache := tracker.policyCache
+	if cache.pid == pid && (cache.known || now.Sub(cache.checkedAt) < connectionPolicyRetry) {
+		return cache.policy
+	}
+
+	version, err := tracker.dae.Version(ctx)
+	if err != nil || strings.TrimSpace(version) == "" {
+		tracker.policyCache = connectionLogPolicyCache{pid: pid, policy: policy, checkedAt: now}
+		return policy
+	}
+	var state *daeinstall.State
+	if tracker.installation != nil {
+		state, _ = tracker.installation.InstalledState()
+	}
+	policy = connectionLogPolicyFor(version, state)
+	tracker.policyCache = connectionLogPolicyCache{
+		pid: pid, policy: policy, known: true, checkedAt: now,
+	}
+	return policy
+}
+
+func connectionLogPolicyFor(version string, state *daeinstall.State) connectionLogPolicy {
+	policy := defaultConnectionLogPolicy()
+	revision, commit, ok := unstableDaeRevision(version)
+	if !ok {
+		return policy
+	}
+	// 精确命中首个变更提交时，即使旧安装没有面板账本也能恢复连接流水。
+	if sameCommit(commit, kdaeDebugLogCommit) {
+		return connectionLogPolicy{requiredLevel: connectionDebugLogLevel, acceptDebug: true}
+	}
+	if state == nil || state.Source != upstream.SourceKdae || revision < kdaeDebugLogRevision {
+		return policy
+	}
+	// 后续提交必须由面板账本证明来自受信任的 kdae 构建，并与运行版本一致；
+	// 不能仅凭递增 revision 把未来官方 dae 误判为这个分支。
+	if strings.TrimSpace(state.Version) != strings.TrimSpace(version) && !sameCommit(commit, state.Label) {
+		return policy
+	}
+	return connectionLogPolicy{requiredLevel: connectionDebugLogLevel, acceptDebug: true}
+}
+
+func unstableDaeRevision(version string) (revision int, commit string, ok bool) {
+	for _, field := range strings.Fields(version) {
+		if !strings.HasPrefix(field, "unstable-") {
+			continue
+		}
+		parts := strings.Split(field, ".")
+		if len(parts) != 3 || !strings.HasPrefix(parts[1], "r") || !validCommitID(parts[2]) {
+			return 0, "", false
+		}
+		parsed, err := strconv.Atoi(strings.TrimPrefix(parts[1], "r"))
+		if err != nil || parsed < 1 {
+			return 0, "", false
+		}
+		return parsed, strings.ToLower(parts[2]), true
+	}
+	return 0, "", false
+}
+
+func validCommitID(value string) bool {
+	// kdae 的版本串来自构建时 Git 缩写；历史构建中实际出现过 6 位缩写。
+	if len(value) < minimumCommitIDLength || len(value) > 40 {
+		return false
+	}
+	for _, char := range value {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') && (char < 'A' || char > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+func sameCommit(left, right string) bool {
+	left, right = strings.ToLower(strings.TrimSpace(left)), strings.ToLower(strings.TrimSpace(right))
+	if !validCommitID(left) || !validCommitID(right) {
+		return false
+	}
+	return strings.HasPrefix(left, right) || strings.HasPrefix(right, left)
 }
 
 func connectionWindow(request *http.Request) (time.Duration, error) {

@@ -89,6 +89,10 @@ func (s stubDaeService) Inspect(_ context.Context) dae.Report {
 	return s.report
 }
 
+func (s stubDaeService) Version(_ context.Context) (string, error) {
+	return s.report.Version, s.err
+}
+
 func (s stubDaeService) Outline(_ context.Context) (dae.Outline, error) {
 	return s.outline, s.err
 }

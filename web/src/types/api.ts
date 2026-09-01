@@ -420,6 +420,7 @@ export interface ConnectionsResponse {
   socketWindowSeconds: number
   logsOk: boolean
   logLevel?: 'error' | 'warn' | 'info' | 'debug' | 'trace'
+  requiredLogLevel: 'info' | 'debug'
   dropped?: number
   truncated?: boolean
   facetLimited?: boolean

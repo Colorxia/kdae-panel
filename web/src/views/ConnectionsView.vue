@@ -34,7 +34,7 @@ import { getJSON } from '../api/client'
 import { useMobileViewport } from '../composables/useMobileViewport'
 import type { ConnectionEvent, ConnectionFacet, ConnectionFacets, ConnectionsResponse } from '../types/api'
 import { formatDateTime, formatElapsedSince } from '../utils/format'
-import { updateDaeLogLevel } from '../utils/loglevel'
+import { updateDaeLogLevel, type DaeLogLevel } from '../utils/loglevel'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -82,6 +82,13 @@ const facetOptions: Array<{ label: string, value: keyof ConnectionFacets }> = [
   { label: '节点', value: 'nodes' },
   { label: '出站组', value: 'groups' },
 ]
+const logLevelRank: Record<DaeLogLevel, number> = {
+  error: 0,
+  warn: 1,
+  info: 2,
+  debug: 3,
+  trace: 4,
+}
 
 const entries = computed(() => data.value?.entries ?? [])
 const summary = computed(() => data.value?.summary)
@@ -148,7 +155,12 @@ const filteredEntries = computed(() => {
 
 const mobileEntries = computed(() => filteredEntries.value.slice(0, mobileListCap))
 const endpointMaximum = computed(() => data.value?.endpoints[0]?.count ?? 1)
-const historySuppressed = computed(() => data.value?.logLevel === 'warn' || data.value?.logLevel === 'error')
+const requiredLogLevel = computed<DaeLogLevel>(() => data.value?.requiredLogLevel ?? 'info')
+const debugHistoryRequired = computed(() => requiredLogLevel.value === 'debug')
+const historySuppressed = computed(() => {
+  const current = data.value?.logLevel
+  return current ? logLevelRank[current] < logLevelRank[requiredLogLevel.value] : false
+})
 
 function visibleSocketCount(value?: number): string {
   if (!data.value) return '—'
@@ -325,14 +337,14 @@ async function load(silent = false) {
   }
 }
 
-async function enableConnectionHistory() {
+async function enableConnectionHistory(targetLevel: DaeLogLevel) {
   logLevelSaving.value = true
   try {
-    const result = await updateDaeLogLevel('info')
-    if (data.value) data.value.logLevel = 'info'
+    const result = await updateDaeLogLevel(targetLevel)
+    if (data.value) data.value.logLevel = targetLevel
     message.success(result.deferred
       ? '日志级别已保存，dae 下次启动后开始记录连接流水'
-      : '日志级别已切换为 info，新的连接会出现在流水中')
+      : `日志级别已切换为 ${targetLevel}，新的连接会出现在流水中`)
     await load(true)
   } catch (error) {
     message.error(error instanceof Error ? error.message : '更新 dae 日志级别失败')
@@ -342,12 +354,15 @@ async function enableConnectionHistory() {
 }
 
 function confirmConnectionHistory() {
+  const targetLevel = requiredLogLevel.value
   dialog.warning({
     title: '启用连接建立流水',
-    content: '这会把 global.log_level 切换为 info，保存前校验配置并在成功后重载 dae。',
-    positiveText: '切换为 info',
+    content: targetLevel === 'debug'
+      ? '当前 kdae 只在 debug 级别输出连接建立流水。这会增加日志量和运行开销；配置会先校验，并在保存成功后重载 dae。'
+      : '这会把 global.log_level 切换为 info，保存前校验配置并在成功后重载 dae。',
+    positiveText: `切换为 ${targetLevel}`,
     negativeText: '取消',
-    onPositiveClick: enableConnectionHistory,
+    onPositiveClick: () => enableConnectionHistory(targetLevel),
   })
 }
 
@@ -393,8 +408,12 @@ onBeforeUnmount(() => {
     <NAlert v-if="data?.dropped" type="warning">有 {{ data.dropped }} 条疑似连接日志无法解析，dae 的日志格式可能已经变化。</NAlert>
     <NAlert v-if="historySuppressed" type="warning">
       <div class="connection-log-level-alert">
-        <span>当前 dae 输出级别为 <code>{{ data?.logLevel }}</code>，不会产生连接建立流水；实时 socket 统计仍可使用。</span>
-        <NButton size="small" secondary :loading="logLevelSaving" @click="confirmConnectionHistory">切换为 info</NButton>
+        <span v-if="debugHistoryRequired">
+          当前 kdae 将连接建立流水写入 <code>debug</code>；当前输出级别为 <code>{{ data?.logLevel }}</code>，不会产生可读取的流水。
+          启用 debug 会增加日志量和运行开销；实时 socket 统计仍可使用。
+        </span>
+        <span v-else>当前 dae 输出级别为 <code>{{ data?.logLevel }}</code>，不会产生连接建立流水；实时 socket 统计仍可使用。</span>
+        <NButton size="small" secondary :loading="logLevelSaving" @click="confirmConnectionHistory">切换为 {{ requiredLogLevel }}</NButton>
       </div>
     </NAlert>
 
