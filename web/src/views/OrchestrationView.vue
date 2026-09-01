@@ -37,7 +37,7 @@ import GroupsCard from '../components/orchestration/GroupsCard.vue'
 import RoutingCard from '../components/orchestration/RoutingCard.vue'
 
 // 本页只负责配置文档的生命周期：读取、校验、保存、重载。
-// 各节的结构化编排在 components/orchestration/ 的卡片里完成，
+// 各节的结构化配置在 components/orchestration/ 的卡片里完成，
 // 它们通过 v-model 共享同一份本地缓冲 content。
 const message = useMessage()
 const dialog = useDialog()
@@ -113,7 +113,7 @@ async function validate() {
   validationError.value = ''
   try {
     await postJSON('/api/v1/config/validate', { content: content.value })
-    validationMessage.value = '当前编排结果已通过安装版本的 dae 校验'
+    validationMessage.value = '当前配置已通过安装版本的 dae 校验'
     message.success('配置校验通过')
   } catch (error) {
     validationError.value = error instanceof Error ? error.message : '配置校验失败'
@@ -126,7 +126,7 @@ async function save(apply: boolean) {
   saving.value = true
   validationMessage.value = ''
   validationError.value = ''
-  // 提交的是点击那一刻的快照。请求在途时用户可能继续编排，
+  // 提交的是点击那一刻的快照。请求在途时用户可能继续编辑，
   // 因此成功后只把快照记为已保存，dirty 会如实保留其后的新改动。
   const submitted = content.value
   const submittedItems = managedForContent(submitted, managedSubscriptions.value)
@@ -151,18 +151,18 @@ async function save(apply: boolean) {
       modifiedAt: result.savedAt,
     }
     validationMessage.value = !apply
-      ? '编排结果已保存，尚未应用到运行进程'
+      ? '配置已保存，尚未应用到运行进程'
       : result.deferred
-        ? '编排结果已保存；dae 当前未运行，下次启动时生效'
-        : '编排结果已保存并完成无损重载'
+        ? '配置已保存；dae 当前未运行，下次启动时生效'
+        : '配置已保存并完成无损重载'
     message.success(validationMessage.value)
   } catch (error) {
     if (error instanceof APIError && error.status === 409) {
       dialog.warning({
         title: '配置已经变化',
-        content: '磁盘配置在你编排期间被其他操作修改。请重新读取后再编排，避免覆盖。',
+        content: '磁盘配置在你编辑期间被其他操作修改。请重新读取后再修改，避免覆盖。',
         positiveText: '重新读取',
-        negativeText: '保留当前编排',
+        negativeText: '保留当前修改',
         onPositiveClick: () => load(),
       })
     } else {
@@ -189,7 +189,7 @@ function confirmReload() {
 // ---- 生命周期 ----
 onBeforeRouteLeave(() => {
   if (!dirty.value) return true
-  return window.confirm('当前编排尚未保存，确认离开？')
+  return window.confirm('当前配置尚未保存，确认离开？')
 })
 
 onMounted(() => void load())
@@ -199,7 +199,7 @@ onMounted(() => void load())
   <div class="page-stack orchestrate-page">
     <div class="page-toolbar">
       <div>
-        <h2>代理编排</h2>
+        <h2>代理配置</h2>
         <NText depth="3">可视化编辑全局设置、DNS、节点、订阅、分组与路由，未涉及的配置和注释保持原样</NText>
       </div>
       <NSpace class="orchestration-toolbar-actions">
@@ -221,13 +221,13 @@ onMounted(() => void load())
     <NAlert v-if="validationMessage" type="success" closable @close="validationMessage = ''">{{ validationMessage }}</NAlert>
     <NAlert v-if="validationError" type="error" closable @close="validationError = ''"><pre class="error-detail">{{ validationError }}</pre></NAlert>
     <NAlert v-if="dnsDraftAdded" type="info" :bordered="false">
-      检测到入口配置缺少 dns 节，已把默认 DNS 加入当前编排草稿；尚未写入磁盘，保存后才会生效。
+      检测到入口配置缺少 dns 节，已把默认 DNS 加入当前配置草稿；尚未写入磁盘，保存后才会生效。
     </NAlert>
     <NAlert v-if="!loading && !document && !dirty" type="info" :bordered="false">
       入口配置尚不存在。在这里导入节点或添加订阅即可从零生成，保存时会自动创建配置文件。
     </NAlert>
     <NAlert v-if="dirty" type="warning" :bordered="false">
-      有未保存的编排修改，保存并重载后才会应用到 dae。
+      有未保存的配置修改，保存并重载后才会应用到 dae。
     </NAlert>
     <NAlert v-if="unparsedLines > 0" type="info" :bordered="false">
       配置中有 {{ unparsedLines }} 行采用了跨行或多条目写法，未在下方列出。
@@ -253,7 +253,7 @@ onMounted(() => void load())
       </div>
     </NSpin>
 
-    <div class="mobile-save-bar" aria-label="编排保存操作">
+    <div class="mobile-save-bar" aria-label="配置保存操作">
       <NButton :loading="saving" :disabled="loading || !dirty" @click="save(false)">
         <template #icon><NIcon><SaveOutline /></NIcon></template>仅保存
       </NButton>

@@ -36,7 +36,7 @@ function apply() {
     <template #footer>
       <NSpace justify="end">
         <NButton @click="show = false">取消</NButton>
-        <NButton type="primary" @click="apply">应用到编排</NButton>
+        <NButton type="primary" @click="apply">应用到配置</NButton>
       </NSpace>
     </template>
   </NModal>

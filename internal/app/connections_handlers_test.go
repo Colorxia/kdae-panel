@@ -146,14 +146,13 @@ func TestConnectionsEndpointAcceptsCurrentKdaeDebugEvents(t *testing.T) {
 	}
 }
 
-func TestConnectionLogPolicyFor(t *testing.T) {
+func TestConnectionLogLevelFor(t *testing.T) {
 	matchingVersion := "dae version unstable-20260830.r1155.ea50cdf"
 	tests := []struct {
 		name      string
 		version   string
 		state     *daeinstall.State
 		wantLevel string
-		wantDebug bool
 	}{
 		{name: "官方稳定版", version: "dae version v0.10.0", wantLevel: connectionInfoLogLevel},
 		{
@@ -163,17 +162,17 @@ func TestConnectionLogPolicyFor(t *testing.T) {
 		},
 		{
 			name: "首个变更提交无需旧账本", version: "dae version unstable-20260825.r1148.502d97",
-			wantLevel: connectionDebugLogLevel, wantDebug: true,
+			wantLevel: connectionDebugLogLevel,
 		},
 		{
 			name: "面板管理的后续 kdae", version: matchingVersion,
 			state:     &daeinstall.State{Source: upstream.SourceKdae, Version: matchingVersion},
-			wantLevel: connectionDebugLogLevel, wantDebug: true,
+			wantLevel: connectionDebugLogLevel,
 		},
 		{
 			name: "后续 kdae 可按提交核对", version: matchingVersion,
 			state:     &daeinstall.State{Source: upstream.SourceKdae, Label: "ea50cdf"},
-			wantLevel: connectionDebugLogLevel, wantDebug: true,
+			wantLevel: connectionDebugLogLevel,
 		},
 		{name: "无来源账本的后续构建", version: matchingVersion, wantLevel: connectionInfoLogLevel},
 		{
@@ -190,9 +189,9 @@ func TestConnectionLogPolicyFor(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			policy := connectionLogPolicyFor(test.version, test.state)
-			if policy.requiredLevel != test.wantLevel || policy.acceptDebug != test.wantDebug {
-				t.Fatalf("策略 = %+v, want level=%q debug=%v", policy, test.wantLevel, test.wantDebug)
+			level := connectionLogLevelFor(test.version, test.state)
+			if level != test.wantLevel {
+				t.Fatalf("级别 = %q, want %q", level, test.wantLevel)
 			}
 		})
 	}

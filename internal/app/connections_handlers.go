@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tuoro/kdae-panel/internal/configstore"
 	"github.com/tuoro/kdae-panel/internal/daeconfig"
 	"github.com/tuoro/kdae-panel/internal/daeconn"
 	"github.com/tuoro/kdae-panel/internal/daeinstall"
@@ -25,7 +26,7 @@ const (
 	connectionsMaxWindow     = 24 * time.Hour
 	connectionFacetLimit     = 200
 	kdaeDebugLogRevision     = 1148
-	connectionPolicyRetry    = 30 * time.Second
+	connectionLogLevelRetry  = 30 * time.Second
 	minimumCommitIDLength    = 6
 )
 
@@ -87,34 +88,42 @@ type ConnectionInstallStateService interface {
 	InstalledState() (*daeinstall.State, error)
 }
 
-type connectionLogPolicy struct {
-	requiredLevel string
-	acceptDebug   bool
+type connectionDaeVersionReader interface {
+	Version(context.Context) (string, error)
 }
 
-type connectionLogPolicyCache struct {
+type connectionConfigReader interface {
+	Read(context.Context) (configstore.Document, error)
+}
+
+type connectionHostReader interface {
+	Status(context.Context) (host.Status, error)
+	Logs(context.Context, int) ([]host.LogEntry, error)
+}
+
+type connectionLogLevelCache struct {
 	pid       int
-	policy    connectionLogPolicy
+	level     string
 	known     bool
 	checkedAt time.Time
 }
 
 type connectionTracker struct {
-	dae           DaeService
-	host          HostService
-	configuration ConfigurationService
+	dae           connectionDaeVersionReader
+	host          connectionHostReader
+	configuration connectionConfigReader
 	installation  ConnectionInstallStateService
 	snapshotter   daeconn.Snapshotter
 	store         *daeconn.Store
-	policyMu      sync.Mutex
-	policyCache   connectionLogPolicyCache
+	levelMu       sync.Mutex
+	levelCache    connectionLogLevelCache
 }
 
 func registerConnectionRoutes(
 	router *http.ServeMux,
-	daeService DaeService,
-	hostService HostService,
-	configuration ConfigurationService,
+	daeService connectionDaeVersionReader,
+	hostService connectionHostReader,
+	configuration connectionConfigReader,
 	installation ConnectionInstallStateService,
 	snapshotter daeconn.Snapshotter,
 ) {
@@ -151,7 +160,7 @@ func (tracker *connectionTracker) handle(writer http.ResponseWriter, request *ht
 	if current, statusErr := tracker.host.Status(request.Context()); statusErr == nil {
 		status, statusOK = current, true
 	}
-	policy := tracker.connectionLogPolicy(request.Context(), status.MainPID)
+	requiredLogLevel := tracker.connectionLogLevel(request.Context(), status.MainPID)
 
 	logs, logErr := tracker.host.Logs(request.Context(), host.MaxLogLines)
 	lines := make([]daeconn.LogLine, len(logs))
@@ -159,7 +168,7 @@ func (tracker *connectionTracker) handle(writer http.ResponseWriter, request *ht
 		lines[index] = daeconn.LogLine{Timestamp: entry.Timestamp, Message: entry.Message, PID: entry.PID}
 	}
 	events, dropped := daeconn.Parse(lines, daeconn.ParseOptions{
-		AcceptDebug: policy.acceptDebug,
+		AcceptDebug: requiredLogLevel == connectionDebugLogLevel,
 		CurrentPID:  strconv.Itoa(status.MainPID),
 	})
 	merged, storeTruncated := tracker.store.Merge(events)
@@ -197,7 +206,7 @@ func (tracker *connectionTracker) handle(writer http.ResponseWriter, request *ht
 		SocketWindowSeconds: int(daeconn.RecentSampleWindow / time.Second),
 		LogsOK:              logErr == nil,
 		LogLevel:            logLevel,
-		RequiredLogLevel:    policy.requiredLevel,
+		RequiredLogLevel:    requiredLogLevel,
 		Dropped:             dropped,
 		Truncated:           storeTruncated || snapshot.Truncated || responseTruncated,
 		FacetLimited:        facetLimited,
@@ -216,61 +225,59 @@ func (tracker *connectionTracker) handle(writer http.ResponseWriter, request *ht
 	})
 }
 
-func defaultConnectionLogPolicy() connectionLogPolicy {
-	return connectionLogPolicy{requiredLevel: connectionInfoLogLevel}
-}
-
-// connectionLogPolicy 每个 dae PID 只探测一次运行版本。版本切换会重启 dae，
+// connectionLogLevel 每个 dae PID 只探测一次运行版本。版本切换会重启 dae，
 // 新 PID 使缓存自然失效；探测临时失败则短暂退回 info 后重试。
-func (tracker *connectionTracker) connectionLogPolicy(ctx context.Context, pid int) connectionLogPolicy {
-	policy := defaultConnectionLogPolicy()
+func (tracker *connectionTracker) connectionLogLevel(ctx context.Context, pid int) string {
 	if pid <= 0 || tracker.dae == nil {
-		return policy
+		return connectionInfoLogLevel
 	}
 
-	tracker.policyMu.Lock()
-	defer tracker.policyMu.Unlock()
+	tracker.levelMu.Lock()
+	defer tracker.levelMu.Unlock()
 	now := time.Now().UTC()
-	cache := tracker.policyCache
-	if cache.pid == pid && (cache.known || now.Sub(cache.checkedAt) < connectionPolicyRetry) {
-		return cache.policy
+	cache := tracker.levelCache
+	if cache.pid == pid && (cache.known || now.Sub(cache.checkedAt) < connectionLogLevelRetry) {
+		return cache.level
 	}
 
 	version, err := tracker.dae.Version(ctx)
 	if err != nil || strings.TrimSpace(version) == "" {
-		tracker.policyCache = connectionLogPolicyCache{pid: pid, policy: policy, checkedAt: now}
-		return policy
+		tracker.levelCache = connectionLogLevelCache{pid: pid, level: connectionInfoLogLevel, checkedAt: now}
+		return connectionInfoLogLevel
 	}
 	var state *daeinstall.State
 	if tracker.installation != nil {
-		state, _ = tracker.installation.InstalledState()
+		state, err = tracker.installation.InstalledState()
+		if err != nil {
+			tracker.levelCache = connectionLogLevelCache{pid: pid, level: connectionInfoLogLevel, checkedAt: now}
+			return connectionInfoLogLevel
+		}
 	}
-	policy = connectionLogPolicyFor(version, state)
-	tracker.policyCache = connectionLogPolicyCache{
-		pid: pid, policy: policy, known: true, checkedAt: now,
+	level := connectionLogLevelFor(version, state)
+	tracker.levelCache = connectionLogLevelCache{
+		pid: pid, level: level, known: true, checkedAt: now,
 	}
-	return policy
+	return level
 }
 
-func connectionLogPolicyFor(version string, state *daeinstall.State) connectionLogPolicy {
-	policy := defaultConnectionLogPolicy()
+func connectionLogLevelFor(version string, state *daeinstall.State) string {
 	revision, commit, ok := unstableDaeRevision(version)
 	if !ok {
-		return policy
+		return connectionInfoLogLevel
 	}
 	// 精确命中首个变更提交时，即使旧安装没有面板账本也能恢复连接流水。
 	if sameCommit(commit, kdaeDebugLogCommit) {
-		return connectionLogPolicy{requiredLevel: connectionDebugLogLevel, acceptDebug: true}
+		return connectionDebugLogLevel
 	}
 	if state == nil || state.Source != upstream.SourceKdae || revision < kdaeDebugLogRevision {
-		return policy
+		return connectionInfoLogLevel
 	}
 	// 后续提交必须由面板账本证明来自受信任的 kdae 构建，并与运行版本一致；
 	// 不能仅凭递增 revision 把未来官方 dae 误判为这个分支。
 	if strings.TrimSpace(state.Version) != strings.TrimSpace(version) && !sameCommit(commit, state.Label) {
-		return policy
+		return connectionInfoLogLevel
 	}
-	return connectionLogPolicy{requiredLevel: connectionDebugLogLevel, acceptDebug: true}
+	return connectionDebugLogLevel
 }
 
 func unstableDaeRevision(version string) (revision int, commit string, ok bool) {

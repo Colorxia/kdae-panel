@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
   id-token: write
   attestations: write
 
@@ -26,24 +27,25 @@ jobs:
           go-version: '1.25.13'
           cache: true
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22.x'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - run: npm ci --prefix web
-      - name: 完整发布前验证
+      # CI 是完整验证的唯一入口；发布只确认同一提交已经绿过，不再重复安装前端、
+      # 单测、race 与漏洞扫描。标签若抢在 CI 前打出会快速失败，CI 通过后重跑即可。
+      - name: 确认标签提交已通过 CI
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          npm run typecheck --prefix web
-          npm test --prefix web
-          npm run build --prefix web
-          git diff --exit-code -- internal/webui/dist
-          go test ./...
-          go vet ./...
-          go test -race ./...
-          go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
-      - run: bash scripts/build-release.sh "${GITHUB_REF_NAME}"
+          commit=$(git rev-parse "${GITHUB_REF_NAME}^{commit}")
+          result=$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow ci.yml \
+            --commit "${commit}" --event push --limit 1 --json status,conclusion,url)
+          status=$(jq -r '.[0].status // empty' <<<"${result}")
+          conclusion=$(jq -r '.[0].conclusion // empty' <<<"${result}")
+          if [[ ${status} != completed || ${conclusion} != success ]]; then
+            echo "标签提交 ${commit} 尚无成功的 main CI；请等待 CI 通过后重跑 Release" >&2
+            jq . <<<"${result}" >&2
+            exit 1
+          fi
+
+      - name: 构建三架构发布包
+        run: bash scripts/build-release.sh "${GITHUB_REF_NAME}"
 
       # GitHub 自动日志只枚举合并的 PR，会漏掉直接推送到主分支的提交。
       - name: 生成完整更新日志

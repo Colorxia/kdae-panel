@@ -35,9 +35,10 @@ import (
 )
 
 const (
-	binaryMode     = 0o755
-	probeTimeout   = 60 * time.Second
-	restartTimeout = 150 * time.Second
+	binaryMode      = 0o755
+	probeTimeout    = 60 * time.Second
+	restartTimeout  = 150 * time.Second
+	restartAttempts = 3
 	// 重启后需要连续观察一段时间:dae validate 不加载 eBPF,能通过自检的版本
 	// 仍可能在真正挂载 eBPF 时崩掉,只查一次状态会把这种失败当成成功。
 	healthWindow   = 10 * time.Second
@@ -868,8 +869,23 @@ func (i *Installer) restart(ctx context.Context) error {
 	startedAt := time.Now().UTC()
 	restartCtx, cancel := context.WithTimeout(ctx, restartTimeout)
 	defer cancel()
-	if err := i.service.Action(restartCtx, host.ActionRestart); err != nil {
-		return i.explainRestartFailure(ctx, startedAt, err)
+	var restartErr error
+	for attempt := 1; attempt <= restartAttempts; attempt++ {
+		restartErr = i.service.Action(restartCtx, host.ActionRestart)
+		if restartErr == nil {
+			break
+		}
+		if attempt == restartAttempts {
+			return i.explainRestartFailure(ctx, startedAt,
+				fmt.Errorf("重启 dae 连续失败 %d 次: %w", restartAttempts, restartErr))
+		}
+		i.logger.Warn("重启 dae 失败，准备重试", "attempt", attempt,
+			"max_attempts", restartAttempts, "error", restartErr)
+		select {
+		case <-time.After(i.interval):
+		case <-restartCtx.Done():
+			return i.explainRestartFailure(ctx, startedAt, restartCtx.Err())
+		}
 	}
 
 	deadline := time.Now().Add(i.health)

@@ -35,6 +35,15 @@ const themeOverrides: GlobalThemeOverrides = {
     // 组件库默认 3px 与之并存会显得两套体系，统一到 6px
     borderRadius: '6px',
   },
+  Menu: {
+    itemColorActive: 'rgba(148, 163, 184, 0.14)',
+    itemColorActiveHover: 'rgba(148, 163, 184, 0.18)',
+    itemColorActiveCollapsed: 'rgba(148, 163, 184, 0.14)',
+    itemTextColorActive: token('--text-bright'),
+    itemTextColorActiveHover: token('--text-bright'),
+    itemIconColorActive: token('--text-bright'),
+    itemIconColorActiveHover: token('--text-bright'),
+  },
 }
 </script>
 
