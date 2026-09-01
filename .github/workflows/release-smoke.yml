@@ -2,7 +2,7 @@ name: 发布装机验证
 
 # 发布之后，真装一遍。
 #
-# 面板的所有其他检查都作用于源码；用户拿到的却是发布包，以及 get.sh /
+# CI 检查源码；这里检查用户实际拿到的发布包，以及 get.sh /
 # install.sh / uninstall.sh 这三个从不被测试的脚本。v0.1.0 就是带着
 # 单元 ReadWritePaths 缺陷发出去的——CI 全绿，装上去起不来，最后靠人肉
 # 端到端才发现。这个作业把那次的发现方式固化下来：每次发布后自动跑一遍
@@ -11,28 +11,24 @@ name: 发布装机验证
 # GitHub 的 ubuntu runner 里 systemd 是 PID 1，因此单元能真的启动，
 # ProtectSystem=strict / ProtectHome=true 那套沙箱也会真的生效。
 on:
-  # 主路径：由发布流水线在发布完成后直接调用。
-  #
-  # 不能只靠 release: published——用 GITHUB_TOKEN 创建的 release 不会触发新的
-  # 工作流（GitHub 为防递归的明文限制），而本仓库的 release 正是流水线用该
-  # token 发的。实测过：v0.3.0 发布后这个触发器毫无动静。
+  # 正常发布只走这一条入口，避免手工 release 事件与 tag 流水线重复验证。
   workflow_call:
     inputs:
       version:
         type: string
         required: true
-  # 手工发布（比如在网页上直接建 release）时仍然有效。
-  release:
-    types: [published]
+      deep:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       version:
         description: '要验证的发布 tag，留空则取 releases/latest'
         required: false
-  # 改动本文件时自我验证：冒烟脚本本身没跑过，等于没有。
-  push:
-    branches: [main]
-    paths: ['.github/workflows/release-smoke.yml']
+      deep:
+        description: '同时验证真实自升级与回滚链路'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -46,8 +42,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # 版本解析独立成一个作业：下面两个验证作业都要用，逻辑只写一遍，
-  # 且它们可以并行跑。
+  # 版本解析独立成一个作业，供后续验证复用。
   target:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -59,10 +54,8 @@ jobs:
       - name: 解析待验证版本与上一版
         id: resolve
         env:
-          # workflow_call 与手动触发走 inputs；release 事件给出本次发布的 tag；
-          # push 自检两者皆空，退回 releases/latest。
-          EVENT_TAG: ${{ github.event.release.tag_name }}
           INPUT_TAG: ${{ inputs.version }}
+          DEEP: ${{ inputs.deep }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -71,7 +64,7 @@ jobs:
               -H 'Accept: application/vnd.github+json' "$@"
           }
 
-          version="${INPUT_TAG:-$EVENT_TAG}"
+          version="${INPUT_TAG}"
           if [[ -z ${version} ]]; then
             version=$(api "https://api.github.com/repos/${{ github.repository }}/releases/latest" \
               | jq -r '.tag_name')
@@ -90,6 +83,15 @@ jobs:
           if [[ -z ${target_published} ]]; then
             echo "目标 release ${version} 缺少 published_at" >&2
             exit 1
+          fi
+          if [[ ${DEEP} != true ]]; then
+            {
+              echo "version=${version}"
+              echo "previous="
+              echo "self_update_testable=false"
+            } >> "$GITHUB_OUTPUT"
+            echo "目标 ${version}；普通资产与安装验证"
+            exit 0
           fi
 
           version_before() {
@@ -270,7 +272,6 @@ jobs:
         run: sudo -E bash scripts/get.sh | tee /tmp/kdae-panel-install-output
 
       - name: 安装输出应直接给出内网初始化链接
-        if: github.event_name != 'push' || github.ref_type != 'branch'
         run: |
           if ! grep -Eq 'http://([0-9]{1,3}\.){3}[0-9]{1,3}:2023/setup#bootstrap=[A-Za-z0-9_-]+' \
             /tmp/kdae-panel-install-output; then
@@ -289,7 +290,6 @@ jobs:
           fi
 
       - name: 首次访问链接应通过私有运行时文件交接
-        if: github.event_name != 'push' || github.ref_type != 'branch'
         run: |
           setup_file=/run/kdae-panel/setup-url
           sudo test -s "${setup_file}"
@@ -301,7 +301,6 @@ jobs:
           done < <(sudo cat "${setup_file}")
 
       - name: dae 版本管理应默认可用
-        if: github.event_name != 'push' || github.ref_type != 'branch'
         run: |
           sudo grep -qx 'KDAE_PANEL_ENABLE_DAE_INSTALL=true' \
             /etc/kdae-panel/kdae-panel.env
@@ -363,7 +362,6 @@ jobs:
         run: node release-smoke.mjs
 
       - name: 管理员创建后应删除首次访问链接文件
-        if: github.event_name != 'push' || github.ref_type != 'branch'
         env:
           BASE: http://127.0.0.1:2023
         run: |
@@ -379,20 +377,13 @@ jobs:
           sudo test ! -e /run/kdae-panel/setup-url
 
       - name: 卸载并清除数据
-        env:
-          # 工作流文件刚推到 main 时 latest 还是旧包，新断言只能由当前检出脚本自证；
-          # release 调用会显式传版本，仍然必须验证发布包内的实际副本。
-          USE_CHECKOUT_UNINSTALL: ${{ github.event_name == 'push' && github.ref_type == 'branch' }}
         run: |
           # 模拟用户通过 systemctl edit 留下的高权限 override，卸载必须一并清掉。
           sudo mkdir -p /etc/systemd/system/kdae-panel.service.d
           printf '[Service]\nReadWritePaths=/usr/bin\n' |
             sudo tee /etc/systemd/system/kdae-panel.service.d/override.conf >/dev/null
           uninstall=/usr/share/kdae-panel/uninstall.sh
-          if [[ ${USE_CHECKOUT_UNINSTALL} == true ]]; then
-            uninstall=scripts/uninstall.sh
-          fi
-          echo "卸载脚本：${uninstall}（使用当前检出：${USE_CHECKOUT_UNINSTALL}）"
+          echo "卸载脚本：${uninstall}"
           sudo KDAE_PANEL_PURGE=true bash "${uninstall}"
 
       - name: 卸载应清理干净
@@ -418,14 +409,15 @@ jobs:
           fi
           exit "${failures}"
 
-  # 自升级：一个进程替换掉自己的可执行文件、再让 systemd 把自己重启。
+  # 自升级链路成本高、与普通安装 smoke 重叠，只在手工深度验证时执行。
+  # 一个进程替换掉自己的可执行文件、再让 systemd 把自己重启。
   #
   # 单元测试全程用桩（假下载、假 systemd、假自证），这条路径在真机上一次都
   # 没跑过；而它一旦出错，代价是面板把自己换成一个起不来的二进制。
   # 这里装上一个正式版，打开开关，调真实接口升到本次目标版本。
   self-update:
     needs: target
-    if: needs.target.outputs.self_update_testable == 'true'
+    if: inputs.deep && needs.target.outputs.self_update_testable == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

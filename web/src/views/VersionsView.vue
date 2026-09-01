@@ -88,6 +88,26 @@ function isInstalled(version: UpstreamVersion): boolean {
 function versionKey(version: UpstreamVersion): string {
   return `${version.source}:${version.ref}`
 }
+
+function versionRank(version: UpstreamVersion): number {
+  if (isInstalled(version)) return 0
+  if (version.cached) return 1
+  return 2
+}
+
+const orderedVersions = computed(() => versions.value
+  .map((version, index) => ({ version, index }))
+  .sort((left, right) => {
+    const priority = versionRank(left.version) - versionRank(right.version)
+    if (priority !== 0) return priority
+    if (left.version.cached && right.version.cached) {
+      const cachedAt = (Date.parse(right.version.cachedAt || '') || 0)
+        - (Date.parse(left.version.cachedAt || '') || 0)
+      if (cachedAt !== 0) return cachedAt
+    }
+    return left.index - right.index
+  })
+  .map(({ version }) => version))
 const canUninstall = computed(() => status.value?.ready === true && status.value.managed !== undefined && !status.value.drifted)
 const uninstallHint = computed(() => {
   if (status.value?.drifted) return 'dae 已在面板之外被替换，请先重装一个版本后再卸载'
@@ -524,7 +544,7 @@ onBeforeUnmount(() => {
         <NDataTable
           v-if="!mobile"
           :columns="columns"
-          :data="versions"
+          :data="orderedVersions"
           :loading="listing"
           :row-key="(row: UpstreamVersion) => row.ref"
           :scroll-x="820"
@@ -538,8 +558,8 @@ onBeforeUnmount(() => {
           </template>
         </NDataTable>
         <NSpin v-else :show="listing">
-          <div v-if="versions.length" class="mobile-record-list" data-testid="mobile-version-list">
-            <article v-for="version in versions" :key="versionKey(version)" class="mobile-record">
+          <div v-if="orderedVersions.length" class="mobile-record-list" data-testid="mobile-version-list">
+            <article v-for="version in orderedVersions" :key="versionKey(version)" class="mobile-record">
               <div class="mobile-record-head">
                 <div class="mobile-record-title">
                   <span class="mono">{{ version.label }}</span>

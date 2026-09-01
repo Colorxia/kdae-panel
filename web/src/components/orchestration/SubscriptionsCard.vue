@@ -33,7 +33,7 @@ import SectionEditorModal from './SectionEditorModal.vue'
 const content = defineModel<string>({ required: true })
 const managed = defineModel<ManagedSubscription[]>('managed', { required: true })
 const props = defineProps<{
-  /** 有未保存的编排时不允许"立即刷新"：重载应用的是磁盘配置，会绕过这些改动。 */
+  /** 有未保存的配置时不允许"立即刷新"：重载应用的是磁盘配置，会绕过这些改动。 */
   dirty: boolean
 }>()
 
@@ -307,7 +307,7 @@ async function saveSchedule() {
 
 function confirmRefreshNow() {
   if (props.dirty) {
-    message.warning('有未保存的编排修改，请先保存并重载')
+    message.warning('有未保存的配置修改，请先保存并重载')
     return
   }
   dialog.info({

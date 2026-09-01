@@ -221,7 +221,7 @@ function applyEditor() {
   try {
     content.value = applyGlobalChanges(content.value, changes)
     editorVisible.value = false
-    message.success('全局设置已应用到编排，保存并重载后生效')
+    message.success('全局设置已应用到配置，保存并重载后生效')
   } catch (error) {
     message.error(error instanceof Error ? error.message : '全局设置格式不正确')
   }
@@ -377,7 +377,7 @@ onMounted(() => {
     <template #footer>
       <NSpace justify="end">
         <NButton @click="editorVisible = false">取消</NButton>
-        <NButton type="primary" :disabled="!dirty" @click="applyEditor">应用到编排</NButton>
+        <NButton type="primary" :disabled="!dirty" @click="applyEditor">应用到配置</NButton>
       </NSpace>
     </template>
   </NModal>

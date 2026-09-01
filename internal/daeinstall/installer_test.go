@@ -509,6 +509,61 @@ func TestInstallRollsBackWhenServiceFailsToStart(t *testing.T) {
 	}
 }
 
+func TestInstallRetriesTransientRestartFailures(t *testing.T) {
+	service := &fakeService{actionErrors: map[host.Action][]error{
+		host.ActionRestart: {errors.New("systemd 暂时繁忙"), errors.New("systemd 暂时繁忙"), nil},
+	}}
+	installer, binaryPath := newTestInstaller(t, &fakeFetcher{}, service)
+	installer.health = 0
+	installer.interval = 0
+	seed(t, binaryPath, "v1")
+
+	if _, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial,
+		"v2.0.0", "v2.0.0", ""); err != nil {
+		t.Fatalf("短暂的重启失败应在重试后恢复: %v", err)
+	}
+	if service.restarts != restartAttempts {
+		t.Fatalf("重启次数 = %d，应为 %d", service.restarts, restartAttempts)
+	}
+	if content, _ := os.ReadFile(binaryPath); string(content) != string(elf("v2")) {
+		t.Fatalf("重试成功后磁盘内容 = %q，应为新版本", content)
+	}
+}
+
+func TestInstallRollsBackAfterRestartRetriesExhausted(t *testing.T) {
+	service := &fakeService{actionErrors: map[host.Action][]error{
+		host.ActionRestart: {
+			errors.New("systemd 暂时繁忙"),
+			errors.New("systemd 暂时繁忙"),
+			errors.New("systemd 暂时繁忙"),
+			nil, // 回滚后的旧版本可以启动
+		},
+	}}
+	installer, binaryPath := newTestInstaller(t, &fakeFetcher{}, service)
+	installer.health = 0
+	installer.interval = 0
+	seed(t, binaryPath, "v1")
+
+	_, err := installer.Install(context.Background(), elf("v2"), upstream.SourceOfficial,
+		"v2.0.0", "v2.0.0", "")
+	var applyErr *ApplyError
+	if !errors.As(err, &applyErr) {
+		t.Fatalf("重试耗尽应返回 ApplyError，得到 %T: %v", err, err)
+	}
+	if !applyErr.RolledBack || !applyErr.ServiceRecovered {
+		t.Fatalf("重试耗尽后应回滚并恢复旧服务: %+v", applyErr)
+	}
+	if !strings.Contains(err.Error(), "连续失败 3 次") {
+		t.Fatalf("错误应说明重试已耗尽: %v", err)
+	}
+	if service.restarts != restartAttempts+1 {
+		t.Fatalf("包含回滚恢复在内的重启次数 = %d，应为 %d", service.restarts, restartAttempts+1)
+	}
+	if content, _ := os.ReadFile(binaryPath); string(content) != string(elf("v1")) {
+		t.Fatalf("重试耗尽后磁盘内容 = %q，应恢复旧版本", content)
+	}
+}
+
 // 安装失败并回滚后，原有的回滚点必须完好：backupPath 的含义始终是
 // "磁盘上这一版的前一版"，被一次失败的安装提前覆盖就等于把它删了。
 func TestFailedInstallKeepsExistingRollbackPoint(t *testing.T) {

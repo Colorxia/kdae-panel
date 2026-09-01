@@ -15,6 +15,7 @@ import {
   NTabs,
   NTag,
   NText,
+  useDialog,
   useMessage,
 } from 'naive-ui'
 import { AddOutline, CreateOutline, OptionsOutline, TrashOutline } from '@vicons/ionicons5'
@@ -39,6 +40,7 @@ import DNSUpstreamEditor from './DNSUpstreamEditor.vue'
 
 const content = defineModel<string>({ required: true })
 const message = useMessage()
+const dialog = useDialog()
 const state = computed(() => readDNSState(content.value))
 const capabilities = ref<DNSCapabilities | null>(null)
 const capabilityChecked = ref(false)
@@ -114,6 +116,16 @@ function draftUnsupportedMatchers() {
     : []
 }
 
+function commitEditor(body: string) {
+  if (content.value !== editorSnapshot.value) {
+    message.error('配置在编辑期间发生了变化，请关闭后重新打开')
+    return
+  }
+  content.value = setSectionBody(content.value, 'dns', body)
+  editorVisible.value = false
+  message.success('DNS 设置已应用到配置，保存并重载后生效')
+}
+
 function applyEditor() {
   if (content.value !== editorSnapshot.value) {
     message.error('配置在编辑期间发生了变化，请关闭后重新打开')
@@ -137,10 +149,19 @@ function applyEditor() {
       message.error(error instanceof Error ? error.message : 'DNS 配置格式不正确')
       return
     }
+    if (!state.value.simpleSafe) {
+      dialog.warning({
+        title: '确认改用简单模式',
+        content: '当前 DNS 含有简单模式无法表达的原文。继续会重建整个 dns 节，删除未知字段、注释和自定义写法；此操作只有保存配置后才会写入磁盘。',
+        positiveText: '重建并应用',
+        negativeText: '继续使用进阶模式',
+        onPositiveClick: () => commitEditor(body),
+        onNegativeClick: () => { editorTab.value = 'advanced' },
+      })
+      return
+    }
   }
-  content.value = setSectionBody(content.value, 'dns', body)
-  editorVisible.value = false
-  message.success('DNS 设置已应用到编排，保存并重载后生效')
+  commitEditor(body)
 }
 
 async function loadCapabilities() {
@@ -164,6 +185,7 @@ onMounted(() => void loadCapabilities())
   <NCard title="DNS 设置" class="panel-card dns-card" data-testid="dns-card">
     <template #header-extra>
       <NSpace size="small" align="center">
+        <NTag v-if="!state.simpleSafe" size="small" type="warning" :bordered="false">进阶配置</NTag>
         <NTag size="small" :bordered="false">{{ upstreamCount }} 个上游</NTag>
         <NTag size="small" :bordered="false">{{ requestCount + responseCount }} 条规则</NTag>
         <NButton size="small" secondary @click="openEditor">
@@ -172,10 +194,6 @@ onMounted(() => void loadCapabilities())
       </NSpace>
     </template>
 
-    <NAlert v-if="state.issues.length > 0" type="warning" :bordered="false" class="dns-card-alert">
-      当前 DNS 包含结构化编辑器未覆盖的内容，已默认使用进阶模式。原文会保留；切换到简单模式并应用会重建整个 dns 节，未知字段和注释不会保留。
-      <div class="dns-issue-detail">{{ state.issues.slice(0, 3).join('；') }}{{ state.issues.length > 3 ? '；还有更多问题' : '' }}</div>
-    </NAlert>
     <NAlert v-if="unsupported.length > 0" type="error" :bordered="false" class="dns-card-alert">
       当前配置包含安装版本不支持的 DNS 字段：{{ unsupported.map((key) => DNS_FIELD_LABELS.get(key) || key).join('、') }}。请使用进阶模式保留原文，并在保存前确认当前 dae 版本。
     </NAlert>
@@ -214,8 +232,9 @@ onMounted(() => void loadCapabilities())
     <NModal v-model:show="editorVisible" preset="card" title="编辑 DNS" class="orchestrate-dns-modal" :mask-closable="false" data-testid="dns-editor-modal">
       <NTabs :value="editorTab" type="segment" @update:value="changeEditorTab">
         <NTabPane name="simple" tab="简单模式">
-          <NAlert type="warning" :bordered="false" class="dns-template-warning">
-            简单模式会在应用时重建整个 dns 节；当前高级原文、注释和未识别字段不会被带入。只切换标签不会修改配置。
+          <NAlert v-if="!state.simpleSafe" type="warning" :bordered="false" class="dns-template-warning">
+            当前 DNS 使用了简单模式无法表达的内容。切换标签不会修改配置；只有点击“应用到配置”并再次确认后，才会重建 dns 节。
+            <div class="dns-issue-detail">{{ state.issues.slice(0, 3).join('；') }}{{ state.issues.length > 3 ? '；还有更多内容' : '' }}</div>
           </NAlert>
           <NAlert v-if="!capabilityChecked" type="info" :bordered="false" class="dns-template-warning">
             正在读取当前 dae 的 DNS 字段能力，版本差异会在应用前再次校验。
@@ -290,14 +309,14 @@ onMounted(() => void loadCapabilities())
           </div>
         </NTabPane>
         <NTabPane name="advanced" tab="进阶模式">
-          <NText depth="3">直接编辑 dns 节内部内容。切换到简单模式不会解析或覆盖这份原文草稿。</NText>
+          <NText depth="3">直接编辑 dns 节内部原文；保存时会完整保留自定义字段、写法和注释。</NText>
           <NInput v-model:value="advancedBody" type="textarea" class="mono dns-source-input" :rows="28" spellcheck="false" />
         </NTabPane>
       </NTabs>
       <template #footer>
         <NSpace justify="end">
           <NButton @click="editorVisible = false">取消</NButton>
-          <NButton type="primary" @click="applyEditor">应用到编排</NButton>
+          <NButton type="primary" @click="applyEditor">应用到配置</NButton>
         </NSpace>
       </template>
     </NModal>

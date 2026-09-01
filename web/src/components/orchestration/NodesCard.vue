@@ -394,7 +394,7 @@ const nodeColumns: DataTableColumns<NodeRow> = [
     <template #footer>
       <NSpace justify="end">
         <NButton @click="importVisible = false">取消</NButton>
-        <NButton type="primary" @click="importNodes">加入编排</NButton>
+        <NButton type="primary" @click="importNodes">加入配置</NButton>
       </NSpace>
     </template>
   </NModal>
