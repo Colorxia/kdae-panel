@@ -221,12 +221,12 @@ onBeforeUnmount(() => {
       </NGridItem>
 
       <NGridItem>
-        <NCard title="代理编排" class="panel-card">
+        <NCard title="代理配置" class="panel-card">
           <template #header-extra>
             <RouterLink :to="{ name: 'orchestration' }" custom>
               <template #default="{ navigate }">
                 <NButton size="small" quaternary type="primary" icon-placement="right" @click="navigate">
-                  <template #icon><NIcon><ArrowForwardOutline /></NIcon></template>前往编排
+                  <template #icon><NIcon><ArrowForwardOutline /></NIcon></template>前往配置
                 </NButton>
               </template>
             </RouterLink>
@@ -249,7 +249,7 @@ onBeforeUnmount(() => {
                 </NTag>
               </NSpace>
             </template>
-            <NText v-else-if="!configError" depth="3">入口配置尚不存在，可以在代理编排页从零创建。</NText>
+            <NText v-else-if="!configError" depth="3">入口配置尚不存在，可以在代理配置页从零创建。</NText>
           </template>
         </NCard>
       </NGridItem>

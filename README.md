@@ -10,7 +10,7 @@
   <tr>
     <td colspan="2" width="33%" align="center"><strong>运行概览</strong><br><img width="100%" src="docs/screenshots/dashboard.png" alt="运行概览"></td>
     <td colspan="2" width="33%" align="center"><strong>连接活动</strong><br><img width="100%" src="docs/screenshots/connections.png" alt="连接活动"></td>
-    <td colspan="2" width="33%" align="center"><strong>代理编排</strong><br><img width="100%" src="docs/screenshots/orchestration.png" alt="代理编排"></td>
+    <td colspan="2" width="33%" align="center"><strong>代理配置</strong><br><img width="100%" src="docs/screenshots/orchestration.png" alt="代理配置"></td>
   </tr>
   <tr>
     <td colspan="2" align="center"><strong>配置管理</strong><br><img width="100%" src="docs/screenshots/config.png" alt="配置管理"></td>
@@ -141,6 +141,14 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 改动前端依赖后，务必先 `rm -rf web/node_modules web/*.tsbuildinfo` 再 `npm ci --prefix web` 复验：`vue-tsc -b` 是增量构建，而 `npm install` 不会删掉已不在 package.json 里的包，两者叠加会让本地 typecheck 用着旧状态通过，到 CI 的干净环境才失败。
 
 `@types/katex` 看起来无人引用，实际是 naive-ui 类型定义的依赖（`config-provider/src/katex.d.ts` 与 `equation/src/Equation.d.ts` 直接 `import 'katex'`）。源码里搜不到它，删掉即 typecheck 失败。
+
+完整测试只在 CI 执行一次。Release 会确认标签提交已有成功的 main CI，然后直接构建、签发来源证明并发布；发布后自动验证三架构资产和真实安装、卸载。自升级与回滚的高成本全链路改为按需运行：
+
+```bash
+gh workflow run release-smoke.yml -f version=vX.Y.Z -f deep=true
+```
+
+手工创建 Release 时不会自动触发 smoke；用同一工作流传入版本即可，省略 `deep=true` 时只执行资产与安装验证。
 
 ## 上游兼容
 

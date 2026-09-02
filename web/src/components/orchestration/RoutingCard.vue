@@ -277,7 +277,7 @@ function outboundType(outbound: string): 'success' | 'error' | 'info' | 'default
     <template #footer>
       <NSpace justify="end">
         <NButton @click="ruleVisible = false">取消</NButton>
-        <NButton type="primary" @click="applyRule">应用到编排</NButton>
+        <NButton type="primary" @click="applyRule">应用到配置</NButton>
       </NSpace>
     </template>
   </NModal>
@@ -338,7 +338,7 @@ function outboundType(outbound: string): 'success' | 'error' | 'info' | 'default
     <template #footer>
       <NSpace justify="end">
         <NButton @click="routingEditorVisible = false">取消</NButton>
-        <NButton type="primary" @click="applyRoutingEditor">应用到编排</NButton>
+        <NButton type="primary" @click="applyRoutingEditor">应用到配置</NButton>
       </NSpace>
     </template>
   </NModal>

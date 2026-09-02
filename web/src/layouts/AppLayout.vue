@@ -18,17 +18,12 @@ import {
   type MenuOption,
 } from 'naive-ui'
 import {
-  ArchiveOutline,
-  CodeSlashOutline,
   CubeOutline,
   DocumentTextOutline,
-  EarthOutline,
-  GitNetworkOutline,
   GridOutline,
   LogOutOutline,
   MenuOutline,
   PulseOutline,
-  ReaderOutline,
   SettingsOutline,
   SwapHorizontalOutline,
 } from '@vicons/ionicons5'
@@ -55,7 +50,7 @@ interface MenuRouterLinkSlot {
   navigate: (event?: MouseEvent) => Promise<unknown>
 }
 
-function menuLink(label: string, name: string, icon: typeof GridOutline): MenuOption {
+function menuLink(label: string, name: string, icon: typeof GridOutline, key = name): MenuOption {
   return {
     // 选中态由 NMenu 的 value 统一管理。使用 RouterLink 的 custom 模式，避免根路径
     // 在所有子页面上保留 router-link-active，形成第二套相互矛盾的活动状态。
@@ -66,7 +61,7 @@ function menuLink(label: string, name: string, icon: typeof GridOutline): MenuOp
         onClick: navigate,
       }, label),
     }),
-    key: name,
+    key,
     icon: () => h(NIcon, null, { default: () => h(icon) }),
   }
 }
@@ -74,18 +69,43 @@ function menuLink(label: string, name: string, icon: typeof GridOutline): MenuOp
 const menuOptions: MenuOption[] = [
   menuLink('运行概览', 'dashboard', GridOutline),
   menuLink('连接活动', 'connections', SwapHorizontalOutline),
-  menuLink('代理编排', 'orchestration', GitNetworkOutline),
-  menuLink('配置管理', 'config', DocumentTextOutline),
-  menuLink('配置能力', 'schema', CodeSlashOutline),
-  menuLink('dae 版本', 'versions', CubeOutline),
-  menuLink('Geo 数据', 'geo', EarthOutline),
-  menuLink('故障诊断', 'diagnostics', PulseOutline),
-  menuLink('运行日志', 'logs', ReaderOutline),
-  menuLink('配置备份', 'backups', ArchiveOutline),
+  menuLink('配置中心', 'orchestration', DocumentTextOutline, 'configuration'),
+  menuLink('资源管理', 'versions', CubeOutline, 'resources'),
+  menuLink('排障中心', 'diagnostics', PulseOutline, 'troubleshooting'),
   menuLink('面板设置', 'settings', SettingsOutline),
 ]
 
-const selectedKey = computed(() => String(route.name || 'dashboard'))
+const sections = {
+  configuration: {
+    label: '配置中心',
+    icon: DocumentTextOutline,
+    tabs: [
+      { name: 'orchestration', label: '代理配置' },
+      { name: 'config', label: '配置文件' },
+      { name: 'backups', label: '配置备份' },
+      { name: 'schema', label: '配置参考' },
+    ],
+  },
+  resources: {
+    label: '资源管理',
+    icon: CubeOutline,
+    tabs: [
+      { name: 'versions', label: 'dae 版本' },
+      { name: 'geo', label: 'Geo 数据' },
+    ],
+  },
+  troubleshooting: {
+    label: '排障中心',
+    icon: PulseOutline,
+    tabs: [
+      { name: 'diagnostics', label: '故障诊断' },
+      { name: 'logs', label: '运行日志' },
+    ],
+  },
+} as const
+
+const activeSection = computed(() => sections[route.meta.section as keyof typeof sections])
+const selectedKey = computed(() => String(route.meta.section || route.name || 'dashboard'))
 const title = computed(() => String(route.meta.title || 'kdae-panel'))
 
 async function logout() {
@@ -206,8 +226,23 @@ onBeforeUnmount(() => {
     </NDrawer>
 
     <NLayout class="app-main">
-      <NLayoutHeader bordered class="app-header">
-        <div class="app-header-leading">
+      <NLayoutHeader bordered class="app-header" :class="{ 'section-header': activeSection }">
+        <div v-if="activeSection" class="section-header-scope">
+          <NButton
+            v-if="mobile"
+            quaternary
+            circle
+            class="mobile-nav-trigger"
+            title="打开导航"
+            aria-label="打开导航"
+            @click="drawerVisible = true"
+          >
+            <template #icon><NIcon><MenuOutline /></NIcon></template>
+          </NButton>
+          <NIcon size="17"><component :is="activeSection.icon" /></NIcon>
+          <strong>{{ activeSection.label }}</strong>
+        </div>
+        <div v-else class="app-header-leading">
           <NButton
             v-if="mobile"
             quaternary
@@ -234,8 +269,19 @@ onBeforeUnmount(() => {
             <template #icon><NIcon><LogOutOutline /></NIcon></template>
           </NButton>
         </div>
+        <nav v-if="activeSection" class="section-tabs" :aria-label="`${activeSection.label}子页面`">
+          <RouterLink
+            v-for="tab in activeSection.tabs"
+            :key="tab.name"
+            :to="{ name: tab.name }"
+            class="section-tab"
+            :class="{ active: route.name === tab.name }"
+          >
+            {{ tab.label }}
+          </RouterLink>
+        </nav>
       </NLayoutHeader>
-      <NLayoutContent class="app-content" content-style="padding: var(--page-padding);">
+      <NLayoutContent class="app-content" :class="{ 'section-content': activeSection }" content-style="padding: var(--page-padding);">
         <NAlert
           v-if="update?.check.updateAvailable && !updateDismissed"
           type="info"

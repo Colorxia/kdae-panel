@@ -139,13 +139,15 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expectCardsAligned(page.locator('.equal-height-grid .panel-card'))
   })
 
-  await test.step('Geo 数据是独立入口并可持久化自定义来源', async () => {
+  await test.step('Geo 数据可从资源管理进入并持久化自定义来源', async () => {
     const dashboardLink = page.locator('.app-sidebar a[href="/"]')
-    const geoLink = page.locator('.app-sidebar a[href="/geo"]')
+    const resourceLink = page.locator('.app-sidebar a[href="/versions"]')
+    await resourceLink.click()
+    const geoLink = page.locator('.section-tabs a[href="/geo"]')
     await geoLink.click()
     await expect(page).toHaveURL(/\/geo$/)
     await expect(page.getByRole('heading', { name: 'Geo 数据', level: 2 })).toBeVisible()
-    await expect(page.locator('.app-sidebar .n-menu-item-content', { hasText: 'Geo 数据' })).toHaveClass(/n-menu-item-content--selected/)
+    await expect(page.locator('.app-sidebar .n-menu-item-content', { hasText: '资源管理' })).toHaveClass(/n-menu-item-content--selected/)
     await expect(dashboardLink).not.toHaveAttribute('aria-current', 'page')
     await expect(dashboardLink).not.toHaveClass(/router-link-active/)
     expect(await dashboardLink.evaluate((link) => !link.closest('.n-menu-item-content')?.matches(':focus-within'))).toBe(true)
@@ -304,7 +306,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expect(autoOption).toContainText('由 dae 自动选择默认广域网接口')
     await autoOption.click()
     await expect(wanInterface.locator('.n-base-selection')).toContainText('自动识别')
-    await globalModal.getByRole('button', { name: '应用到编排' }).click()
+    await globalModal.getByRole('button', { name: '应用到配置' }).click()
     await expect(global).toContainText('debug')
     await expect(global).toContainText('auto')
 
@@ -377,8 +379,35 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await clickVisibleOption(page, '节点名称包含')
     await nodeDNSRule.getByLabel('DNS 条件值').locator('input').fill('hk')
     await expect(nodeDNSRule.getByLabel('DNS 规则目标').locator('.n-base-selection')).toContainText('alidns')
-    await reopenedDNSModal.getByRole('button', { name: '应用到编排' }).click()
-    await expect(page.getByText('DNS 设置已应用到编排，保存并重载后生效')).toBeVisible()
+    await reopenedDNSModal.getByRole('button', { name: '应用到配置' }).click()
+    await expect(page.getByText('DNS 设置已应用到配置，保存并重载后生效')).toBeVisible()
+
+    // 自定义 DNS 原文不应在卡片外常驻显示大段风险提示；只有准备从进阶模式
+    // 转为简单模式时才提示，并要求再次确认。
+    await dns.getByRole('button', { name: '编辑 DNS' }).click()
+    const advancedDNSModal = page.getByTestId('dns-editor-modal')
+    await advancedDNSModal.locator('.n-tabs-tab', { hasText: '进阶模式' }).click()
+    const safeDNSBody = await advancedDNSModal.locator('textarea').inputValue()
+    await advancedDNSModal.locator('textarea').fill(`${safeDNSBody}\n# 自定义 DNS 原文`)
+    await advancedDNSModal.getByRole('button', { name: '应用到配置' }).click()
+    await expect(dns.getByText('进阶配置', { exact: true })).toBeVisible()
+    await expect(dns.getByText('当前 DNS 包含结构化编辑器未覆盖的内容')).toHaveCount(0)
+
+    await dns.getByRole('button', { name: '编辑 DNS' }).click()
+    const guardedDNSModal = page.getByTestId('dns-editor-modal')
+    const guardedAdvancedTab = guardedDNSModal.locator('.n-tabs-tab', { hasText: '进阶模式' })
+    const guardedSimpleTab = guardedDNSModal.locator('.n-tabs-tab', { hasText: '简单模式' })
+    await expect(guardedAdvancedTab).toHaveClass(/n-tabs-tab--active/)
+    await guardedSimpleTab.click()
+    await expect(guardedDNSModal.getByText('当前 DNS 使用了简单模式无法表达的内容')).toBeVisible()
+    await guardedDNSModal.getByRole('button', { name: '应用到配置' }).click()
+    const dnsRebuildDialog = page.locator('.n-dialog', { hasText: '确认改用简单模式' })
+    await expect(dnsRebuildDialog.getByRole('button', { name: '重建并应用' })).toBeVisible()
+    await dnsRebuildDialog.getByRole('button', { name: '继续使用进阶模式' }).click()
+    await expect(guardedAdvancedTab).toHaveClass(/n-tabs-tab--active/)
+    await guardedDNSModal.locator('textarea').fill(safeDNSBody)
+    await guardedDNSModal.getByRole('button', { name: '应用到配置' }).click()
+    await expect(dns.getByText('进阶配置', { exact: true })).toHaveCount(0)
 
     const groups = page.getByTestId('groups-card')
     await groups.getByPlaceholder('新分组名，如 proxy').fill('proxy')
@@ -387,7 +416,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await page.getByRole('button', { name: '导入节点' }).click()
     await page.getByPlaceholder(/vmess/).fill(NODE_LINKS)
     await expect(page.getByTestId('import-node-groups')).toContainText('proxy')
-    await page.getByRole('button', { name: '加入编排' }).click()
+    await page.getByRole('button', { name: '加入配置' }).click()
     await expect(page.getByText('e2e-node.example.com').first()).toBeVisible()
     const groupItem = groups.locator('.group-item', { hasText: 'proxy' })
     await groupItem.locator('.group-row').first().locator('.n-base-selection').first().click()
@@ -396,7 +425,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expect(fixedGroupModal.getByRole('spinbutton')).toHaveCount(0)
     await fixedGroupModal.getByTestId('group-fixed-node-picker').locator('.n-base-selection').click()
     await clickVisibleOption(page, 'SG-01')
-    await fixedGroupModal.getByRole('button', { name: '应用到编排' }).click()
+    await fixedGroupModal.getByRole('button', { name: '应用到配置' }).click()
     await expect(groupItem.getByText('SG-01', { exact: true })).toBeVisible()
     await page.getByTestId('nodes-card').getByRole('button', { name: '编辑原文' }).click()
     const nodeSourceModal = page.locator('.n-modal', { hasText: '编辑节点原文' })
@@ -431,7 +460,7 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await groupModal.getByRole('button', { name: '整份订阅' }).click()
     await groupModal.getByTestId('group-subscription-picker').locator('.n-base-selection').click()
     await clickVisibleOption(page, 'e2e_sub')
-    await groupModal.getByRole('button', { name: '应用到编排' }).click()
+    await groupModal.getByRole('button', { name: '应用到配置' }).click()
     await expect(groupItem).toContainText('节点：E2E-01')
     await expect(groupItem).toContainText('订阅 e2e_sub：SUB-HK')
     await expect(groupItem).toContainText('订阅：e2e_sub')
@@ -455,12 +484,12 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     const routing = page.getByTestId('routing-card')
     await routing.getByRole('button', { name: '添加规则' }).click()
     const ruleModal = page.getByTestId('routing-rule-modal')
-    await ruleModal.getByRole('button', { name: '应用到编排' }).click()
+    await ruleModal.getByRole('button', { name: '应用到配置' }).click()
     const rule = routing.locator('.routing-rule', { hasText: 'domain(geosite:gfw)' })
     await expect(rule).toContainText('proxy')
     await rule.getByRole('button', { name: '编辑' }).click()
     await ruleModal.getByPlaceholder('geosite:gfw').fill('geosite:cn')
-    await ruleModal.getByRole('button', { name: '应用到编排' }).click()
+    await ruleModal.getByRole('button', { name: '应用到配置' }).click()
     await expect(routing.getByText('domain(geosite:cn)')).toBeVisible()
 
     const compoundMatch = 'pname(AdGuardHome) && l4proto(udp) && dport(53)'
@@ -469,13 +498,13 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await clickVisibleOption(page, '高级匹配表达式')
     const compoundInput = ruleModal.getByPlaceholder('domain(geosite:gfw) && dport(443)')
     await compoundInput.fill(compoundMatch)
-    await ruleModal.getByRole('button', { name: '应用到编排' }).click()
+    await ruleModal.getByRole('button', { name: '应用到配置' }).click()
 
     const compoundRule = routing.locator('.routing-rule', { hasText: compoundMatch })
     await compoundRule.getByRole('button', { name: '编辑' }).click()
     await expect(ruleModal.locator('.n-base-selection').first()).toContainText('高级匹配表达式')
     await expect(compoundInput).toHaveValue(compoundMatch)
-    await ruleModal.getByRole('button', { name: '应用到编排' }).click()
+    await ruleModal.getByRole('button', { name: '应用到配置' }).click()
     await expect(routing.getByText(compoundMatch, { exact: true })).toBeVisible()
 
     await routing.getByRole('button', { name: '编辑路由' }).click()
@@ -494,12 +523,12 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await routing.getByRole('button', { name: '编辑路由' }).click()
     const reopenedRoutingModal = page.getByTestId('routing-editor-modal')
     await reopenedRoutingModal.locator('.n-tabs-tab', { hasText: '简单模式' }).click()
-    await reopenedRoutingModal.getByRole('button', { name: '应用到编排' }).click()
+    await reopenedRoutingModal.getByRole('button', { name: '应用到配置' }).click()
     await expect(routing.getByText('pname(NetworkManager, systemd-resolved, dnsmasq)')).toBeVisible()
 
     await page.locator('.page-toolbar').getByRole('button', { name: '保存并重载' }).click()
     await page.locator('.n-dialog').getByRole('button', { name: '保存并重载' }).click()
-    await expect(page.getByText('编排结果已保存并完成无损重载').first()).toBeVisible()
+    await expect(page.getByText('配置已保存并完成无损重载').first()).toBeVisible()
 
     // 面板宣称保存成功，磁盘上必须真的有这一行——这是配置事务的最终断言
     const saved = readFileSync(configPath, 'utf8')
@@ -952,17 +981,18 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
             cachedAt: '2026-07-30T00:00:00Z', cachedBytes: 33_554_432,
           },
           {
-            source: 'official', ref: 'v1.9.0', label: 'v1.9.0', description: '已保存在本机',
-            publishedAt: '2026-07-01T00:00:00Z', installable: true, cached,
-            cachedAt: '2026-07-30T00:00:00Z', cachedBytes: 33_554_432,
-          },
-          {
             source: 'official', ref: 'v1.8.0', label: 'v1.8.0', description: '历史稳定版',
             publishedAt: '2026-06-12T00:00:00Z', installable: true,
           },
           {
             source: 'official', ref: 'v1.7.2', label: 'v1.7.2', description: '历史稳定版',
             publishedAt: '2026-05-18T00:00:00Z', installable: true,
+          },
+          {
+            // 后端保持上游时间顺序，本地旧版本可能落在很后面；页面应把它提到当前版本之后。
+            source: 'official', ref: 'v1.9.0', label: 'v1.9.0', description: '已保存在本机',
+            publishedAt: '2026-07-01T00:00:00Z', installable: true, cached,
+            cachedAt: '2026-07-30T00:00:00Z', cachedBytes: 33_554_432,
           },
         ],
       }),
@@ -989,6 +1019,9 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
     await expect(currentRow.getByRole('button', { name: '删除 v2.0.0 的本地缓存' })).toHaveCount(0)
     const row = page.locator('tr', { hasText: 'v1.9.0' })
     await expect(row.getByText('已下载')).toBeVisible()
+    const visibleVersionLabels = page.locator('.n-data-table-tbody .version-label')
+    await expect(visibleVersionLabels.nth(0)).toHaveText('v2.0.0')
+    await expect(visibleVersionLabels.nth(1)).toHaveText('v1.9.0')
     await capture(page, 'versions.png', 1600, 1120)
     await row.getByRole('button', { name: '删除 v1.9.0 的本地缓存' }).click()
     await page.locator('.n-dialog').getByRole('button', { name: '删除缓存' }).click()
@@ -1232,27 +1265,28 @@ test('首次初始化到编排保存的完整链路', async ({ page }) => {
   await test.step('移动端导航、核心列表与编辑器使用独立布局', async () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/proxy')
-    await expect(page.getByRole('heading', { name: '代理编排', level: 2 })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '代理配置', level: 2 })).toBeVisible()
     await expect(page.locator('.n-layout-sider')).toHaveCount(0)
     await expect(page.getByRole('button', { name: '打开导航' })).toBeVisible()
     await page.getByRole('button', { name: '打开导航' }).click()
     const drawer = page.locator('.n-drawer')
     await expect(drawer.getByText('kdae-panel')).toBeVisible()
     const drawerDashboard = drawer.locator('.n-menu-item-content', { hasText: '运行概览' })
-    const drawerOrchestration = drawer.locator('.n-menu-item-content', { hasText: '代理编排' })
+    const drawerOrchestration = drawer.locator('.n-menu-item-content', { hasText: '配置中心' })
     await expect(drawerOrchestration).toHaveClass(/n-menu-item-content--selected/)
     await expect.poll(() => drawerOrchestration.locator('a').evaluate((link) => document.activeElement === link)).toBe(true)
     await expect(drawerDashboard).not.toHaveClass(/n-menu-item-content--selected/)
     expect(await drawerDashboard.evaluate((item) => item.matches(':focus-within'))).toBe(false)
-    await drawer.getByText('Geo 数据', { exact: true }).click()
+    await drawer.getByText('资源管理', { exact: true }).click()
     await expect(drawer).not.toBeVisible()
+    await page.locator('.section-tabs a[href="/geo"]').click()
     await expect(page).toHaveURL(/\/geo$/)
     await page.getByRole('button', { name: '打开导航' }).click()
-    const drawerGeo = drawer.locator('.n-menu-item-content', { hasText: 'Geo 数据' })
+    const drawerGeo = drawer.locator('.n-menu-item-content', { hasText: '资源管理' })
     await expect(drawerGeo).toHaveClass(/n-menu-item-content--selected/)
     await expect.poll(() => drawerGeo.locator('a').evaluate((link) => document.activeElement === link)).toBe(true)
     expect(await drawerDashboard.evaluate((item) => item.matches(':focus-within'))).toBe(false)
-    await drawer.getByText('代理编排', { exact: true }).click()
+    await drawer.getByText('配置中心', { exact: true }).click()
     await expect(drawer).not.toBeVisible()
     await expect(page).toHaveURL(/\/proxy$/)
 

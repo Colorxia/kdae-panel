@@ -150,6 +150,80 @@ textarea {
   backdrop-filter: blur(18px);
 }
 
+.app-header.section-header {
+  height: 98px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: 50px 48px;
+  align-items: center;
+}
+
+.section-header-scope {
+  min-width: 0;
+  padding: 0 28px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text-bright);
+}
+
+.section-header-scope strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.section-header > .account {
+  height: 50px;
+  margin-right: 28px;
+}
+
+.section-tabs {
+  min-width: 0;
+  height: 48px;
+  padding: 0 20px;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  border-top: 1px solid var(--border-soft);
+  scrollbar-width: none;
+}
+
+.section-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.section-tab {
+  padding: 8px 14px;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1;
+  text-decoration: none;
+  border-radius: 6px;
+}
+
+.section-tab:hover {
+  color: var(--text-bright);
+  background: var(--border-soft);
+}
+
+.section-tab.active {
+  color: var(--text-bright);
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.section-tab:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .app-header-leading,
 .app-title {
   min-width: 0;
@@ -195,6 +269,11 @@ textarea {
   height: calc(100dvh - 82px);
   min-height: 0;
   background: var(--bg-page);
+}
+
+.app-content.section-content {
+  height: calc(100vh - 98px);
+  height: calc(100dvh - 98px);
 }
 
 .mobile-nav-drawer .n-drawer-content__footer {
@@ -2760,6 +2839,28 @@ pre,
     padding: 0 10px;
   }
 
+  .app-header.section-header {
+    height: 98px;
+    padding: 0;
+  }
+
+  .section-header-scope {
+    padding: 0 10px;
+    gap: 7px;
+  }
+
+  .section-header > .account {
+    margin-right: 10px;
+  }
+
+  .section-tabs {
+    padding: 0 8px;
+  }
+
+  .section-tab {
+    padding-inline: 12px;
+  }
+
   .app-header .eyebrow {
     display: none;
   }
@@ -2784,6 +2885,10 @@ pre,
 
   .app-content {
     height: calc(100dvh - 58px);
+  }
+
+  .app-content.section-content {
+    height: calc(100dvh - 98px);
   }
 
   .page-stack {
