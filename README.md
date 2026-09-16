@@ -1,8 +1,8 @@
 # kdae-panel
 
-`kdae-panel` 是面向 [dae](https://github.com/daeuniverse/dae) 及其兼容分支的零侵入式 Web 管理面板。
+[dae](https://github.com/daeuniverse/dae) 及其兼容分支的 Web 管理面板。
 
-面板不引用 dae 的内部 Go 包，也不读取其内部 eBPF Map。它只依赖 dae 的公开命令、`.dae` 配置文件、systemd 和 journald，因此 dae 内部重构、协议实现变化和普通配置字段新增通常不需要同步修改面板。
+面板不引用 dae 的内部 Go 包，也不读取 eBPF Map，只通过公开命令、`.dae` 配置文件、systemd 和 journald 管理 dae。dae 内部重构通常不需要面板跟着改。
 
 ## 界面预览
 
@@ -28,52 +28,37 @@
   </tr>
 </table>
 
-*截图由当前代码的 Playwright 演示环境生成，页面状态、连接、节点、订阅、日志、诊断与延迟均为示例数据。*
+*截图中的数据均为演示数据。*
 
 ## 功能
 
-- 通过 `dae export outline` 动态发现当前版本的配置结构；
-- systemd 服务状态、运行时长、启动、停止和重启；面板启动 dae 时同步设为随系统启动，停止时同步取消，系统重启后保持最后一次面板控制的状态；
-- dae 无损重载、暂停和 sysdump 诊断；
-- `global`、DNS、节点、订阅、分组与路由的可视化编排：全局设置与 DNS 覆盖 dae 当前公开的字段，实际支持项和默认值由本机二进制的 `export outline` 动态确认，不兼容字段会明确标记；DNS 提供上游、请求/响应路由、缓存、监听地址和固定 TTL 编辑，以及彼此独立的简单/进阶草稿；同时支持分享链接批量导入并自动生成稳定节点标签、导入时加入已有分组、按本地节点、订阅节点或整份订阅维护分组成员、逐条路由编辑，以及 GFW/中国列表/全局/MAC 常用路由模板；复杂内容可直接在当前页面编辑对应节原文，注释与未涉及的配置节保持不变；
-- 订阅离线缓存开关（dae 的 `-file` 持久化）、立即刷新与按间隔自动刷新；
-- 在官方 dae 发布与 kdae 分支 CI 构建之间安装、切换、回滚或卸载；点击“预检并切换”会直接进入一次完整事务，目标二进制只有通过 ELF、版本、公开命令及当前配置兼容性校验后才会替换当前版本，失败自动恢复；下载过的二进制会保存在本地版本库，后续切换无需联网，并可逐个清理；机器上没有 dae 时可完成首次安装，卸载时可分别选择保留或删除配置与 geo 数据（默认保留，版本管理默认开启）；GitHub 元数据带短时缓存与并发合并，设置页可安全填写只读 Token 以避开匿名接口低额度；
-- 独立的 Geo 数据管理页：一键更新、文件状态与路径、异常事务恢复、每天到每 30 天的定时更新；内置 Loyalsoldier 与 v2fly，也可保存多组自定义公网 HTTPS 直链；两个文件逐一校验 SHA-256，即使分处不同目录也各自原位更新并共同回滚，运行中按 systemd MainPID reload，未运行则在下次启动时生效，来源沿用上次且绝不静默切换规则集；
-- 面板自身的新版本提醒：读取本仓库最新发布并长时缓存，设置页支持立即检查，可用 `KDAE_PANEL_DISABLE_UPDATE_CHECK` 整体关闭；
-- 面板一键自升级：默认开启，可在设置页直接开关；校验 sha256、用新二进制自证可运行后再替换并重启自身，保留上一版供人工还原；
-- 节点入口延迟探测：公网使用不经过 dae TCP/UDP 转发的 ICMP 三次中位数，内网使用 TCP；不靠延迟阈值猜测，也不以可能经过当前代理的结果兜底；
-- 连接活动：以 dae 的连接建立日志展示最近 24 小时内有界的流水，自动区分使用 `info` 的官方/旧版 dae 与从 `unstable-20260825.r1148.502d97` 起改用 `debug` 的 kdae（首个构建精确识别，后续构建依据面板安装账本确认），并在当前级别不足时提供带开销说明的切换入口；按目标、客户端、节点与出站组聚合并可直接筛选明细，客户端有有效 MAC 时跨 IP 合并。dae 当前持有的 TCP/UDP socket、最近 30 秒已采样峰值与远端分布作为独立快照呈现；未捕获不会被误写成“没有流量”，也不读取内部 eBPF Map 或伪造逐条存活状态、流量和速率；
-- 原始配置编辑、独立校验、并发冲突检测和事务保存；
-- 保存前备份、原子替换及重载失败后的磁盘回滚；
-- 配置历史存档：可为当前配置保存名称和备注，恢复前展示与当前配置的逐行差异，并用当前 dae 预先校验兼容性；不兼容存档禁止恢复，真正恢复时仍再次校验并受乐观锁保护；存档支持原文导出、单份删除和多选批量删除，自动备份仍按 50 份、256 MiB 上限自动清理；
-- 故障诊断中心：聚合 systemd 状态、dae 公开能力、当前配置校验、Geo 文件、网络接口、默认路由、Linux 内核、eBPF 基础条件与近期异常日志；单项探测失败不会中断整份报告，正常 reload 生命周期日志不会被误报为故障；
-- journald 结构化日志浏览、搜索和精确级别筛选；页面同时显示并可修改 dae 实际输出级别，修改仍经过配置校验、原子保存与 reload；
-- SQLite 管理员账户、Argon2id 密码摘要和服务端会话；
-- SameSite/HttpOnly Cookie、CSRF 校验、同源检查和登录限速；
-- Vue 3 响应式管理界面，前端资源嵌入单个 Go 二进制；
-- Linux `amd64`、`arm64` 和 `riscv64` 发布构建。
+- **服务控制**：启动、停止、重启、无损重载、暂停；启停同步开机自启。
+- **可视化配置**：全局设置、DNS、节点、订阅、分组与路由，未改动的配置和注释原样保留。
+- **动态配置结构**：通过 `dae export outline` 读取当前版本支持的字段，不维护固定清单。
+- **安全保存**：保存前 `dae validate`，自动备份、原子替换，重载失败自动回滚。
+- **配置存档**：命名存档、差异预览、导入导出。
+- **dae 版本管理**：在官方发布与 kdae CI 构建之间安装、切换、回滚、卸载，失败自动恢复。
+- **Geo 数据**：一键或定时更新，内置 Loyalsoldier 与 v2fly，支持自定义来源。
+- **订阅**：离线缓存、立即刷新、定时刷新，支持自定义 User-Agent。
+- **连接活动**：连接建立流水、按目标/客户端/节点聚合，以及 dae 的 socket 采样。
+- **节点延迟**：公网用 ICMP、内网用 TCP，结果不经过当前代理。
+- **故障诊断**：汇总服务、配置、Geo、网络、内核与近期异常日志，可导出 sysdump。
+- **面板自升级**：校验后替换自身并重启。
+- 单个 Go 二进制，支持 Linux `amd64` / `arm64` / `riscv64`。
 
-## 一键部署
+## 安装
 
-在有 systemd 的 Linux（amd64 / arm64 / riscv64）上，以 root 执行：
+在有 systemd 的 Linux 上以 root 执行：
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/get.sh)"
 ```
 
-脚本会下载最新发布包、比对 `SHA256SUMS`、安装并启动服务。固定安装某个版本：
+脚本会下载最新发布包，核对 `SHA256SUMS` 后安装并启动面板。重复执行即可升级。固定版本可在命令前加 `KDAE_PANEL_VERSION=vX.Y.Z`。无法直连 GitHub 时的手动安装方式见 [部署文档](docs/deployment.md#手动下载安装)。
 
-```bash
-KDAE_PANEL_VERSION=v0.1.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/get.sh)"
-```
+机器上还没有 dae 时，装好面板后在「dae 版本管理」页完成首次安装。
 
-这条命令等于信任本仓库与 GitHub：校验和与发布包同处一个 Release，防传输损坏，防不住发布者本身。不接受这个前提、或网络无法直连 GitHub 时，请手动到 [Releases](https://github.com/tuoro/kdae-panel/releases) 下载对应架构的 `kdae-panel_linux_<arch>.tar.gz` 与 `SHA256SUMS`，用 `sha256sum -c --ignore-missing SHA256SUMS` 核对（清单含全部架构，勿直接整份 `-c`）后运行包内的 `install.sh`——或直接用下面的源码方式。由 GitHub Actions 构建的发布包另附来源证明；本地应急构建是否包含证明以对应 Release 说明为准，验证方式见 [docs/deployment.md](docs/deployment.md)。
-
-若这台机器上还没有 dae，装好面板后可直接在版本管理页完成 dae 的首次安装。安装完成后的访问方式见下方「首次访问」。
-
-## 从源码安装
-
-依赖 Go 1.26+、Node.js 22+，运行环境需要 systemd：
+从源码安装（需要 Go 1.26+、Node.js 22+）：
 
 ```bash
 git clone https://github.com/tuoro/kdae-panel.git
@@ -85,96 +70,24 @@ sudo ./scripts/install.sh
 
 ## 首次访问
 
-新安装默认监听 `0.0.0.0:2023`，因此本机和同一局域网内的设备都能访问：
+面板默认监听 `0.0.0.0:2023`。安装结束时终端会打印一次性初始化链接，在浏览器打开后设置管理员用户名和密码即可。
 
-```text
-http://<面板机器的内网 IP>:2023
-```
-
-首次安装完成后，脚本会枚举本机内网 IPv4，并在终端的「首次访问地址」下直接打印完整的一次性初始化链接；多网卡机器可能出现多条，选择当前设备能访问的一条即可。页面会自动完成授权，注册表单只需填写用户名和密码。创建管理员后初始化接口会永久关闭，一次性链接的临时文件也会立即删除。
-
-已有安装不会在升级时覆盖 `/etc/kdae-panel/kdae-panel.env`；若原来仍是 `127.0.0.1:2023`，请将 `KDAE_PANEL_LISTEN` 改为 `0.0.0.0:2023` 并重启面板。局域网直连使用明文 HTTP，只适合可信内网；跨不可信网络访问请使用 HTTPS 反向代理或 SSH 隧道。
+局域网直连是明文 HTTP，只适合可信内网。需要跨网络访问时，请使用 [HTTPS 反向代理](docs/deployment.md#https-反向代理) 或 SSH 隧道。
 
 ## 卸载
-
-以下命令须在 root shell 中执行：
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuoro/kdae-panel/main/scripts/uninstall.sh)"
 ```
 
-默认移除程序、服务单元及其 systemd override，配置、账户数据库与配置备份全部保留；清理 override 是为了避免重装后意外恢复 `/usr/bin` 等高权限写路径。要连数据一并清除，在命令前加 `KDAE_PANEL_PURGE=true`。两种模式都不触碰 dae——它的服务、二进制、配置与 geo 数据原样保留。安装时会在本地落一份等效脚本，离线也可卸载：`sudo bash /usr/share/kdae-panel/uninstall.sh`；一键自升级只替换二进制，这份离线脚本仍属于最近一次完整安装的版本，联网时优先使用上面的最新脚本。
-
-## 开发
-
-```bash
-npm install --prefix web
-npm run build --prefix web
-go run ./cmd/kdae-panel \
-  --database ./data/panel.db \
-  --backup-dir ./data/backups \
-  --schedule-file ./data/schedule.json \
-  --dae-config ./data/config.dae
-```
-
-前后端分离开发：
-
-```bash
-# 终端一
-go run ./cmd/kdae-panel --database ./data/panel.db --schedule-file ./data/schedule.json
-
-# 终端二，Vite 会代理 /api 到 127.0.0.1:2023
-npm run dev --prefix web
-```
-
-验证全部代码：
-
-```bash
-npm run typecheck --prefix web
-npm test --prefix web
-npm run build --prefix web
-go test ./...
-go vet ./...
-go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
-```
-
-改动前端依赖后，务必先 `rm -rf web/node_modules web/*.tsbuildinfo` 再 `npm ci --prefix web` 复验：`vue-tsc -b` 是增量构建，而 `npm install` 不会删掉已不在 package.json 里的包，两者叠加会让本地 typecheck 用着旧状态通过，到 CI 的干净环境才失败。
-
-`@types/katex` 看起来无人引用，实际是 naive-ui 类型定义的依赖（`config-provider/src/katex.d.ts` 与 `equation/src/Equation.d.ts` 直接 `import 'katex'`）。源码里搜不到它，删掉即 typecheck 失败。
-
-完整测试只在 CI 执行一次。Release 会确认标签提交已有成功的 main CI，然后直接构建、签发来源证明并发布；发布后自动验证三架构资产和真实安装、卸载。自升级与回滚的高成本全链路改为按需运行：
-
-```bash
-gh workflow run release-smoke.yml -f version=vX.Y.Z -f deep=true
-```
-
-手工创建 Release 时不会自动触发 smoke；用同一工作流传入版本即可，省略 `deep=true` 时只执行资产与安装验证。
-
-## 上游兼容
-
-面板启动后直接执行当前安装的 dae：
-
-```text
-dae --version
-dae --help
-dae export outline
-dae validate -c <候选配置>
-dae reload
-dae suspend
-dae sysdump
-```
-
-配置字段和默认值来自 `export outline`，配置正确性以 `validate` 的结果为准。面板不会复制 dae 的完整配置模型，也不会将未知配置字段静默删除。
-
-完全零适配无法覆盖上游主动删除公开命令或改变命令语义的情况。CI 会持续验证面板自身契约；建议对生产环境的 dae 版本进行固定，并在升级前使用新二进制验证现有配置。
-
-仓库的 `kdae 上游兼容` 工作流每周检出并构建 `olicesx/dae:kdae`，使用真实二进制验证能力发现、outline、配置校验和 sysdump 文件契约。上游发生破坏性变化时会直接产生失败记录。
+默认保留配置、账户和备份；在命令前加 `KDAE_PANEL_PURGE=true` 会一并清除。卸载不会影响 dae。
 
 ## 文档
 
+- [部署、配置与升级](docs/deployment.md)
 - [架构与兼容策略](docs/architecture.md)
-- [安装部署与升级](docs/deployment.md)
 - [HTTP API](docs/api.md)
+- [开发与发布](docs/development.md)
 - [安全策略](SECURITY.md)
 
 ## 许可证
