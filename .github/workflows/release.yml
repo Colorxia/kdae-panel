@@ -24,7 +24,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.8'
           cache: true
 
       # CI 是完整验证的唯一入口；发布只确认同一提交已经绿过，不再重复安装前端、
