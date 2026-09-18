@@ -41,11 +41,13 @@ import {
   type RoutingMatchKind,
   type SimpleRoutingMode,
 } from '../../utils/routing'
+import SectionVersionControls from './SectionVersionControls.vue'
 
 const content = defineModel<string>({ required: true })
 const message = useMessage()
 
 const routingRules = computed(() => parseRoutingRules(content.value))
+const routingBody = computed(() => readSectionBody(content.value, 'routing'))
 const groups = computed(() => parseGroups(content.value))
 const groupNames = computed(() => new Set(groups.value.map((group) => group.name)))
 const builtinOutbounds = new Set(['direct', 'block', 'must_direct', 'must_proxy'])
@@ -174,6 +176,10 @@ function openRoutingEditor() {
   routingEditorVisible.value = true
 }
 
+function applyVersion(body: string) {
+  content.value = setSectionBody(content.value, 'routing', body)
+}
+
 function changeRoutingEditorTab(value: string) {
   // 两种模式各自保留一份草稿。切换标签只是查看另一份草稿，
   // 不能因为用户想看一眼高级模式就把简单模式模板写进去。
@@ -212,16 +218,21 @@ function outboundType(outbound: string): 'success' | 'error' | 'info' | 'default
     <template #header-extra>
       <NSpace size="small" align="center">
         <NTag size="small" :bordered="false">{{ routingRules.length }} 条</NTag>
-        <NButton size="small" secondary @click="openRuleEditor()">
+        <NButton size="small" type="primary" @click="openRuleEditor()">
           <template #icon><NIcon><AddOutline /></NIcon></template>添加规则
         </NButton>
         <NButton size="small" quaternary @click="openRoutingEditor">
-          <template #icon><NIcon><CreateOutline /></NIcon></template>编辑路由
+          <template #icon><NIcon><CreateOutline /></NIcon></template>编辑
         </NButton>
       </NSpace>
     </template>
+    <!-- 版本选择器从卡片头移到这里：它是"下拉 + 另存为 + 溢出"的复合控件，
+         塞不进溢出菜单，留在头里会让这张卡片头达到六个控件。 -->
+    <div class="routing-version-bar">
+      <SectionVersionControls kind="routing" :body="routingBody" @apply="applyVersion" />
+    </div>
     <div v-if="routingRules.length === 0" class="orchestrate-empty">
-      <NText depth="3">还没有路由规则。可以逐条添加，也可以用“编辑路由”选择常用模板。</NText>
+      <NText depth="3">还没有路由规则。可以逐条添加，也可以用“编辑”选择常用模板。</NText>
     </div>
     <ol v-else class="routing-list">
       <li v-for="(rule, index) in routingRules" :key="rule.lineStart" class="routing-rule" :class="{ fallback: rule.isFallback }">
