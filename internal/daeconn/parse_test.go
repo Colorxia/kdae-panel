@@ -74,3 +74,30 @@ func TestParseAcceptsDebugOnlyFromCurrentPID(t *testing.T) {
 		t.Fatalf("未授权版本接收了 debug: events=%+v dropped=%d", events, dropped)
 	}
 }
+
+func TestParsePrefixedConnectionEvents(t *testing.T) {
+	timestamp := time.Date(2026, 10, 8, 19, 47, 17, 0, time.UTC)
+	lines := []LogLine{
+		{
+			Timestamp: timestamp,
+			PID:       "100",
+			Message:   `[2026-10-08 19:47:17] DEBUG 10.0.0.1:1234 <-> example.com:443 dialer=tokyo ip=1.2.3.4:443 network=tcp4 outbound=proxy`,
+		},
+		{
+			Timestamp: timestamp,
+			PID:       "100",
+			Message:   ` DEBUG 10.0.0.2:5678 <-> direct.com:80 ip=2.3.4.5:80 network=tcp4 outbound=direct`,
+		},
+	}
+	events, dropped := Parse(lines, ParseOptions{AcceptDebug: true, CurrentPID: "100"})
+	if dropped != 0 || len(events) != 2 {
+		t.Fatalf("events = %+v, dropped = %d", events, dropped)
+	}
+	if events[0].Src != "10.0.0.1:1234" || events[0].Target != "example.com:443" || events[0].DstAddr != "1.2.3.4:443" || events[0].Dialer != "tokyo" || events[0].Outbound != "proxy" {
+		t.Fatalf("首条 prefixed debug 连接事件解析异常: %+v", events[0])
+	}
+	if events[1].Src != "10.0.0.2:5678" || events[1].Target != "direct.com:80" || events[1].DstAddr != "2.3.4.5:80" || events[1].Outbound != "direct" {
+		t.Fatalf("第二条无时间戳 prefixed debug 连接事件解析异常: %+v", events[1])
+	}
+}
+
