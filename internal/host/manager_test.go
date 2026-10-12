@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"sort"
@@ -248,6 +249,47 @@ func TestLogsPreferDaeMessageLevel(t *testing.T) {
 	}
 }
 
+// dae v2 起日志不再是 logfmt，级别是行首的大写词。journald 对标准输出一律记
+// PRIORITY=6，只看它会把真实的 warning / error 全部当成 info，诊断页的近期
+// 异常日志随之失效。样本由实际格式化库按 dae 的参数生成。
+func TestLogsReadV2FormatLevel(t *testing.T) {
+	messages := []string{
+		` WARN Failed to load geoip: country code CN not found in /etc/dae/geoip.dat`,
+		`ERROR health check failed: a=b err=dial tcp: i/o timeout`,
+		`DEBUG 192.0.2.23:4567 <-> example.com:443 dialer=tokyo network=tcp4 outbound=proxy`,
+		`TRACE packet detail`,
+		` INFO Started dae`,
+		`[2026-10-12 14:24:17] ERROR timestamped error`,
+		`FATAL cannot attach eBPF program`,
+	}
+	var journal strings.Builder
+	for _, message := range messages {
+		encoded, err := json.Marshal(map[string]string{"PRIORITY": "6", "MESSAGE": message})
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal.Write(encoded)
+		journal.WriteByte('\n')
+	}
+	entries, err := parseJournal(journal.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		priority int
+		level    string
+	}{{4, "warning"}, {3, "error"}, {7, "debug"}, {7, "trace"}, {6, "info"}, {3, "error"}, {2, "critical"}}
+	if len(entries) != len(want) {
+		t.Fatalf("日志数量 = %d，期望 %d", len(entries), len(want))
+	}
+	for index, expected := range want {
+		if entries[index].Priority != expected.priority || entries[index].Level != expected.level {
+			t.Fatalf("%q => priority=%d level=%q，期望 %d %q",
+				messages[index], entries[index].Priority, entries[index].Level, expected.priority, expected.level)
+		}
+	}
+}
+
 func TestCommandError(t *testing.T) {
 	runner := &fakeRunner{
 		results: map[string]command.Result{"systemctl start dae": {Stderr: "permission denied"}},
@@ -256,5 +298,51 @@ func TestCommandError(t *testing.T) {
 	manager, _ := NewManagerWithRunner("dae", "systemctl", "journalctl", runner, time.Second)
 	if err := manager.Action(context.Background(), ActionStart); err == nil || !strings.Contains(err.Error(), "permission denied") {
 		t.Fatalf("错误信息异常: %v", err)
+	}
+}
+
+func TestReadLogsUsesCursorAndCarriesItBack(t *testing.T) {
+	base := "journalctl --unit dae --no-pager --output json --output-fields MESSAGE,PRIORITY,_PID,_SYSTEMD_UNIT"
+	backfill := base + " --lines 3"
+	follow := base + " --lines 10000 --after-cursor s=abc;i=2"
+	runner := &fakeRunner{results: map[string]command.Result{
+		backfill: {Stdout: `{"__CURSOR":"s=abc;i=1","__REALTIME_TIMESTAMP":"1760250000000000","PRIORITY":"6","_PID":"42","MESSAGE":" INFO Started dae"}` + "\n" +
+			`{"__CURSOR":"s=abc;i=2","__REALTIME_TIMESTAMP":"1760250001000000","PRIORITY":"6","_PID":"42","MESSAGE":"DEBUG 192.0.2.1:1 <-> example.com:443 network=tcp4 outbound=proxy"}` + "\n"},
+		follow: {Stdout: ""},
+	}, errors: map[string]error{}}
+	manager, err := NewManagerWithRunner("dae", "systemctl", "journalctl", runner, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 回填：不带游标，不能出现 --after-cursor，也不能用 --since（与 --lines 组合时语义因版本而异）。
+	entries, err := manager.ReadLogs(context.Background(), LogQuery{Limit: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[1].Cursor != "s=abc;i=2" || entries[1].PID != "42" || entries[1].Level != "debug" {
+		t.Fatalf("回填结果异常: %+v", entries)
+	}
+	// 增量：从上一批最后一条的游标接着读；越界的 Limit 收回到单批上限。
+	if _, err := manager.ReadLogs(context.Background(), LogQuery{After: entries[1].Cursor, Limit: 999999}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 2 || runner.calls[0] != backfill || runner.calls[1] != follow {
+		t.Fatalf("journalctl 调用参数异常: %q", runner.calls)
+	}
+	for _, call := range runner.calls {
+		if strings.Contains(call, "--since") {
+			t.Fatalf("不应使用 --since: %s", call)
+		}
+	}
+}
+
+func TestLogEntryCursorIsNotSerialized(t *testing.T) {
+	encoded, err := json.Marshal(LogEntry{Message: "x", Cursor: "s=secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "s=secret") || strings.Contains(string(encoded), "cursor") {
+		t.Fatalf("游标不应出现在对外的日志接口里: %s", encoded)
 	}
 }

@@ -410,6 +410,9 @@ func (c *Collector) logItem(ctx context.Context, status *host.Status) []Item {
 	return []Item{item}
 }
 
+// routineDaeWarning 识别 reload 生命周期里的例行 warning。dae v2 的日志格式会把
+// 正文开头的 [Reload] 当作前缀渲染成 "Reload: ..."，两种写法都要认，否则级别
+// 解析恢复后，每次正常 reload 都会在诊断页里冒出一串假警告。
 func routineDaeWarning(message string) bool {
 	for _, fragment := range []string{
 		"[Reload] Received reload signal",
@@ -420,7 +423,8 @@ func routineDaeWarning(message string) bool {
 		"[Reload] Finished",
 		"[Reload] Retired old control plane",
 	} {
-		if strings.Contains(message, fragment) {
+		if strings.Contains(message, fragment) ||
+			strings.Contains(message, strings.Replace(fragment, "[Reload] ", "Reload: ", 1)) {
 			return true
 		}
 	}
