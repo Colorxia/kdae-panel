@@ -132,6 +132,9 @@ func TestRoutineReloadWarningsAreNotReportedAsFaults(t *testing.T) {
 		logs: []host.LogEntry{
 			{Timestamp: now, Level: "warning", Message: `level=warning msg="[Reload] Finished"`},
 			{Timestamp: now, Level: "warning", Message: `level=warning msg="[Reload] Retired old control plane"`},
+			// dae v2 的格式会把 [Reload] 渲染成前缀 "Reload:"（由实际格式化库生成）。
+			{Timestamp: now, Level: "warning", Message: ` WARN Reload: Serve`},
+			{Timestamp: now, Level: "warning", Message: ` WARN Reload: Received reload signal; prepare to reload`},
 		},
 	}
 	report := collector.Report(context.Background())
@@ -140,6 +143,28 @@ func TestRoutineReloadWarningsAreNotReportedAsFaults(t *testing.T) {
 			t.Fatalf("正常重载生命周期不应触发警告: %+v", item)
 		}
 	}
+}
+
+func TestV2FormatRealWarningIsStillReported(t *testing.T) {
+	now := time.Now()
+	collector := healthyCollector(now)
+	collector.host = fakeHost{
+		status:     host.Status{ActiveState: "active", SubState: "running", MainPID: 42, UnitFileState: "enabled"},
+		interfaces: []host.NetworkInterface{{Name: "eth0"}},
+		logs: []host.LogEntry{
+			{Timestamp: now, Level: "warning", Message: ` WARN Reload: something unexpected happened`},
+		},
+	}
+	report := collector.Report(context.Background())
+	for _, item := range report.Items {
+		if item.ID == "recent-logs" {
+			if item.Level == LevelOK {
+				t.Fatalf("非例行的 reload 警告不应被降噪吞掉: %+v", item)
+			}
+			return
+		}
+	}
+	t.Fatal("未找到近期日志检查项")
 }
 
 func assertItemContains(t *testing.T, items []Item, id, value string) {

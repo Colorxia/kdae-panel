@@ -340,11 +340,12 @@ func parseJournal(output string) ([]LogEntry, error) {
 	return entries, nil
 }
 
-// logLevel 优先采用 dae 正文开头的 level 字段。
-// dae 把日志写到标准输出时，journald 通常会把所有行都记成 info；只看 PRIORITY
-// 会把真实的 debug / warning / error 全部误判，前端按级别筛选也就失去意义。
+// logLevel 优先采用 dae 正文里的级别：v1 是开头的 level= 字段，v2 是行首的
+// 大写级别词。dae 把日志写到标准输出时，journald 通常会把所有行都记成 info；
+// 只看 PRIORITY 会把真实的 debug / warning / error 全部误判，前端按级别筛选、
+// 诊断页的近期异常日志也就都失效了。
 func logLevel(message string, journalPriority int) (int, string) {
-	if fields, ok := logfmt.Parse(message); ok {
+	if fields, ok := logfmt.ParseEntry(message); ok {
 		value := fields["level"]
 		switch value {
 		case "panic", "fatal", "critical":

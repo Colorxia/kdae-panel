@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"sort"
@@ -245,6 +246,47 @@ func TestLogsPreferDaeMessageLevel(t *testing.T) {
 	}
 	if entries[4].Priority != 6 || entries[4].Level != "info" {
 		t.Fatalf("空 level 不应引发异常或覆盖 journald 级别: %+v", entries[4])
+	}
+}
+
+// dae v2 起日志不再是 logfmt，级别是行首的大写词。journald 对标准输出一律记
+// PRIORITY=6，只看它会把真实的 warning / error 全部当成 info，诊断页的近期
+// 异常日志随之失效。样本由实际格式化库按 dae 的参数生成。
+func TestLogsReadV2FormatLevel(t *testing.T) {
+	messages := []string{
+		` WARN Failed to load geoip: country code CN not found in /etc/dae/geoip.dat`,
+		`ERROR health check failed: a=b err=dial tcp: i/o timeout`,
+		`DEBUG 192.0.2.23:4567 <-> example.com:443 dialer=tokyo network=tcp4 outbound=proxy`,
+		`TRACE packet detail`,
+		` INFO Started dae`,
+		`[2026-10-12 14:24:17] ERROR timestamped error`,
+		`FATAL cannot attach eBPF program`,
+	}
+	var journal strings.Builder
+	for _, message := range messages {
+		encoded, err := json.Marshal(map[string]string{"PRIORITY": "6", "MESSAGE": message})
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal.Write(encoded)
+		journal.WriteByte('\n')
+	}
+	entries, err := parseJournal(journal.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		priority int
+		level    string
+	}{{4, "warning"}, {3, "error"}, {7, "debug"}, {7, "trace"}, {6, "info"}, {3, "error"}, {2, "critical"}}
+	if len(entries) != len(want) {
+		t.Fatalf("日志数量 = %d，期望 %d", len(entries), len(want))
+	}
+	for index, expected := range want {
+		if entries[index].Priority != expected.priority || entries[index].Level != expected.level {
+			t.Fatalf("%q => priority=%d level=%q，期望 %d %q",
+				messages[index], entries[index].Priority, entries[index].Level, expected.priority, expected.level)
+		}
 	}
 }
 

@@ -53,8 +53,17 @@ const connectionMarker = " <-> "
 // 但不符合当前格式的行，便于在上游日志格式变化时暴露兼容性问题。
 func Parse(lines []LogLine, options ParseOptions) (events []Event, dropped int) {
 	for _, line := range lines {
-		fields, ok := logfmt.Parse(line.Message)
-		if !ok || !connectionCandidate(fields) {
+		fields, ok := logfmt.ParseEntry(line.Message)
+		if !ok {
+			// 整行都认不出来、原文却明显是连接日志：说明 dae 又换了日志格式。
+			// 必须计入 dropped，页面才会提示格式变化。dae v2 改格式时这里直接
+			// continue，连接活动安静地变成空白，没有任何告警。
+			if looksLikeConnection(line.Message) {
+				dropped++
+			}
+			continue
+		}
+		if !connectionCandidate(fields) {
 			continue
 		}
 		if !acceptedConnectionLevel(fields, line.PID, options) {
@@ -80,6 +89,13 @@ func acceptedConnectionLevel(fields map[string]string, pid string, options Parse
 	// 分支要求这个区分字段，避免把每次 DNS 查询计成一条连接。
 	return fields["level"] == "debug" && fields["ip"] != "" && options.AcceptDebug &&
 		options.CurrentPID != "" && pid == options.CurrentPID
+}
+
+// looksLikeConnection 只看原文：带连接标记，且带 dae 连接日志特有的字段名。
+// Netkit 设备对之类的普通 <-> 日志没有这些字段，不会误报。
+func looksLikeConnection(message string) bool {
+	return strings.Contains(message, connectionMarker) &&
+		strings.Contains(message, "outbound=") && strings.Contains(message, "network=")
 }
 
 func connectionCandidate(fields map[string]string) bool {
