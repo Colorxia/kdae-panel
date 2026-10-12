@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -36,6 +37,15 @@ const (
 	// systemctl show 等于每秒 fork 一个进程，对小机器不划算；缓存过期的
 	// PID 会让 /proc 读取失败并如实报 snapshotOk=false，下一轮自动纠正。
 	connectionPIDCacheTTL = 5 * time.Second
+	// 后台采集间隔。面板启动后就持续读 journald，不再等页面打开才读——
+	// 否则没人看的时候什么都不记，曲线只能从打开页面那一刻开始。
+	connectionCollectInterval = 10 * time.Second
+	// 页面请求时距上次采集超过它就先补一次，打开页面看到的总是最新数据。
+	connectionFreshness = 2 * time.Second
+	// 单次采集最多连续读几批；积压更多时留给下一轮，避免一次占用过久。
+	connectionMaxSyncRounds = 5
+	// 后台单次采集的总时限，覆盖状态查询与多批 journald 读取。
+	connectionSyncTimeout = 2 * time.Minute
 )
 
 const (
@@ -134,7 +144,7 @@ type connectionConfigReader interface {
 
 type connectionHostReader interface {
 	Status(context.Context) (host.Status, error)
-	Logs(context.Context, int) ([]host.LogEntry, error)
+	ReadLogs(context.Context, host.LogQuery) ([]host.LogEntry, error)
 }
 
 type connectionLogLevelCache struct {
@@ -155,6 +165,27 @@ type connectionTracker struct {
 	levelCache    connectionLogLevelCache
 	pidMu         sync.Mutex
 	pidCache      connectionPIDCache
+
+	// 以下是后台采集的状态，由 syncMu 保护。曲线计数（accepted、dropped）与
+	// 明细（store）分开存：明细有 2000 条上限，计数没有，曲线不会被截短。
+	syncMu   sync.Mutex
+	cursor   string    // journald 游标，下一次从它之后接着读
+	syncedAt time.Time // 上次完成采集的时间
+	logsOK   bool
+	// coverage 是曲线可信区间的起点：早于它的桶是"不知道"，不是"没有连接"。
+	coverage time.Time
+	// watermark 是已采集到的最新日志时间。游标失效后重新回填时，靠它跳过已经
+	// 计过数的记录；正常的增量读取不用它，因为系统时钟回拨时它会误伤新日志。
+	watermark time.Time
+	accepted  *daeconn.Timeline
+	dropped   *daeconn.Timeline
+	// 采集节奏，默认取 connectionCollectInterval 与 host.MaxLogBatch；测试会调小。
+	collectInterval time.Duration
+	batchSize       int
+
+	stopOnce sync.Once
+	stop     context.CancelFunc
+	done     chan struct{}
 }
 
 type connectionPIDCache struct {
@@ -170,16 +201,22 @@ func registerConnectionRoutes(
 	configuration connectionConfigReader,
 	installation ConnectionInstallStateService,
 	snapshotter daeconn.Snapshotter,
-) {
+) *connectionTracker {
 	if snapshotter == nil {
 		snapshotter = daeconn.NewProcSnapshotter()
 	}
 	tracker := &connectionTracker{
 		dae: daeService, host: hostService, configuration: configuration, installation: installation,
 		snapshotter: snapshotter, store: daeconn.NewStore(),
+		accepted: daeconn.NewTimeline(connectionsMaxWindow),
+		dropped:  daeconn.NewTimeline(connectionsMaxWindow),
+
+		collectInterval: connectionCollectInterval,
+		batchSize:       host.MaxLogBatch,
 	}
 	router.HandleFunc("GET /api/v1/connections", tracker.handle)
 	router.HandleFunc("GET /api/v1/connections/snapshot", tracker.handleSnapshot)
+	return tracker
 }
 
 // handleSnapshot 只采集 socket 快照，供页面按秒轮询。完整端点每次都要跑
@@ -265,23 +302,25 @@ func (tracker *connectionTracker) handle(writer http.ResponseWriter, request *ht
 	}
 	requiredLogLevel := tracker.connectionLogLevel(request.Context(), status.MainPID)
 
-	logs, logErr := tracker.host.Logs(request.Context(), host.MaxLogLines)
-	lines := make([]daeconn.LogLine, len(logs))
-	for index, entry := range logs {
-		lines[index] = daeconn.LogLine{Timestamp: entry.Timestamp, Message: entry.Message, PID: entry.PID}
-	}
-	events, dropped := daeconn.Parse(lines, daeconn.ParseOptions{
-		AcceptDebug: requiredLogLevel == connectionDebugLogLevel,
-		CurrentPID:  strconv.Itoa(status.MainPID),
-	})
-	merged, storeTruncated := tracker.store.Merge(events)
+	// 日志由后台持续采集；这里只在数据稍旧时补一次，打开页面看到的总是最新的。
+	logsOK, coverage := tracker.refresh(request.Context())
+	merged, _ := tracker.store.Merge(nil)
 	now := time.Now().UTC()
-	windowed := connectionEventsSince(merged, now.Add(-window))
+	windowStart := now.Add(-window)
+	windowed := connectionEventsSince(merged, windowStart)
 	facets, clientCount, targetCount, facetLimited := buildConnectionFacets(windowed)
-	// 覆盖起点按整个存储算，不是按窗口内的事件：存储里若留着比窗口更早的事件，
-	// 就证明这段窗口从头到尾都在面板的观测范围内。
-	series := buildConnectionSeries(windowed, now, window, buckets)
-	seriesSince := connectionSeriesSince(merged)
+	// 曲线与总数都从按秒计数里取，不受明细 2000 条上限影响，两者天然一致。
+	series := buildConnectionSeries(tracker.accepted.Count, now, window, buckets)
+	windowEvents := tracker.accepted.Count(windowStart, now)
+	dropped := tracker.dropped.Count(windowStart, now)
+	// 明细被容量上限挤掉过、且挤掉的事件落在窗口内，列表与分布就只覆盖了窗口的一部分。
+	evicted := tracker.store.EvictedThrough()
+	storeTruncated := !evicted.IsZero() && !evicted.Before(windowStart)
+	var seriesSince *time.Time
+	if !coverage.IsZero() {
+		since := coverage
+		seriesSince = &since
+	}
 
 	var snapshot daeconn.Snapshot
 	snapshotOK := false
@@ -311,7 +350,7 @@ func (tracker *connectionTracker) handle(writer http.ResponseWriter, request *ht
 		SnapshotOK:          snapshotOK,
 		ServiceRunning:      serviceRunning,
 		SocketWindowSeconds: int(daeconn.RecentSampleWindow / time.Second),
-		LogsOK:              logErr == nil,
+		LogsOK:              logsOK,
 		LogLevel:            logLevel,
 		RequiredLogLevel:    requiredLogLevel,
 		Dropped:             dropped,
@@ -322,7 +361,7 @@ func (tracker *connectionTracker) handle(writer http.ResponseWriter, request *ht
 			UDPSockets:     snapshot.UDPSockets,
 			SampledTCPPeak: snapshot.SampledTCPPeak,
 			SampledUDPPeak: snapshot.SampledUDPPeak,
-			WindowEvents:   len(windowed),
+			WindowEvents:   windowEvents,
 			WindowClients:  clientCount,
 			WindowTargets:  targetCount,
 		},
@@ -576,10 +615,10 @@ func connectionBucketCount(request *http.Request) (int, error) {
 	return buckets, nil
 }
 
-// buildConnectionSeries 把窗口内的事件聚合成等长的桶。空桶必须保留：曲线上
-// 的缺口代表"这段时间确实没有新建连接"，靠省略点让折线自己连过去会把安静期
-// 画成斜坡。事件已按时间倒序，这里只做一次线性分配。
-func buildConnectionSeries(events []daeconn.Event, end time.Time, window time.Duration, buckets int) []connectionBucket {
+// buildConnectionSeries 把窗口切成等长的桶，每个桶的数量由 count 给出。空桶必须
+// 保留：曲线上的零代表"这段时间确实没有新建连接"，靠省略点让折线自己连过去会把
+// 安静期画成斜坡。窗口不能被桶数整除时，除不尽的尾巴并入最后一个桶。
+func buildConnectionSeries(count func(from, to time.Time) int, end time.Time, window time.Duration, buckets int) []connectionBucket {
 	if buckets < 1 || window <= 0 {
 		return nil
 	}
@@ -590,38 +629,176 @@ func buildConnectionSeries(events []daeconn.Event, end time.Time, window time.Du
 	}
 	series := make([]connectionBucket, buckets)
 	for index := range series {
-		series[index] = connectionBucket{At: start.Add(time.Duration(index) * width)}
-	}
-	for _, event := range events {
-		if event.Timestamp.Before(start) || !event.Timestamp.Before(end) {
-			continue
+		from := start.Add(time.Duration(index) * width)
+		to := from.Add(width)
+		if index == buckets-1 {
+			to = end
 		}
-		index := int(event.Timestamp.Sub(start) / width)
-		// 整除的边界情况：窗口不能被桶数整除时，末尾几纳秒会落到 buckets 之外。
-		if index >= buckets {
-			index = buckets - 1
-		}
-		series[index].Count++
+		series[index] = connectionBucket{At: from, Count: count(from, to)}
 	}
 	return series
 }
 
-// connectionSeriesSince 给出曲线可信区间的起点：面板的事件存储只从它开始
-// 轮询时积累，容量满后还会淘汰最旧的事件。早于这个时刻的桶是"面板不知道"，
-// 不是"当时没有流量"，前端必须区分这两者——与 socket 快照的"未捕获"同理。
-// 取存储中最旧事件的时间是保守估计：安静期开头也会被算作未覆盖，宁可少声称
-// 知道，也不把无知报成零。存储为空时返回 nil，代表整个窗口都无从判断。
-func connectionSeriesSince(events []daeconn.Event) *time.Time {
-	oldest := time.Time{}
-	for _, event := range events {
-		if oldest.IsZero() || event.Timestamp.Before(oldest) {
-			oldest = event.Timestamp
+// refresh 在数据比 connectionFreshness 旧时补采一次，返回日志是否可用与曲线覆盖起点。
+func (tracker *connectionTracker) refresh(ctx context.Context) (bool, time.Time) {
+	tracker.syncMu.Lock()
+	defer tracker.syncMu.Unlock()
+	if tracker.syncedAt.IsZero() || time.Since(tracker.syncedAt) > connectionFreshness {
+		tracker.syncLocked(ctx)
+	}
+	return tracker.logsOK, tracker.coverage
+}
+
+// syncLocked 从游标之后读取新日志并计入曲线与明细；没有游标时先回填最近一批。
+// 调用方必须持有 syncMu。
+func (tracker *connectionTracker) syncLocked(ctx context.Context) {
+	status, statusOK := tracker.serviceStatus(ctx)
+	pid := 0
+	if statusOK {
+		pid = status.MainPID
+	}
+	level := tracker.connectionLogLevel(ctx, pid)
+	options := daeconn.ParseOptions{
+		AcceptDebug: level == connectionDebugLogLevel,
+		CurrentPID:  strconv.Itoa(pid),
+	}
+
+	for round := 0; round < connectionMaxSyncRounds; round++ {
+		backfill := tracker.cursor == ""
+		entries, err := tracker.host.ReadLogs(ctx, host.LogQuery{After: tracker.cursor, Limit: tracker.batchSize})
+		if err != nil {
+			if !backfill {
+				// 游标对应的记录可能已被 journald 轮转清理掉，下一轮改为重新回填。
+				tracker.cursor = ""
+				continue
+			}
+			tracker.logsOK = false
+			return
+		}
+		tracker.logsOK = true
+		if backfill {
+			tracker.updateCoverage(entries, status, level, len(entries) >= tracker.batchSize)
+		}
+		tracker.ingest(entries, options, backfill)
+		if len(entries) > 0 && entries[len(entries)-1].Cursor != "" {
+			tracker.cursor = entries[len(entries)-1].Cursor
+		}
+		// 回填读的是最近一批，后面没有更新的了；增量读不满一批说明已经追上。
+		if backfill || len(entries) < tracker.batchSize {
+			break
 		}
 	}
-	if oldest.IsZero() {
-		return nil
+	tracker.syncedAt = time.Now()
+}
+
+// updateCoverage 在回填时确定曲线可信区间的起点。
+//
+// 起点取这批日志里最早的时间：journald 可能只保留了这么久，或者这批读满了、更早的
+// 没读到——两种情况下更早的区间都是"不知道"。宁可少声称知道，也不把无知报成零。
+//
+// 收 debug 级连接日志时只认当前 dae 进程（见 connectionLogLevelFor），本次启动之前的
+// 记录会被丢弃，那段时间同样不可信，所以起点不早于进程启动时间。
+func (tracker *connectionTracker) updateCoverage(entries []host.LogEntry, status host.Status, level string, full bool) {
+	earliest := time.Time{}
+	for _, entry := range entries {
+		if !entry.Timestamp.IsZero() && (earliest.IsZero() || entry.Timestamp.Before(earliest)) {
+			earliest = entry.Timestamp
+		}
 	}
-	return &oldest
+	if earliest.IsZero() {
+		// 一条日志都没读到（dae 从未运行，或 journald 什么都没留）：起点保持未定，
+		// 页面提示"尚未采集到任何连接记录"，而不是从此刻开始画一条零线。
+		return
+	}
+	if level == connectionDebugLogLevel {
+		if started, err := time.Parse(time.RFC3339, status.ActiveSince); err == nil && started.After(earliest) {
+			earliest = started
+		}
+	}
+	switch {
+	case tracker.coverage.IsZero():
+		tracker.coverage = earliest
+	case !tracker.watermark.IsZero() && (full || earliest.After(tracker.watermark)) && earliest.After(tracker.coverage):
+		// 游标失效后重新回填，而新的一批与已有数据之间可能有缺口：起点只能后移到这批的开头。
+		tracker.coverage = earliest
+	}
+}
+
+// ingest 解析一批日志，计入按秒计数与明细存储。dedupe 只在回填时开启：按时间跳过
+// 已经计过数的记录。增量读取靠游标保证不重复，不能按时间过滤——系统时钟回拨时
+// （没有 RTC 的路由器开机校时）新日志的时间可能早于旧日志。
+func (tracker *connectionTracker) ingest(entries []host.LogEntry, options daeconn.ParseOptions, dedupe bool) {
+	now := time.Now().UTC()
+	lines := make([]daeconn.LogLine, 0, len(entries))
+	newest := tracker.watermark
+	for _, entry := range entries {
+		if dedupe && !tracker.watermark.IsZero() && !entry.Timestamp.After(tracker.watermark) {
+			continue
+		}
+		if entry.Timestamp.After(newest) {
+			newest = entry.Timestamp
+		}
+		lines = append(lines, daeconn.LogLine{Timestamp: entry.Timestamp, Message: entry.Message, PID: entry.PID})
+	}
+	tracker.watermark = newest
+
+	events, droppedAt := daeconn.ParseDetailed(lines, options)
+	for _, event := range events {
+		tracker.accepted.Add(orNow(event.Timestamp, now), 1)
+	}
+	for _, at := range droppedAt {
+		tracker.dropped.Add(orNow(at, now), 1)
+	}
+	if len(events) > 0 {
+		tracker.store.Merge(events)
+	}
+}
+
+func orNow(value, now time.Time) time.Time {
+	if value.IsZero() {
+		return now
+	}
+	return value
+}
+
+// start 启动后台采集：立即回填一次，之后每隔 connectionCollectInterval 接着读。
+// 只在正式运行时启动（见 New），测试里的请求会自己触发采集。
+func (tracker *connectionTracker) start(logger *slog.Logger) {
+	ctx, cancel := context.WithCancel(context.Background())
+	tracker.stop = cancel
+	tracker.done = make(chan struct{})
+	go func() {
+		defer close(tracker.done)
+		ticker := time.NewTicker(tracker.collectInterval)
+		defer ticker.Stop()
+		for {
+			syncCtx, syncCancel := context.WithTimeout(ctx, connectionSyncTimeout)
+			tracker.syncMu.Lock()
+			tracker.syncLocked(syncCtx)
+			ok := tracker.logsOK
+			tracker.syncMu.Unlock()
+			syncCancel()
+			if !ok && ctx.Err() == nil {
+				logger.Debug("后台采集连接日志失败，下一轮重试")
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
+// Close 停止后台采集并等它退出。未启动时直接返回。
+func (tracker *connectionTracker) Close() error {
+	tracker.stopOnce.Do(func() {
+		if tracker.stop != nil {
+			tracker.stop()
+			<-tracker.done
+		}
+	})
+	return nil
 }
 
 func sortedConnectionEndpoints(counts map[string]int) []connectionEndpoint {
