@@ -324,8 +324,8 @@ X-CSRF-Token: <csrfToken>
 | `entries` | journald | 连接建立明细：源、目的、域名、出站、节点、策略、进程、MAC |
 | `facets.targets` / `nodes` / `groups` / `clients` | journald | 时间窗内按目标、节点、出站组、客户端聚合的连接数；客户端有有效 MAC 时按 MAC 合并 |
 | `series` | journald | 等长时间桶（`at`、`count`），空桶保留 |
-| `seriesSince` | journald | 面板开始有数据的时刻，更早的桶表示"不知道"；整个窗口都没有数据时省略 |
-| `summary.windowEvents` / `windowClients` / `windowTargets` | journald | 时间窗内的事件、客户端、目标数 |
+| `seriesSince` | journald | 可信数据的起点，更早的桶表示"不知道"；日志还没读到过时省略 |
+| `summary.windowEvents` / `windowClients` / `windowTargets` | journald | 时间窗内的事件、客户端、目标数。`windowEvents` 与 `series` 同源，不受明细上限影响；客户端与目标数来自保留的明细 |
 | `endpoints` | procfs | 采样窗口内 dae 的 ESTABLISHED TCP 远端 `address` 与 `count` |
 | `summary.outboundTcp` / `udpSockets` | procfs | 最近一次采样的 TCP / UDP socket 数 |
 | `summary.sampledTcpPeak` / `sampledUdpPeak` | procfs | `socketWindowSeconds` 秒内采样到的峰值 |

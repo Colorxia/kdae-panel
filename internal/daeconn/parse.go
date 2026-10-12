@@ -52,6 +52,12 @@ const connectionMarker = " <-> "
 // debug 只有显式启用且来自当前 dae PID 时才接收。dropped 只统计形似连接事件、
 // 但不符合当前格式的行，便于在上游日志格式变化时暴露兼容性问题。
 func Parse(lines []LogLine, options ParseOptions) (events []Event, dropped int) {
+	events, droppedAt := ParseDetailed(lines, options)
+	return events, len(droppedAt)
+}
+
+// ParseDetailed 与 Parse 相同，但给出每条被丢弃行的时间，供后台采集按时间窗统计。
+func ParseDetailed(lines []LogLine, options ParseOptions) (events []Event, droppedAt []time.Time) {
 	for _, line := range lines {
 		fields, ok := logfmt.ParseEntry(line.Message)
 		if !ok {
@@ -59,7 +65,7 @@ func Parse(lines []LogLine, options ParseOptions) (events []Event, dropped int) 
 			// 必须计入 dropped，页面才会提示格式变化。dae v2 改格式时这里直接
 			// continue，连接活动安静地变成空白，没有任何告警。
 			if looksLikeConnection(line.Message) {
-				dropped++
+				droppedAt = append(droppedAt, line.Timestamp)
 			}
 			continue
 		}
@@ -74,10 +80,10 @@ func Parse(lines []LogLine, options ParseOptions) (events []Event, dropped int) 
 		case parseOK:
 			events = append(events, event)
 		case parseFailed:
-			dropped++
+			droppedAt = append(droppedAt, line.Timestamp)
 		}
 	}
-	return events, dropped
+	return events, droppedAt
 }
 
 func acceptedConnectionLevel(fields map[string]string, pid string, options ParseOptions) bool {

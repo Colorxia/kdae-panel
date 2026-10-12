@@ -138,7 +138,9 @@ const seriesSinceLabel = computed(() => {
   if (!since) return '面板尚未采集到任何连接记录'
   const start = now.value - TRAFFIC_WINDOW_MINUTES * 60_000
   if (Date.parse(since) <= start) return ''
-  return `面板从 ${formatDateTime(since)} 起才开始记录，更早的区间无从判断`
+  // 起点来自 journald 还保留的历史，或 dae 本次启动的时间（debug 级只认当前进程），
+  // 不再是面板开始运行的时刻：面板启动后会先回填 journald 里已有的记录。
+  return `只有 ${formatDateTime(since)} 之后的连接记录，更早的区间无从判断`
 })
 
 /* ---------- 出站健康 ---------- */

@@ -19,6 +19,9 @@ const (
 	actionTimeout  = 150 * time.Second
 	// MaxLogLines 是单次 journald 查询允许返回的最大行数。
 	MaxLogLines = 500
+	// MaxLogBatch 是 ReadLogs 单批行数上限。命令输出上限 8 MiB，只取四个字段后
+	// dae 的一条日志约 0.5 KB，一万条约 5 MiB，留出余量；超过上限整次读取会失败。
+	MaxLogBatch = 10000
 )
 
 type Manager struct {
@@ -60,6 +63,15 @@ type LogEntry struct {
 	Message   string    `json:"message"`
 	Unit      string    `json:"unit,omitempty"`
 	PID       string    `json:"pid,omitempty"`
+	// Cursor 是 journald 为这条记录生成的游标，只供增量读取接续，不对外输出。
+	Cursor string `json:"-"`
+}
+
+// LogQuery 描述一次 ReadLogs。After 为空时读该单元最近 Limit 条，用于回填；
+// 否则从游标之后往后读至多 Limit 条，用于增量接续。
+type LogQuery struct {
+	After string
+	Limit int
 }
 
 type Action string
@@ -288,6 +300,37 @@ func (m *Manager) Logs(ctx context.Context, limit int) ([]LogEntry, error) {
 	return parseJournal(result.Stdout)
 }
 
+// ReadLogs 按游标分批读取 journald，供后台持续采集连接日志。
+//
+// 两种读法的语义经实测确认（systemd 259），并与 journalctl 源码的分支顺序一致：
+//   - 不带游标时 --lines N 取该单元最近 N 条；
+//   - 带 --after-cursor 时 --lines N 取游标之后的前 N 条，积压可以分批追上而不丢。
+//
+// 这里刻意不用 --since：它与 --lines 组合时取的是范围内最后 N 条，且各版本行为
+// 不一致，积压时会在中间留下无法察觉的缺口。
+func (m *Manager) ReadLogs(ctx context.Context, query LogQuery) ([]LogEntry, error) {
+	limit := query.Limit
+	if limit <= 0 || limit > MaxLogBatch {
+		limit = MaxLogBatch
+	}
+	args := []string{
+		"--unit", m.serviceName,
+		"--no-pager",
+		"--output", "json",
+		// 完整记录约 1 KB，只取解析需要的字段后约 0.5 KB；游标与时间戳总会带上。
+		"--output-fields", "MESSAGE,PRIORITY,_PID,_SYSTEMD_UNIT",
+		"--lines", strconv.Itoa(limit),
+	}
+	if query.After != "" {
+		args = append(args, "--after-cursor", query.After)
+	}
+	result, err := m.run(ctx, m.journalctl, args...)
+	if err != nil {
+		return nil, fmt.Errorf("读取 journald 日志: %s", command.Describe(err, result))
+	}
+	return parseJournal(result.Stdout)
+}
+
 func (m *Manager) run(ctx context.Context, name string, args ...string) (command.Result, error) {
 	return m.runFor(ctx, m.timeout, name, args...)
 }
@@ -332,6 +375,7 @@ func parseJournal(output string) ([]LogEntry, error) {
 			Message:   message,
 			Unit:      rawString(raw["_SYSTEMD_UNIT"]),
 			PID:       rawString(raw["_PID"]),
+			Cursor:    rawString(raw["__CURSOR"]),
 		})
 	}
 	if err := scanner.Err(); err != nil {

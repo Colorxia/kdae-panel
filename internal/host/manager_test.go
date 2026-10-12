@@ -300,3 +300,49 @@ func TestCommandError(t *testing.T) {
 		t.Fatalf("错误信息异常: %v", err)
 	}
 }
+
+func TestReadLogsUsesCursorAndCarriesItBack(t *testing.T) {
+	base := "journalctl --unit dae --no-pager --output json --output-fields MESSAGE,PRIORITY,_PID,_SYSTEMD_UNIT"
+	backfill := base + " --lines 3"
+	follow := base + " --lines 10000 --after-cursor s=abc;i=2"
+	runner := &fakeRunner{results: map[string]command.Result{
+		backfill: {Stdout: `{"__CURSOR":"s=abc;i=1","__REALTIME_TIMESTAMP":"1760250000000000","PRIORITY":"6","_PID":"42","MESSAGE":" INFO Started dae"}` + "\n" +
+			`{"__CURSOR":"s=abc;i=2","__REALTIME_TIMESTAMP":"1760250001000000","PRIORITY":"6","_PID":"42","MESSAGE":"DEBUG 192.0.2.1:1 <-> example.com:443 network=tcp4 outbound=proxy"}` + "\n"},
+		follow: {Stdout: ""},
+	}, errors: map[string]error{}}
+	manager, err := NewManagerWithRunner("dae", "systemctl", "journalctl", runner, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 回填：不带游标，不能出现 --after-cursor，也不能用 --since（与 --lines 组合时语义因版本而异）。
+	entries, err := manager.ReadLogs(context.Background(), LogQuery{Limit: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[1].Cursor != "s=abc;i=2" || entries[1].PID != "42" || entries[1].Level != "debug" {
+		t.Fatalf("回填结果异常: %+v", entries)
+	}
+	// 增量：从上一批最后一条的游标接着读；越界的 Limit 收回到单批上限。
+	if _, err := manager.ReadLogs(context.Background(), LogQuery{After: entries[1].Cursor, Limit: 999999}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 2 || runner.calls[0] != backfill || runner.calls[1] != follow {
+		t.Fatalf("journalctl 调用参数异常: %q", runner.calls)
+	}
+	for _, call := range runner.calls {
+		if strings.Contains(call, "--since") {
+			t.Fatalf("不应使用 --since: %s", call)
+		}
+	}
+}
+
+func TestLogEntryCursorIsNotSerialized(t *testing.T) {
+	encoded, err := json.Marshal(LogEntry{Message: "x", Cursor: "s=secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "s=secret") || strings.Contains(string(encoded), "cursor") {
+		t.Fatalf("游标不应出现在对外的日志接口里: %s", encoded)
+	}
+}
