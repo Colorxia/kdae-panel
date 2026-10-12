@@ -271,3 +271,23 @@ func TestConnectionTrackerCloseWithoutStart(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// journald 里一条 dae 日志都没有时，起点保持未定：页面要说"尚未采集到任何记录"，
+// 而不是从此刻开始画一条零线（e2e 也验证这句提示）。读到日志后才确定起点。
+func TestConnectionCoverageStaysUnsetUntilFirstLog(t *testing.T) {
+	journal := &fakeJournal{status: host.Status{MainPID: 42, ActiveState: "active"}}
+	tracker := newCollectorTracker(t, journal, nil)
+	if response := requestConnections(t, tracker, "?window=15"); response.SeriesSince != nil || !response.LogsOK {
+		t.Fatalf("空日志时不应给出覆盖起点: seriesSince=%v logsOk=%v", response.SeriesSince, response.LogsOK)
+	}
+
+	started := time.Now().UTC().Add(-3 * time.Minute)
+	journal.addRaw(started, " INFO Started dae", "")
+	tracker.syncMu.Lock()
+	tracker.syncLocked(context.Background())
+	coverage := tracker.coverage
+	tracker.syncMu.Unlock()
+	if !coverage.Equal(started) {
+		t.Fatalf("读到第一条日志后起点应为它的时间 %s，得到 %s", started, coverage)
+	}
+}

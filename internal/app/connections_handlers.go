@@ -706,7 +706,9 @@ func (tracker *connectionTracker) updateCoverage(entries []host.LogEntry, status
 		}
 	}
 	if earliest.IsZero() {
-		earliest = time.Now().UTC()
+		// 一条日志都没读到（dae 从未运行，或 journald 什么都没留）：起点保持未定，
+		// 页面提示"尚未采集到任何连接记录"，而不是从此刻开始画一条零线。
+		return
 	}
 	if level == connectionDebugLogLevel {
 		if started, err := time.Parse(time.RFC3339, status.ActiveSince); err == nil && started.After(earliest) {
