@@ -409,7 +409,7 @@ func TestBuildConnectionSeriesKeepsEmptyBuckets(t *testing.T) {
 		{Timestamp: end.Add(-11 * time.Minute)}, // 早于窗口，忽略
 		{Timestamp: end},                        // 窗口右端开区间，忽略
 	}
-	series := buildConnectionSeries(events, end, window, 5)
+	series := buildConnectionSeries(eventCounter(events), end, window, 5)
 	if len(series) != 5 {
 		t.Fatalf("桶数 = %d，want 5", len(series))
 	}
@@ -430,7 +430,7 @@ func TestBuildConnectionSeriesKeepsEmptyBuckets(t *testing.T) {
 func TestBuildConnectionSeriesClampsIndivisibleWindow(t *testing.T) {
 	end := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
 	// 7 纳秒分 3 个桶：每桶 2 纳秒，末尾 1 纳秒除不尽，必须被夹进最后一个桶。
-	series := buildConnectionSeries([]daeconn.Event{{Timestamp: end.Add(-1)}}, end, 7, 3)
+	series := buildConnectionSeries(eventCounter([]daeconn.Event{{Timestamp: end.Add(-1)}}), end, 7, 3)
 	if len(series) != 3 {
 		t.Fatalf("桶数 = %d，want 3", len(series))
 	}
@@ -441,27 +441,24 @@ func TestBuildConnectionSeriesClampsIndivisibleWindow(t *testing.T) {
 
 func TestBuildConnectionSeriesRejectsUnusableShape(t *testing.T) {
 	end := time.Now().UTC()
-	if series := buildConnectionSeries(nil, end, 0, 60); series != nil {
+	if series := buildConnectionSeries(eventCounter(nil), end, 0, 60); series != nil {
 		t.Fatalf("零窗口应返回 nil，得到 %+v", series)
 	}
-	if series := buildConnectionSeries(nil, end, time.Minute, 0); series != nil {
+	if series := buildConnectionSeries(eventCounter(nil), end, time.Minute, 0); series != nil {
 		t.Fatalf("零桶数应返回 nil，得到 %+v", series)
 	}
 }
 
-func TestConnectionSeriesSinceReportsOldestKnownEvent(t *testing.T) {
-	if since := connectionSeriesSince(nil); since != nil {
-		t.Fatalf("存储为空时应返回 nil，得到 %s", since)
-	}
-	oldest := time.Date(2026, 9, 7, 11, 0, 0, 0, time.UTC)
-	events := []daeconn.Event{
-		{Timestamp: oldest.Add(time.Hour)},
-		{Timestamp: oldest},
-		{Timestamp: oldest.Add(time.Minute)},
-	}
-	since := connectionSeriesSince(events)
-	if since == nil || !since.Equal(oldest) {
-		t.Fatalf("覆盖起点 = %v，want %s", since, oldest)
+// eventCounter 按纳秒精度统计 [from, to) 内的事件，用来单独验证分桶边界。
+func eventCounter(events []daeconn.Event) func(from, to time.Time) int {
+	return func(from, to time.Time) int {
+		total := 0
+		for _, event := range events {
+			if !event.Timestamp.Before(from) && event.Timestamp.Before(to) {
+				total++
+			}
+		}
+		return total
 	}
 }
 

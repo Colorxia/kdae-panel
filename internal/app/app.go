@@ -38,9 +38,10 @@ import (
 )
 
 type App struct {
-	handler    http.Handler
-	closers    []io.Closer
-	operations *sync.Mutex
+	handler     http.Handler
+	closers     []io.Closer
+	operations  *sync.Mutex
+	connections *connectionTracker
 }
 
 type DaeService interface {
@@ -107,6 +108,7 @@ type HostService interface {
 	Status(ctx context.Context) (host.Status, error)
 	Action(ctx context.Context, action host.Action) error
 	Logs(ctx context.Context, limit int) ([]host.LogEntry, error)
+	ReadLogs(ctx context.Context, query host.LogQuery) ([]host.LogEntry, error)
 	Interfaces(ctx context.Context) ([]host.NetworkInterface, error)
 }
 
@@ -235,6 +237,12 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		return nil, err
 	}
 	application.closers = append(application.closers, authStore)
+	// 连接日志在后台持续采集，曲线不再只从有人打开页面那一刻开始。
+	// 只在正式运行时启动；测试走 NewWithDependencies，由请求自己触发采集。
+	if application.connections != nil && dependencies.Host != nil {
+		application.connections.start(logger)
+		application.closers = append(application.closers, application.connections)
+	}
 	if err := syncSetupURLFile(cfg.SetupURLFile, setupURLs); err != nil {
 		_ = application.Close()
 		return nil, fmt.Errorf("同步首次访问链接: %w", err)
@@ -355,8 +363,8 @@ func NewWithDependencies(cfg Config, logger *slog.Logger, dependencies Dependenc
 	})
 	registerConfigurationRoutes(router, dependencies.Configuration, dependencies.ManagedSubscriptions, operations)
 	registerServiceRoutes(router, dependencies.Dae, dependencies.Host, operations, cfg.DisableBootPolicySync)
-	registerConnectionRoutes(router, dependencies.Dae, dependencies.Host, dependencies.Configuration,
-		dependencies.ConnectionInstall, dependencies.Connections)
+	application.connections = registerConnectionRoutes(router, dependencies.Dae, dependencies.Host,
+		dependencies.Configuration, dependencies.ConnectionInstall, dependencies.Connections)
 	registerProbeRoutes(router, dependencies.Probe, logger)
 	registerSubscriptionNodeRoutes(router, dependencies.SubscriptionNodes)
 	registerManagedSubscriptionRoutes(router, dependencies.ManagedSubscriptions)

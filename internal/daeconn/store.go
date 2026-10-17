@@ -14,6 +14,9 @@ type Store struct {
 	capacity int
 	ttl      time.Duration
 	now      func() time.Time
+	// evictedThrough 是因容量上限被挤掉的最新一条事件的时间。所选时间窗若晚于
+	// 它，窗口内的明细就是完整的；否则明细与分布只覆盖了窗口的一部分。
+	evictedThrough time.Time
 }
 
 const (
@@ -87,5 +90,15 @@ func (store *Store) evictOldest(count int) {
 	})
 	for _, candidate := range candidates[:count] {
 		delete(store.events, candidate.key)
+		if candidate.timestamp.After(store.evictedThrough) {
+			store.evictedThrough = candidate.timestamp
+		}
 	}
+}
+
+// EvictedThrough 返回因容量上限被挤掉的最新事件时间；从未挤掉过时为零值。
+func (store *Store) EvictedThrough() time.Time {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.evictedThrough
 }

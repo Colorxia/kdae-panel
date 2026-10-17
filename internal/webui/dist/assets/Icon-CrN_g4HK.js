@@ -1,4 +1,4 @@
-import{B as e,Cn as t,Gt as n,Ht as r,V as i,Vt as a,_n as o,dt as s,ln as c,ot as l,yn as u}from"./client-DxGwbE0G.js";import{r as d}from"./text-BeGXUzaC.js";import{g as f}from"./index-D_VWv-ax.js";var p=r(`icon`,`
+import{B as e,Cn as t,Gt as n,Ht as r,V as i,Vt as a,_n as o,dt as s,ln as c,ot as l,yn as u}from"./client-DxGwbE0G.js";import{r as d}from"./text-BeGXUzaC.js";import{g as f}from"./index-DTXqnt2I.js";var p=r(`icon`,`
  height: 1em;
  width: 1em;
  line-height: 1em;

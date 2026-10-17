@@ -194,6 +194,18 @@ func (s *stubHostService) Logs(_ context.Context, _ int) ([]host.LogEntry, error
 	return append([]host.LogEntry(nil), s.logs...), s.logsErr
 }
 
+// ReadLogs 模拟 journald：不带游标时返回全部记录（回填）。测试记录没有游标，
+// 带游标的增量读取因此总是空的。
+func (s *stubHostService) ReadLogs(_ context.Context, query host.LogQuery) ([]host.LogEntry, error) {
+	if s.logsErr != nil {
+		return nil, s.logsErr
+	}
+	if query.After != "" {
+		return nil, nil
+	}
+	return append([]host.LogEntry(nil), s.logs...), nil
+}
+
 func (s *stubHostService) Interfaces(_ context.Context) ([]host.NetworkInterface, error) {
 	return s.interfaces, s.err
 }
