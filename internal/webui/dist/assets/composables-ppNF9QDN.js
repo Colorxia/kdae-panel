@@ -1,1 +1,0 @@
-import{ut as e,xn as t}from"./client-DxGwbE0G.js";import{h as n}from"./index-B0LdI49c.js";function r(){let r=t(n,null);return r===null&&e(`use-dialog`,`No outer <n-dialog-provider /> founded.`),r}export{r as t};
