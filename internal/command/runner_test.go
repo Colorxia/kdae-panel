@@ -61,3 +61,22 @@ func TestLimitedBuffer(t *testing.T) {
 		t.Fatalf("写入结果异常: written=%d content=%q", written, buffer.String())
 	}
 }
+
+// RunWithEnv 追加的变量必须真的到达子进程，并覆盖继承来的同名值；
+// 面板自己的初始化凭据仍然不能泄露。
+func TestRunWithEnvOverridesInheritedAndKeepsFiltering(t *testing.T) {
+	t.Setenv("DAE_LOCATION_ASSET", "/inherited")
+	t.Setenv("KDAE_PANEL_BOOTSTRAP_TOKEN", "super-secret")
+
+	result, err := ExecRunner{}.RunWithEnv(context.Background(), []string{"DAE_LOCATION_ASSET=/opt/geo"},
+		"/bin/sh", "-c", `printf '%s\n' "$DAE_LOCATION_ASSET"; env`)
+	if err != nil {
+		t.Fatalf("执行失败: %v (%s)", err, result.Stderr)
+	}
+	if first, _, _ := strings.Cut(result.Stdout, "\n"); first != "/opt/geo" {
+		t.Fatalf("追加的变量没有覆盖继承值: %q", first)
+	}
+	if strings.Contains(result.Stdout, "super-secret") {
+		t.Fatal("子进程环境里出现了面板的初始化凭据")
+	}
+}

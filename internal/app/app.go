@@ -120,6 +120,7 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 		return nil, fmt.Errorf("初始化主机服务管理器: %w", err)
 	}
 	adoptRunningServiceBootState(hostManager, logger)
+	daeClient.SetValidateEnvironment(daeValidateEnvironment(hostManager))
 	daeService := newSystemdDaeService(daeClient, daeClient, daeClient, hostManager)
 	managedSubscriptions, err := managedsubscription.Open(cfg.ManagedSubscriptionsPath, cfg.DaeConfigPath, logger)
 	if err != nil {
@@ -181,6 +182,12 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 			Fetcher:     upstream.NewDefaultRegistryWithGitHubToken(githubCredentials),
 			Service:     hostManager,
 			Logger:      logger,
+			// 版本切换前用新二进制校验当前配置，同样要带上 dae 服务的 Geo 目录。
+			NewProbe: func(path string) daeinstall.Probe {
+				probe := dae.NewClient(path)
+				probe.SetValidateEnvironment(daeValidateEnvironment(hostManager))
+				return probe
+			},
 		})
 		if err != nil {
 			_ = authStore.Close()
@@ -584,4 +591,24 @@ func recoverer(next http.Handler, logger *slog.Logger) http.Handler {
 		}()
 		next.ServeHTTP(writer, request)
 	})
+}
+
+// daeValidateEnvironment 把 dae.service 里声明的 DAE_LOCATION_ASSET 交给 validate。
+// 新版 dae 的 validate 会加载 Geo 数据，而这个变量只在 dae 自己的单元里，面板
+// 继承不到。只传这一个：validate 的其余行为与环境无关，没必要把 dae 单元的
+// 全部环境搬到面板执行的子进程里。
+func daeValidateEnvironment(service interface {
+	Status(context.Context) (host.Status, error)
+}) func(context.Context) []string {
+	return func(ctx context.Context) []string {
+		status, err := service.Status(ctx)
+		if err != nil {
+			return nil
+		}
+		directory := strings.TrimSpace(status.Environment[geodata.LocationAssetEnv])
+		if directory == "" {
+			return nil
+		}
+		return []string{geodata.LocationAssetEnv + "=" + directory}
+	}
 }

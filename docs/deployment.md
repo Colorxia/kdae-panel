@@ -155,7 +155,9 @@ sudo systemctl restart kdae-panel
 - 面板会找到 dae 实际读取的那份文件原位更新，通常不需要改权限。只有 `DAE_LOCATION_ASSET` 指向自定义目录时，需要把该目录加入 `ReadWritePaths`。
 - 可以添加自定义来源，要求公网 HTTPS 直链并附 SHA-256 校验文件。
 
-路由引用了数据里不存在的分类时，`dae validate` 会通过，但 dae 启动会失败。面板会在错误中指出缺失的分类，这时应更新或切换 Geo 来源，或修改路由规则；只切换 dae 版本解决不了。
+路由引用了数据里不存在的分类时：官方 dae v2.1.1 起与 2026-09 之后的 kdae，`dae validate` 会加载 Geo 数据并直接报错，面板保存配置时就会拦下；更早的版本 `validate` 会通过，但 dae 启动会失败，面板会在错误中指出缺失的分类。两种情况都应更新或切换 Geo 来源，或修改路由规则；只切换 dae 版本解决不了。
+
+新版 dae 在校验时要读得到 Geo 文件。面板执行校验时会带上 dae 服务单元里的 `DAE_LOCATION_ASSET`，自定义 Geo 目录无需额外设置；但 Geo 只放在 `/root/.local/share/dae` 时，面板的沙箱看不到那里，保存配置会报 `geoip.dat` 不存在，请把 Geo 移到 `/etc/dae` 或 `/usr/local/share/dae`。
 
 ## HTTPS 反向代理
 

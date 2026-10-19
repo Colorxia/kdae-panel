@@ -164,7 +164,9 @@ Geo 管理与 dae 版本管理相互独立：只写数据文件，不碰二进�
 
 异常中断后留下的回滚点会阻止下一次更新，避免唯一的旧数据被覆盖。界面提供恢复和清理入口。
 
-`dae validate` 不加载 Geo 数据，分类是否存在只有在启动或 reload 时才知道。面板会从 reload 输出和近期日志中识别 `not found in geoip.dat/geosite.dat`，在错误中指出缺失的分类。
+官方 dae v2.1.1 起与 2026-09 之后的 kdae，`validate` 会预演路由规则并加载 Geo 数据，分类缺失在保存配置时就能拦下；更早的版本 `validate` 不加载 Geo，分类是否存在只有在启动或 reload 时才知道，面板会从 reload 输出和近期日志中识别 `not found in geoip.dat/geosite.dat`，在错误中指出缺失的分类。
+
+新版 `validate` 按 `DAE_LOCATION_ASSET`、配置文件所在目录、系统目录的顺序查找 Geo。这个变量通常只写在 dae.service 里，面板继承不到，因此执行 `validate` 时会从 dae 单元读出它并传给子进程（版本切换前的预检同样如此）；否则 Geo 在自定义目录的机器上，dae 照常运行，面板却会把正确的配置判成无效。面板的候选配置总写在入口配置同目录，与 dae 自己查找 Geo 的位置一致。
 
 自定义来源只接受公网 HTTPS。每次重定向都重新解析 DNS，连接前再检查实际地址，防止访问内网和 DNS 重绑定；不携带 GitHub Token。
 

@@ -46,24 +46,35 @@ type DirectoryRunner interface {
 	RunInDir(ctx context.Context, dir, name string, args ...string) (Result, error)
 }
 
+// EnvironmentRunner 支持为单次命令追加环境变量，追加的同名变量覆盖继承来的值。
+type EnvironmentRunner interface {
+	Runner
+	RunWithEnv(ctx context.Context, env []string, name string, args ...string) (Result, error)
+}
+
 type ExecRunner struct{}
 
 func (r ExecRunner) Run(ctx context.Context, name string, args ...string) (Result, error) {
-	return r.run(ctx, "", name, args...)
+	return r.run(ctx, "", nil, name, args...)
 }
 
 func (r ExecRunner) RunInDir(ctx context.Context, dir, name string, args ...string) (Result, error) {
-	return r.run(ctx, dir, name, args...)
+	return r.run(ctx, dir, nil, name, args...)
 }
 
-func (r ExecRunner) run(ctx context.Context, dir, name string, args ...string) (Result, error) {
+func (r ExecRunner) RunWithEnv(ctx context.Context, env []string, name string, args ...string) (Result, error) {
+	return r.run(ctx, "", env, name, args...)
+}
+
+func (r ExecRunner) run(ctx context.Context, dir string, env []string, name string, args ...string) (Result, error) {
 	stdout := newLimitedBuffer(outputLimit)
 	stderr := newLimitedBuffer(outputLimit)
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	cmd.Env = childEnvironment()
+	// os/exec 对重复的键只取最后一个，追加的 env 因此覆盖继承来的同名变量。
+	cmd.Env = append(childEnvironment(), env...)
 	// 子进程若把管道交给孙进程，Wait 会一直挂着；超时后给一个宽限期就放弃等待，
 	// 否则持有全局控制锁的调用方会被拖死。
 	cmd.WaitDelay = 5 * time.Second
