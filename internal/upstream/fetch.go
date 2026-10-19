@@ -41,6 +41,10 @@ type Bundle struct {
 	Unit    []byte
 	GeoIP   []byte
 	GeoSite []byte
+	// Example 是发布包自带的 example.dae。首次安装不用它（面板写自己的种子
+	// 配置），只供契约检查：用同一个包里的二进制、Geo 与示例配置验证 validate，
+	// 三者版本天然一致。
+	Example []byte
 }
 
 // FetchBundle 下载资产、比对 sha256 并取出其中全部可用物料。
@@ -133,6 +137,7 @@ func extractArchive(payload []byte, nested, includeExtras bool) (Bundle, error) 
 		"dae.service": &bundle.Unit,
 		"geoip.dat":   &bundle.GeoIP,
 		"geosite.dat": &bundle.GeoSite,
+		"example.dae": &bundle.Example,
 	}
 	for _, file := range reader.File {
 		if file.FileInfo().IsDir() || !file.Mode().IsRegular() {

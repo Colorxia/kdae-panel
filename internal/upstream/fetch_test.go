@@ -60,8 +60,26 @@ func TestBinaryOnlyExtractionSkipsFirstInstallMaterials(t *testing.T) {
 	if string(bundle.Binary) != "ELF-binary" {
 		t.Fatalf("取出的内容 = %q", bundle.Binary)
 	}
-	if bundle.Unit != nil || bundle.GeoIP != nil || bundle.GeoSite != nil {
+	if bundle.Unit != nil || bundle.GeoIP != nil || bundle.GeoSite != nil || bundle.Example != nil {
 		t.Fatalf("升级路径不应解压首次安装物料: %+v", bundle)
+	}
+}
+
+// 契约检查要用同一个包里的示例配置，与二进制、Geo 数据版本一致。
+func TestExtractBundleIncludesExampleConfig(t *testing.T) {
+	archive := buildZip(t, map[string][]byte{
+		"dae-linux-x86_64": []byte("ELF-binary"),
+		"example.dae":      []byte("global {}"),
+		"empty.dae":        []byte("global {} routing {}"),
+		"geoip.dat":        []byte("geoip"),
+		"geosite.dat":      []byte("geosite"),
+	})
+	bundle, err := extractBundle(archive, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(bundle.Example) != "global {}" || string(bundle.GeoIP) != "geoip" || string(bundle.GeoSite) != "geosite" {
+		t.Fatalf("随包物料解压异常: example=%q geoip=%q geosite=%q", bundle.Example, bundle.GeoIP, bundle.GeoSite)
 	}
 }
 
