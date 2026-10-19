@@ -31,6 +31,8 @@ type Client struct {
 	runner    command.Runner
 	timeout   time.Duration
 	sysdumpMu sync.Mutex
+	// validateEnv 给出 validate 子进程额外需要的环境变量，见 SetValidateEnvironment。
+	validateEnv func(context.Context) []string
 }
 
 type Report struct {
@@ -143,8 +145,23 @@ func (c *Client) Outline(ctx context.Context) (Outline, error) {
 	return outline, nil
 }
 
+// SetValidateEnvironment 让 validate 带上 dae 服务自己的环境变量。
+//
+// dae 从 2026-09（官方 v2.1.1、kdae 同期构建）起，validate 会预演路由规则，
+// 需要加载 geoip.dat / geosite.dat；查找顺序里最高优先级是 DAE_LOCATION_ASSET。
+// 这个变量通常写在 dae.service 里，而面板执行 validate 时继承的是面板自己的
+// 环境——Geo 放在自定义目录的机器上，dae 照常运行，面板却会把正确的配置判成
+// "geoip.dat 不存在"而拒绝保存。
+func (c *Client) SetValidateEnvironment(provider func(context.Context) []string) {
+	c.validateEnv = provider
+}
+
 func (c *Client) Validate(ctx context.Context, configPath string) error {
-	result, err := c.runFor(ctx, max(c.timeout, validateTimeout), "validate", "-c", configPath)
+	var env []string
+	if c.validateEnv != nil {
+		env = c.validateEnv(ctx)
+	}
+	result, err := c.runWithEnv(ctx, max(c.timeout, validateTimeout), env, "validate", "-c", configPath)
 	if err != nil {
 		return fmt.Errorf("dae 配置校验失败: %s", command.Describe(err, result))
 	}
@@ -216,6 +233,17 @@ func (c *Client) runFor(ctx context.Context, timeout time.Duration, args ...stri
 	commandCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return c.runner.Run(commandCtx, c.binary, args...)
+}
+
+// runWithEnv 在执行器支持时追加环境变量；不支持或没有要追加的变量时退回普通执行。
+func (c *Client) runWithEnv(ctx context.Context, timeout time.Duration, env []string, args ...string) (command.Result, error) {
+	runner, ok := c.runner.(command.EnvironmentRunner)
+	if !ok || len(env) == 0 {
+		return c.runFor(ctx, timeout, args...)
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return runner.RunWithEnv(commandCtx, env, c.binary, args...)
 }
 
 func (c *Client) runInDir(ctx context.Context, dir string, timeout time.Duration, args ...string) (command.Result, error) {

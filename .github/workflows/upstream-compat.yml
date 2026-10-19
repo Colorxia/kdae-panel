@@ -3,11 +3,9 @@ name: kdae 上游兼容
 on:
   workflow_dispatch:
   schedule:
-    # 版本发现契约每天验一次：它依赖的发布命名、.dgst 格式与 Actions 接口都在
-    # 上游手里，改了不会有人通知我们，只能自己勤查。
+    # 每天验一次：发布命名、.dgst 格式、Actions 接口与命令行为都在上游手里，
+    # 改了不会有人通知我们，只能自己勤查。
     - cron: '17 3 * * *'
-    # 上游构建契约每周一次：要装 clang/llvm 再全量编译 kdae，每天跑不划算。
-    - cron: '43 4 * * 1'
 
 permissions:
   contents: read
@@ -46,48 +44,27 @@ jobs:
         # geodata 验证取到之后的落盘与回滚。只列前者的话，后者等于没写。
         run: go test -count=1 -run '^TestLive' -timeout=12m ./internal/upstream ./internal/geodata
 
+  # 面板与 dae 分离运行，从不编译 dae；它管理的是用户实际安装的发布包。所以契约
+  # 对发布包验证：取官方与 kdae 最新可安装的构建，经面板安装 dae 时的同一条下载与
+  # 校验路径，用包内的二进制、Geo 数据与 example.dae 跑 validate、outline 与 sysdump。
+  #
+  # 这里曾经检出 kdae 源码、装 clang/llvm 再全量编译。那测的不是用户运行的东西，
+  # 还把上游构建环境的问题引了进来，并丢掉了发布包自带的 Geo 数据——dae 的 validate
+  # 开始加载 Geo 之后，这项检查从 2026-09-14 起连续失败了六周。
   contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    if: github.event_name != 'schedule' || github.event.schedule == '43 4 * * 1'
+    timeout-minutes: 15
     steps:
       - name: 检出面板
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: 检出 kdae 分支
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: olicesx/dae
-          ref: kdae
-          path: upstream
-          submodules: recursive
-          fetch-depth: 1
-
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # kdae 独立决定自己的 Go 基线；直接读上游 go.mod，避免它升级后
-          # 兼容检查还停在面板的工具链版本而在真正验证契约前就失败。
-          go-version-file: upstream/go.mod
+          go-version: '1.26.9'
           cache: true
-          cache-dependency-path: |
-            go.sum
-            upstream/go.sum
 
-      - name: 安装上游构建依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes clang llvm
-
-      - name: 构建 kdae
-        run: make -C upstream dae NOSTRIP=y DEFAULT_GOEXPERIMENT= OUTPUT=dae-contract
-
-      # Git 不记录普通文件的读权限，检出的示例配置固定是 0644；kdae 会拒绝
-      # 其他用户可读的配置。复制成面板生产环境实际使用的 0600 再验证。
-      - name: 准备契约配置
-        run: install -m0600 upstream/example.dae "${RUNNER_TEMP}/kdae-contract.dae"
-
-      - name: 验证面板与 kdae 公开契约
+      - name: 验证面板与 dae 发布包的公开契约
         env:
-          KDAE_CONTRACT_BINARY: ${{ github.workspace }}/upstream/dae-contract
-          KDAE_CONTRACT_CONFIG: ${{ runner.temp }}/kdae-contract.dae
-        run: go test -count=1 -run '^TestUpstreamContract$' -timeout=4m ./internal/dae
+          KDAE_UPSTREAM_LIVE: '1'
+          KDAE_PANEL_GITHUB_TOKEN: ${{ github.token }}
+        run: go test -count=1 -v -run '^TestUpstreamContract$' -timeout=10m ./internal/dae

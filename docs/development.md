@@ -90,7 +90,7 @@ gh workflow run release-smoke.yml -f version=vX.Y.Z -f deep=true
 | 作业 | 频率 | 内容 |
 |---|---|---|
 | `discovery` | 每天 | 对真实上游列出版本、下载并解包，确认发布包命名、校验和格式与 geo 数据仍符合面板预期 |
-| `contract` | 每周 | 构建 `olicesx/dae` 的 `kdae` 分支，用真实二进制验证 `--version`、`--help`、`export outline`、`validate` 和 `sysdump` |
+| `contract` | 每天 | 下载官方 dae 与 kdae 最新可安装的发布包（走面板安装 dae 的同一条下载与校验路径），用包内的二进制、Geo 数据与 `example.dae` 验证 `--version`、`--help`、`export outline`、`validate` 和 `sysdump` |
 
 本地运行 `discovery` 的检查：
 
