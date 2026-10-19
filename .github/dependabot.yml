@@ -40,12 +40,13 @@ updates:
       # 重新评估的触发条件：vue-tsc 官宣支持 TS7。
       - dependency-name: typescript
         update-types: [version-update:semver-major]
-      # vue-tsc 3.3.12 回归：模板字符串里出现 // 后，v-for 循环变量全部"找不到"
+      # vue-tsc 3.3.12 起的回归：模板字符串里出现 // 后，v-for 循环变量全部"找不到"
       # （vuejs/language-tools#6240，修复 #6241 未合并）。DNSUpstreamEditor 的
-      # 上游地址占位符 udp://… 正好触发。只挡这一个版本，3.3.13 照常提。
-      # 重新评估的触发条件：#6240 关闭，或 3.3.13 发布。
+      # 上游地址占位符 udp://… 正好触发。3.3.13 实测仍未修复。
+      # 按版本逐个挡，不挡范围：新版本照常提 PR，CI 的类型检查会判断它修没修好。
+      # 重新评估的触发条件：#6240 关闭。
       - dependency-name: vue-tsc
-        versions: ['3.3.12']
+        versions: ['3.3.12', '3.3.13']
 
   - package-ecosystem: github-actions
     directory: /
