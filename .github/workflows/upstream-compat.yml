@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           cache: true
 
       # 版本发现与 geo 数据都依赖上游的资产命名与校验和格式，这些都在面板之外，
@@ -60,7 +60,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           cache: true
 
       - name: 验证面板与 dae 发布包的公开契约
