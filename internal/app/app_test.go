@@ -2665,3 +2665,18 @@ func TestSecurityHeadersHonorTrustedHTTPSProxy(t *testing.T) {
 		t.Fatal("可信 HTTPS 代理后应发送 HSTS")
 	}
 }
+
+func TestDaeValidateEnvironmentReadsServiceUnit(t *testing.T) {
+	withAsset := &stubHostService{status: host.Status{Environment: map[string]string{"DAE_LOCATION_ASSET": " /opt/geo ", "LANG": "C"}}}
+	if got := daeValidateEnvironment(withAsset)(context.Background()); len(got) != 1 || got[0] != "DAE_LOCATION_ASSET=/opt/geo" {
+		t.Fatalf("应只带上 DAE_LOCATION_ASSET: %q", got)
+	}
+	without := &stubHostService{status: host.Status{Environment: map[string]string{"LANG": "C"}}}
+	if got := daeValidateEnvironment(without)(context.Background()); got != nil {
+		t.Fatalf("单元里没有该变量时不应追加: %q", got)
+	}
+	failing := &stubHostService{err: errors.New("systemctl 不可用")}
+	if got := daeValidateEnvironment(failing)(context.Background()); got != nil {
+		t.Fatalf("读取单元失败时不应追加: %q", got)
+	}
+}

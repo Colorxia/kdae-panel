@@ -38,6 +38,51 @@ func (r *fakeRunner) RunInDir(_ context.Context, dir, name string, args ...strin
 	return r.results[key], r.errors[key]
 }
 
+// envRunner 额外实现 command.EnvironmentRunner，记录每次调用带的环境变量。
+type envRunner struct {
+	fakeRunner
+	envs map[string][]string
+}
+
+func (r *envRunner) RunWithEnv(ctx context.Context, env []string, name string, args ...string) (command.Result, error) {
+	if r.envs == nil {
+		r.envs = map[string][]string{}
+	}
+	r.envs[name+" "+joinArgs(args)] = env
+	return r.fakeRunner.Run(ctx, name, args...)
+}
+
+// 新版 dae 的 validate 要加载 Geo 数据，必须带上 dae 服务的 DAE_LOCATION_ASSET。
+func TestValidatePassesServiceEnvironment(t *testing.T) {
+	runner := &envRunner{fakeRunner: fakeRunner{results: map[string]command.Result{}, errors: map[string]error{}}}
+	client := NewClientWithRunner("/usr/bin/dae", runner, time.Second)
+	client.SetValidateEnvironment(func(context.Context) []string { return []string{"DAE_LOCATION_ASSET=/opt/geo"} })
+
+	if err := client.Validate(context.Background(), "/etc/dae/config.dae"); err != nil {
+		t.Fatal(err)
+	}
+	got := runner.envs["/usr/bin/dae validate -c /etc/dae/config.dae"]
+	if !reflect.DeepEqual(got, []string{"DAE_LOCATION_ASSET=/opt/geo"}) {
+		t.Fatalf("validate 没有带上 dae 服务的环境变量: %q（全部调用 %q）", got, runner.calls)
+	}
+}
+
+// 没有设置提供者、或提供者给不出变量时，退回普通执行，行为与之前完全一致。
+func TestValidateWithoutEnvironmentFallsBackToRun(t *testing.T) {
+	runner := &envRunner{fakeRunner: fakeRunner{results: map[string]command.Result{}, errors: map[string]error{}}}
+	client := NewClientWithRunner("/usr/bin/dae", runner, time.Second)
+	if err := client.Validate(context.Background(), "/etc/dae/config.dae"); err != nil {
+		t.Fatal(err)
+	}
+	client.SetValidateEnvironment(func(context.Context) []string { return nil })
+	if err := client.Validate(context.Background(), "/etc/dae/config.dae"); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.envs) != 0 || len(runner.calls) != 2 {
+		t.Fatalf("没有变量时不应走 RunWithEnv: envs=%q calls=%q", runner.envs, runner.calls)
+	}
+}
+
 func TestInspect(t *testing.T) {
 	runner := &fakeRunner{results: map[string]command.Result{
 		"/usr/bin/dae --version": {
