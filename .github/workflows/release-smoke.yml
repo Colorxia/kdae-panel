@@ -185,7 +185,8 @@ jobs:
       - name: 安装跨架构执行器
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y qemu-user-static
+          sudo apt-get install --no-install-recommends -y qemu-user-static ||
+            sudo apt-get install --no-install-recommends -y qemu-user
 
       - name: 三架构发布包应完整、可执行且版本正确
         run: |
@@ -237,8 +238,14 @@ jobs:
             fi
             case ${arch} in
               amd64) reported=$("${binary}" -version) ;;
-              arm64) reported=$(qemu-aarch64-static "${binary}" -version) ;;
-              riscv64) reported=$(qemu-riscv64-static "${binary}" -version) ;;
+              arm64)
+                qemu_arm64=$(command -v qemu-aarch64-static || command -v qemu-aarch64)
+                reported=$("${qemu_arm64}" "${binary}" -version)
+                ;;
+              riscv64)
+                qemu_riscv64=$(command -v qemu-riscv64-static || command -v qemu-riscv64)
+                reported=$("${qemu_riscv64}" "${binary}" -version)
+                ;;
             esac
             if [[ ${reported} != "${VERSION}" ]]; then
               echo "${archive} 自报版本 = '${reported}'，期望 '${VERSION}'" >&2

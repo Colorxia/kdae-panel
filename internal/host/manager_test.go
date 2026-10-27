@@ -337,6 +337,34 @@ func TestReadLogsUsesCursorAndCarriesItBack(t *testing.T) {
 	}
 }
 
+func TestReadLogsFallsBackWhenLargeBatchExceedsOutputLimit(t *testing.T) {
+	base := "journalctl --unit dae --no-pager --output json --output-fields MESSAGE,PRIORITY,_PID,_SYSTEMD_UNIT"
+	large := base + " --lines 1000"
+	fallback := base + " --lines 500"
+	runner := &fakeRunner{
+		results: map[string]command.Result{
+			fallback: {Stdout: `{"__CURSOR":"s=abc;i=1","__REALTIME_TIMESTAMP":"1760250000000000","PRIORITY":"6","_PID":"42","MESSAGE":"DEBUG 192.0.2.1:1 <-> example.com:443 network=tcp4 outbound=proxy"}` + "\n"},
+		},
+		errors: map[string]error{
+			large: errors.New("命令输出超过 8388608 字节限制"),
+		},
+	}
+	manager, err := NewManagerWithRunner("dae", "systemctl", "journalctl", runner, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := manager.ReadLogs(context.Background(), LogQuery{Limit: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Cursor != "s=abc;i=1" {
+		t.Fatalf("降级读取结果异常: %+v", entries)
+	}
+	if len(runner.calls) != 2 || runner.calls[0] != large || runner.calls[1] != fallback {
+		t.Fatalf("降级调用顺序异常: %q", runner.calls)
+	}
+}
+
 func TestLogEntryCursorIsNotSerialized(t *testing.T) {
 	encoded, err := json.Marshal(LogEntry{Message: "x", Cursor: "s=secret"})
 	if err != nil {

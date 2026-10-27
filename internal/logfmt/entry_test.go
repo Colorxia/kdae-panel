@@ -33,11 +33,18 @@ func TestParseEntryV2Connection(t *testing.T) {
 			},
 		},
 		{
-			name:   "IPv6 源地址被格式化库当作前缀剥掉后还原",
-			line:   "DEBUG 2001:db8::1: :1234 <-> example.com:443 dialer=tokyo dscp=0 ip=[2001:db8::8]:443 mac=00:11:22:33:44:55 network=tcp6 outbound=proxy pname=curl policy=min_moving_avg sniffed=example.com",
+			name:   "IPv6 源地址被格式化库当作前缀剥掉后还原（双空格）",
+			line:   "DEBUG  2001:db8::1: :1234 <-> example.com:443 dialer=tokyo dscp=0 ip=[2001:db8::8]:443 mac=00:11:22:33:44:55 network=tcp6 outbound=proxy pname=curl policy=min_moving_avg sniffed=example.com",
 			level:  "debug",
 			msg:    "[2001:db8::1]:1234 <-> example.com:443",
 			fields: map[string]string{"ip": "[2001:db8::8]:443", "network": "tcp6"},
+		},
+		{
+			name:   "带 ANSI 转义与字段值内含等号",
+			line:   "\x1b[37mDEBUG\x1b[0m 192.0.2.23:4567 <-> example.com:443 dialer=tokyo dscp=0 ip=203.0.113.8:443 network=tcp4 outbound=proxy pname=node --max-old-space-size=4096 a=b policy=fixed(0)",
+			level:  "debug",
+			msg:    "192.0.2.23:4567 <-> example.com:443",
+			fields: map[string]string{"dialer": "tokyo", "ip": "203.0.113.8:443", "network": "tcp4", "outbound": "proxy", "pname": "node --max-old-space-size=4096 a=b", "policy": "fixed(0)"},
 		},
 		{
 			name:  "卸载原因带空格",

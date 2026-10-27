@@ -313,22 +313,27 @@ func (m *Manager) ReadLogs(ctx context.Context, query LogQuery) ([]LogEntry, err
 	if limit <= 0 || limit > MaxLogBatch {
 		limit = MaxLogBatch
 	}
-	args := []string{
-		"--unit", m.serviceName,
-		"--no-pager",
-		"--output", "json",
-		// 完整记录约 1 KB，只取解析需要的字段后约 0.5 KB；游标与时间戳总会带上。
-		"--output-fields", "MESSAGE,PRIORITY,_PID,_SYSTEMD_UNIT",
-		"--lines", strconv.Itoa(limit),
+	for {
+		args := []string{
+			"--unit", m.serviceName,
+			"--no-pager",
+			"--output", "json",
+			// 完整记录约 1 KB，只取解析需要的字段后约 0.5 KB；游标与时间戳总会带上。
+			"--output-fields", "MESSAGE,PRIORITY,_PID,_SYSTEMD_UNIT",
+			"--lines", strconv.Itoa(limit),
+		}
+		if query.After != "" {
+			args = append(args, "--after-cursor", query.After)
+		}
+		result, err := m.run(ctx, m.journalctl, args...)
+		if err == nil {
+			return parseJournal(result.Stdout)
+		}
+		if limit <= MaxLogLines || ctx.Err() != nil {
+			return nil, fmt.Errorf("读取 journald 日志: %s", command.Describe(err, result))
+		}
+		limit = max(limit/2, MaxLogLines)
 	}
-	if query.After != "" {
-		args = append(args, "--after-cursor", query.After)
-	}
-	result, err := m.run(ctx, m.journalctl, args...)
-	if err != nil {
-		return nil, fmt.Errorf("读取 journald 日志: %s", command.Describe(err, result))
-	}
-	return parseJournal(result.Stdout)
 }
 
 func (m *Manager) run(ctx context.Context, name string, args ...string) (command.Result, error) {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/tuoro/kdae-panel/internal/configstore"
+	"github.com/tuoro/kdae-panel/internal/dae"
 	"github.com/tuoro/kdae-panel/internal/daeconfig"
 	"github.com/tuoro/kdae-panel/internal/daeconn"
 	"github.com/tuoro/kdae-panel/internal/daeinstall"
@@ -176,9 +177,11 @@ type connectionTracker struct {
 	coverage time.Time
 	// watermark 是已采集到的最新日志时间。游标失效后重新回填时，靠它跳过已经
 	// 计过数的记录；正常的增量读取不用它，因为系统时钟回拨时它会误伤新日志。
-	watermark time.Time
-	accepted  *daeconn.Timeline
-	dropped   *daeconn.Timeline
+	watermark       time.Time
+	lastAcceptDebug bool
+	lastPID         int
+	accepted        *daeconn.Timeline
+	dropped         *daeconn.Timeline
 	// 采集节奏，默认取 connectionCollectInterval 与 host.MaxLogBatch；测试会调小。
 	collectInterval time.Duration
 	batchSize       int
@@ -300,7 +303,7 @@ func (tracker *connectionTracker) handle(writer http.ResponseWriter, request *ht
 	if current, statusErr := tracker.host.Status(request.Context()); statusErr == nil {
 		status, statusOK = current, true
 	}
-	requiredLogLevel := tracker.connectionLogLevel(request.Context(), status.MainPID)
+	requiredLogLevel := tracker.connectionLogLevel(request.Context(), status)
 
 	// 日志由后台持续采集；这里只在数据稍旧时补一次，打开页面看到的总是最新的。
 	logsOK, coverage := tracker.refresh(request.Context())
@@ -375,7 +378,8 @@ func (tracker *connectionTracker) handle(writer http.ResponseWriter, request *ht
 
 // connectionLogLevel 每个 dae PID 只探测一次运行版本。版本切换会重启 dae，
 // 新 PID 使缓存自然失效；探测临时失败则短暂退回 info 后重试。
-func (tracker *connectionTracker) connectionLogLevel(ctx context.Context, pid int) string {
+func (tracker *connectionTracker) connectionLogLevel(ctx context.Context, status host.Status) string {
+	pid := status.MainPID
 	if pid <= 0 || tracker.dae == nil {
 		return connectionInfoLogLevel
 	}
@@ -389,17 +393,24 @@ func (tracker *connectionTracker) connectionLogLevel(ctx context.Context, pid in
 	}
 
 	version, err := tracker.dae.Version(ctx)
-	if err != nil || strings.TrimSpace(version) == "" {
-		tracker.levelCache = connectionLogLevelCache{pid: pid, level: connectionInfoLogLevel, checkedAt: now}
-		return connectionInfoLogLevel
+	if (err != nil || strings.TrimSpace(version) == "") && strings.TrimSpace(status.ExecStartPath) != "" {
+		version, err = dae.NewClient(status.ExecStartPath).Version(ctx)
 	}
 	var state *daeinstall.State
 	if tracker.installation != nil {
-		state, err = tracker.installation.InstalledState()
-		if err != nil {
+		var stateErr error
+		state, stateErr = tracker.installation.InstalledState()
+		if stateErr != nil {
 			tracker.levelCache = connectionLogLevelCache{pid: pid, level: connectionInfoLogLevel, checkedAt: now}
 			return connectionInfoLogLevel
 		}
+	}
+	if (err != nil || strings.TrimSpace(version) == "") && state != nil && strings.TrimSpace(state.Version) != "" {
+		version, err = state.Version, nil
+	}
+	if err != nil || strings.TrimSpace(version) == "" {
+		tracker.levelCache = connectionLogLevelCache{pid: pid, level: connectionInfoLogLevel, checkedAt: now}
+		return connectionInfoLogLevel
 	}
 	level := connectionLogLevelFor(version, state)
 	tracker.levelCache = connectionLogLevelCache{
@@ -411,18 +422,23 @@ func (tracker *connectionTracker) connectionLogLevel(ctx context.Context, pid in
 func connectionLogLevelFor(version string, state *daeinstall.State) string {
 	revision, commit, ok := unstableDaeRevision(version)
 	if !ok {
+		if state != nil && state.Source == upstream.SourceKdae {
+			return connectionDebugLogLevel
+		}
+		return connectionInfoLogLevel
+	}
+	if revision < kdaeDebugLogRevision {
 		return connectionInfoLogLevel
 	}
 	// 精确命中首个变更提交时，即使旧安装没有面板账本也能恢复连接流水。
 	if sameCommit(commit, kdaeDebugLogCommit) {
 		return connectionDebugLogLevel
 	}
-	if state == nil || state.Source != upstream.SourceKdae || revision < kdaeDebugLogRevision {
-		return connectionInfoLogLevel
-	}
-	// 后续提交必须由面板账本证明来自受信任的 kdae 构建，并与运行版本一致；
-	// 不能仅凭递增 revision 把未来官方 dae 误判为这个分支。
-	if strings.TrimSpace(state.Version) != strings.TrimSpace(version) && !sameCommit(commit, state.Label) {
+	// 只有面板账本明确记录当前运行版本来自官方 dae 构建时，才按 info 处理；
+	// 其余 r1148 及之后的 unstable 构建（含命令行安装、未纳管升级或 kdae 账本）
+	// 均按 debug 连接流水处理，避免缺失或滞后的面板账本吞掉所有连接记录与提示。
+	if state != nil && state.Source == upstream.SourceOfficial &&
+		(strings.TrimSpace(state.Version) == strings.TrimSpace(version) || sameCommit(commit, state.Label)) {
 		return connectionInfoLogLevel
 	}
 	return connectionDebugLogLevel
@@ -434,14 +450,18 @@ func unstableDaeRevision(version string) (revision int, commit string, ok bool) 
 			continue
 		}
 		parts := strings.Split(field, ".")
-		if len(parts) != 3 || !strings.HasPrefix(parts[1], "r") || !validCommitID(parts[2]) {
+		if len(parts) != 3 || !strings.HasPrefix(parts[1], "r") {
+			return 0, "", false
+		}
+		commitPart := strings.TrimPrefix(strings.ToLower(parts[2]), "g")
+		if !validCommitID(commitPart) {
 			return 0, "", false
 		}
 		parsed, err := strconv.Atoi(strings.TrimPrefix(parts[1], "r"))
 		if err != nil || parsed < 1 {
 			return 0, "", false
 		}
-		return parsed, strings.ToLower(parts[2]), true
+		return parsed, commitPart, true
 	}
 	return 0, "", false
 }
@@ -657,10 +677,18 @@ func (tracker *connectionTracker) syncLocked(ctx context.Context) {
 	if statusOK {
 		pid = status.MainPID
 	}
-	level := tracker.connectionLogLevel(ctx, pid)
+	level := tracker.connectionLogLevel(ctx, status)
 	options := daeconn.ParseOptions{
 		AcceptDebug: level == connectionDebugLogLevel,
 		CurrentPID:  strconv.Itoa(pid),
+	}
+	if options.AcceptDebug && (!tracker.lastAcceptDebug || (pid > 0 && tracker.lastPID != pid)) {
+		tracker.cursor = ""
+		tracker.watermark = time.Time{}
+	}
+	tracker.lastAcceptDebug = options.AcceptDebug
+	if pid > 0 {
+		tracker.lastPID = pid
 	}
 
 	for round := 0; round < connectionMaxSyncRounds; round++ {

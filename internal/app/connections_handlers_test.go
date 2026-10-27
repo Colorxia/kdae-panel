@@ -175,7 +175,7 @@ func TestConnectionLogLevelFor(t *testing.T) {
 			state:     &daeinstall.State{Source: upstream.SourceKdae, Label: "ea50cdf"},
 			wantLevel: connectionDebugLogLevel,
 		},
-		{name: "无来源账本的后续构建", version: matchingVersion, wantLevel: connectionInfoLogLevel},
+		{name: "无来源账本的后续构建", version: matchingVersion, wantLevel: connectionDebugLogLevel},
 		{
 			name: "官方来源不能凭 revision 开启", version: matchingVersion,
 			state:     &daeinstall.State{Source: upstream.SourceOfficial, Version: matchingVersion},
@@ -184,7 +184,13 @@ func TestConnectionLogLevelFor(t *testing.T) {
 		{
 			name: "运行版本与账本不一致", version: matchingVersion,
 			state:     &daeinstall.State{Source: upstream.SourceKdae, Version: "dae version unstable-20260829.r1154.deadbee", Label: "deadbee"},
-			wantLevel: connectionInfoLogLevel,
+			wantLevel: connectionDebugLogLevel,
+		},
+		{name: "带 g 前缀的 git describe 版本", version: "dae version unstable-20261016.r1161.ge7016a9", wantLevel: connectionDebugLogLevel},
+		{
+			name: "自定义版本字符串但账本为 kdae", version: "dae version unstable-0.nogit",
+			state:     &daeinstall.State{Source: upstream.SourceKdae},
+			wantLevel: connectionDebugLogLevel,
 		},
 		{name: "畸形版本", version: "dae version unstable-r1155.not-hex", wantLevel: connectionInfoLogLevel},
 	}

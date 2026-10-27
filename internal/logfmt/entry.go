@@ -18,18 +18,31 @@ import (
 // 字段值用 %+v 原样输出、不加引号，节点名里的空格会直接出现在值里。
 
 var prefixedLevels = map[string]string{
-	"PANIC": "panic",
-	"FATAL": "fatal",
-	"ERROR": "error",
-	"WARN":  "warn",
-	"INFO":  "info",
-	"DEBUG": "debug",
-	"TRACE": "trace",
+	"PANIC":   "panic",
+	"FATAL":   "fatal",
+	"ERROR":   "error",
+	"ERRO":    "error",
+	"WARN":    "warn",
+	"WARNING": "warn",
+	"INFO":    "info",
+	"DEBUG":   "debug",
+	"TRACE":   "trace",
+	"TRAC":    "trace",
 }
 
 const linkMarker = " <-> "
 
-var prefixedFieldKey = regexp.MustCompile(` ([a-z][a-z0-9_]*)=`)
+var (
+	ansiEscape       = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+	prefixedFieldKey = regexp.MustCompile(` (dialer|dscp|ebpf_offload|ebpf_offload_reason|ip|mac|network|outbound|pid|pname|policy|sniffed)=`)
+)
+
+func stripANSI(value string) string {
+	if !strings.ContainsRune(value, '\x1b') {
+		return value
+	}
+	return ansiEscape.ReplaceAllString(value, "")
+}
 
 // ParseEntry 解析 dae 的一行日志，返回含 level 与 msg 的字段表，兼容 v1 的
 // logfmt 与 v2 的排版格式。
@@ -38,11 +51,12 @@ var prefixedFieldKey = regexp.MustCompile(` ([a-z][a-z0-9_]*)=`)
 // 整段正文 msg。不带引号的值无法与正文里偶然出现的 "a=b" 可靠区分，而面板
 // 对普通日志只需要级别。
 func ParseEntry(line string) (map[string]string, bool) {
-	fields, ok := Parse(line)
+	cleaned := stripANSI(line)
+	fields, ok := Parse(cleaned)
 	if ok && fields["level"] != "" {
 		return fields, true
 	}
-	if prefixed, prefixedOK := parsePrefixed(line); prefixedOK {
+	if prefixed, prefixedOK := parsePrefixed(cleaned); prefixedOK {
 		return prefixed, true
 	}
 	return fields, ok
@@ -62,6 +76,7 @@ func parsePrefixed(line string) (map[string]string, bool) {
 	if !ok {
 		return nil, false
 	}
+	body = strings.TrimLeft(body, " ")
 
 	fields := map[string]string{"level": level}
 	source, remainder, found := strings.Cut(body, linkMarker)
@@ -83,8 +98,8 @@ func parsePrefixed(line string) (map[string]string, bool) {
 //
 // 值不带引号且可能含空格（节点名「香港 01」、ebpf_offload_reason），不能按空格切。
 // 格式化库输出前会按键名排序，所以真实字段在行尾、键名递增。这里从右往左扫，
-// 只接受键名严格递减的 " 键=" 作为字段起点：
-//   - 值里偶然出现的 " x=" 不满足递减，仍属于原来的值；
+// 只接受已知连接字段中键名严格递减的 " 键=" 作为字段起点：
+//   - 值里偶然出现的 " x=" 不在已知字段集合或不满足递减，仍属于原来的值；
 //   - 目标来自客户端 SNI，可被局域网设备控制。目标里夹带的 "outbound=block"
 //     在真实字段左边，又不小于真实的最小键 dialer，会被拒绝并留在目标文本里，
 //     盖不过 dae 真正写入的字段——与 logfmt 下引号起到的保护相同。
@@ -106,10 +121,18 @@ func splitTrailingFields(text string) (string, map[string]string) {
 	fields := make(map[string]string, len(accepted))
 	end := len(text)
 	for _, item := range accepted {
-		fields[text[item.keyStart:item.keyEnd]] = text[item.keyEnd+1 : end]
+		fields[text[item.keyStart:item.keyEnd]] = unquoteFieldValue(text[item.keyEnd+1 : end])
 		end = item.start
 	}
 	return strings.TrimSpace(text[:end]), fields
+}
+
+func unquoteFieldValue(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) >= 2 && trimmed[0] == '"' && trimmed[len(trimmed)-1] == '"' {
+		return strings.ReplaceAll(trimmed[1:len(trimmed)-1], `\"`, `"`)
+	}
+	return trimmed
 }
 
 // restoreBracketPrefix 还原被格式化库剥掉的前缀。正文以 [...] 开头时，库会把方括号
@@ -120,7 +143,7 @@ func restoreBracketPrefix(source string) string {
 	if !found {
 		return source
 	}
-	candidate := "[" + prefix + "]" + remainder
+	candidate := "[" + strings.TrimSpace(prefix) + "]" + remainder
 	if _, err := netip.ParseAddrPort(candidate); err != nil {
 		return source
 	}

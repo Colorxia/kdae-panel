@@ -291,3 +291,32 @@ func TestConnectionCoverageStaysUnsetUntilFirstLog(t *testing.T) {
 		t.Fatalf("读到第一条日志后起点应为它的时间 %s，得到 %s", started, coverage)
 	}
 }
+
+func TestConnectionCollectorRebackfillsWhenDebugAcceptanceActivates(t *testing.T) {
+	now := time.Now().UTC()
+	journal := &fakeJournal{status: host.Status{MainPID: 0, ActiveState: "activating"}}
+	journal.addRaw(now.Add(-time.Minute), "DEBUG 192.0.2.1:1 <-> kdae.example:443 dialer=tokyo ip=203.0.113.1:443 network=tcp4 outbound=proxy", "42")
+	tracker := newCollectorTracker(t, journal, stubDaeService{report: dae.Report{
+		Available: true, Version: "dae version unstable-20261016.r1161.e7016a9",
+	}})
+
+	// 首轮采集时 dae 尚未报出 MainPID（退回 info 过滤），不应永久把游标推进而漏掉当前进程日志。
+	tracker.syncMu.Lock()
+	tracker.syncLocked(context.Background())
+	tracker.syncMu.Unlock()
+
+	journal.mu.Lock()
+	journal.status = host.Status{MainPID: 42, ActiveState: "active"}
+	journal.mu.Unlock()
+	tracker.pidMu.Lock()
+	tracker.pidCache = connectionPIDCache{}
+	tracker.pidMu.Unlock()
+
+	tracker.syncMu.Lock()
+	tracker.syncLocked(context.Background())
+	tracker.syncMu.Unlock()
+
+	if got := tracker.accepted.Count(now.Add(-time.Hour), now.Add(time.Minute)); got != 1 {
+		t.Fatalf("启用 debug 采集后应重新回填当前进程的 debug 连接日志，计数 = %d，期望 1", got)
+	}
+}
